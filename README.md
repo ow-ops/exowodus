@@ -268,3 +268,7 @@ go test ./...                                              # unit tests
 The end-to-end suite covers same-server replacement, a new server name (with
 and without the relay), single users, MAS-backed Synapse, bridges and the
 proxy.
+
+## License
+
+[Apache-2.0](LICENSE)
