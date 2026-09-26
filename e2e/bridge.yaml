@@ -1,0 +1,12 @@
+id: fakebridge
+url: null
+as_token: fake-bridge-as-token
+hs_token: fake-bridge-hs-token
+sender_localpart: fakebot
+rate_limited: false
+namespaces:
+  users:
+    - exclusive: true
+      regex: '@fake_.*:samename'
+  aliases: []
+  rooms: []
