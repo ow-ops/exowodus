@@ -1,0 +1,44 @@
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+env:
+  GOEXPERIMENT: jsonv2
+  CGO_ENABLED: "0"
+
+jobs:
+  test:
+    runs-on: docker
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
+
+  release:
+    if: startsWith(forge.ref, 'refs/tags/v')
+    needs: test
+    runs-on: docker
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Build
+        run: |
+          mkdir -p dist/release
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            os=${target%/*} arch=${target#*/}
+            ext=; [ "$os" = windows ] && ext=.exe
+            GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w" \
+              -o "dist/release/exodus-${{ forge.ref_name }}-$os-$arch$ext" .
+          done
+          cd dist/release && sha256sum * > SHA256SUMS
+      - uses: actions/forgejo-release@v2.13.4
+        with:
+          direction: upload
+          release-dir: dist/release

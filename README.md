@@ -11,7 +11,10 @@ database access for what no API exposes. Client and federation requests use
 
 ## Build
 
-Requires Go 1.26. mautrix-go's federation code uses the experimental
+Prebuilt binaries for Linux, macOS and Windows, with a `SHA256SUMS` file, are
+attached to each release.
+
+To build from source, you need Go 1.26. mautrix-go's federation code uses the experimental
 `encoding/json/v2`:
 
 ```sh
