@@ -14,11 +14,10 @@ database access for what no API exposes. Client and federation requests use
 Prebuilt binaries for Linux, macOS and Windows, with a `SHA256SUMS` file, are
 attached to each release.
 
-To build from source, you need Go 1.26. mautrix-go's federation code uses the experimental
-`encoding/json/v2`:
+To build from source, you need Go 1.27:
 
 ```sh
-GOEXPERIMENT=jsonv2 go build -o exodus .
+go build -o exodus .
 ```
 
 ## Before you start
@@ -260,7 +259,6 @@ recreated room.
 ## Tests
 
 ```sh
-export GOEXPERIMENT=jsonv2
 go test ./...                                              # unit tests
 ./e2e/up.sh && go test -tags e2e ./e2e/; ./e2e/down.sh     # Synapse, MAS and Continuwuity in Docker
 ```
