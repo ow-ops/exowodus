@@ -2,11 +2,11 @@ package migrate
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
-	"slices"
 
 	"exodus/internal/archive"
 	"exodus/internal/relay"
@@ -27,9 +27,16 @@ func (im *Importer) RelayRooms(ctx context.Context, rooms []*archive.ArchivedRoo
 	if im.rooms == nil {
 		im.rooms = map[string]string{}
 	}
+	if im.roomFailures == nil {
+		im.roomFailures = map[string]bool{}
+	}
 	var reports []*RoomReport
 	var rest []*archive.ArchivedRoom
 	for _, room := range rooms {
+		if room.ArchiveOnly {
+			reports = append(reports, &RoomReport{RoomID: room.RoomID, ArchiveOnly: true})
+			continue
+		}
 		var data relay.RoomData
 		ok, err := im.Archive.ReadRoomPDUs(room.RoomID, &data)
 		if err != nil {
@@ -49,8 +56,10 @@ func (im *Importer) RelayRooms(ctx context.Context, rooms []*archive.ArchivedRoo
 		slog.Info("moving room through the relay", "room", room.RoomID)
 		if err := im.relayRoom(ctx, room, rl, rep); err != nil {
 			rep.fail("relay", room.RoomID, err)
+			im.roomFailures[room.RoomID] = true
 			continue
 		}
+		delete(im.roomFailures, room.RoomID)
 		im.rooms[room.RoomID] = room.RoomID
 	}
 	return reports, rest
@@ -86,12 +95,13 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 		return err
 	}
 
-	backfilled, _, err := paginateBack(ctx, c, room.RoomID, func(ev *event.Event) bool { return ev.Type == event.StateCreate })
+	backfilled, err := backfillRoom(ctx, c, room.RoomID, r.events)
 	if err != nil {
 		return fmt.Errorf("backfill: %w", err)
 	}
 	rep.Replayed = backfilled
 
+	before := len(rep.Failures)
 	if err := r.loadJoined(ctx); err != nil {
 		return err
 	}
@@ -103,10 +113,10 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 		}
 	}
 
-	// Removing the relay's member leaves the room only on Continuwuity.
-	if _, err := r.putState(ctx, joiner, "m.room.member", rl.UserID(), map[string]string{"membership": "leave"}, 0); err != nil {
-		rep.fail("membership", rl.UserID(), err)
+	if err := failuresError(rep.Failures[before:]); err != nil {
+		return err
 	}
+
 	if pl := rl.Content(room.RoomID, "m.room.power_levels", ""); pl != nil {
 		if users, ok := pl["users"].(map[string]any); ok {
 			delete(users, rl.UserID())
@@ -121,6 +131,15 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 	if room.Public {
 		if err := publishRoom(ctx, c, room.RoomID); err != nil {
 			rep.fail("directory", room.RoomID, err)
+		}
+	}
+	if err := failuresError(rep.Failures[before:]); err != nil {
+		return err
+	}
+	// Remove the relay only after history and all room restoration succeeded.
+	if r.joined[rl.UserID()] {
+		if _, err := r.putState(ctx, joiner, "m.room.member", rl.UserID(), map[string]string{"membership": "leave"}, 0); err != nil {
+			return fmt.Errorf("remove relay member: %w", err)
 		}
 	}
 	r.st.Done = true
@@ -194,13 +213,40 @@ func paginateBack(ctx context.Context, c *mautrix.Client, roomID string, found f
 			return total, false, err
 		}
 		total += len(page.Chunk)
-		if slices.ContainsFunc(page.Chunk, found) {
+		complete := false
+		for _, ev := range page.Chunk {
+			complete = found(ev) || complete
+		}
+		if complete {
 			return total, true, nil
 		}
-		if page.End == "" || len(page.Chunk) == 0 {
+		if page.End == "" || page.End == from || len(page.Chunk) == 0 {
 			break
 		}
 		from = page.End
 	}
 	return total, false, nil
+}
+
+// backfillRoom requires both the create event and every exported timeline event.
+func backfillRoom(ctx context.Context, c *mautrix.Client, roomID string, events []json.RawMessage) (int, error) {
+	missing := make(map[string]bool, len(events))
+	for _, raw := range events {
+		ev, err := decodeEvent(raw)
+		if err != nil {
+			return 0, err
+		}
+		missing[ev.EventID] = true
+	}
+	count, complete, err := paginateBack(ctx, c, roomID, func(ev *event.Event) bool {
+		delete(missing, string(ev.ID))
+		return ev.Type == event.StateCreate
+	})
+	if err != nil {
+		return count, err
+	}
+	if !complete || len(missing) > 0 {
+		return count, fmt.Errorf("incomplete backfill: reached create event: %t, %d exported events missing", complete, len(missing))
+	}
+	return count, nil
 }

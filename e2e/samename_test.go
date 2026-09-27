@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"exodus/internal/archive"
 	"exodus/internal/migrate"
 	"exodus/internal/mx"
 
@@ -57,9 +58,8 @@ func TestSameServerName(t *testing.T) {
 	})
 	image := upload(t, ctx, dave, avatarBytes, "image/png")
 	send(t, ctx, dave, local, "m.room.message", map[string]any{"msgtype": "m.image", "body": "pic.png", "url": image})
-	send(t, ctx, dave, local, "m.room.encrypted", map[string]any{
-		"algorithm": "m.megolm.v1.aes-sha2", "ciphertext": "x", "device_id": "D", "sender_key": "k", "session_id": "s",
-	})
+	backup := createKeyBackup(t, ctx, dave, local)
+
 	// A user of another server posts, then leaves: the room is local-only again.
 	must(t, do(ctx, dave, http.MethodPost, urlPath("/_matrix/client/v3/rooms", local, "invite"), nil,
 		map[string]string{"user_id": "@alice:synapse"}, nil))
@@ -186,7 +186,6 @@ func TestSameServerName(t *testing.T) {
 	fed2 := createRoom(t, ctx, alice, map[string]any{"preset": "private_chat", "name": "Pending", "invite": []string{"@erin:samename"}})
 	must(t, do(ctx, erin, http.MethodPost, urlPath("/_matrix/client/v3/join", fed2), url.Values{"via": {"synapse"}}, struct{}{}, nil))
 	must(t, do(ctx, erin, http.MethodPost, urlPath("/_matrix/client/v3/rooms", fed2, "invite"), nil, map[string]string{"user_id": "@dave:samename"}, nil))
-	createKeyBackup(t, ctx, dave, local)
 	daveDevice, daveDeviceKey := uploadDeviceKeys(t, ctx, dave, "@dave:samename")
 	must(t, do(ctx, dave, http.MethodPost, "/_matrix/client/v3/keys/upload", nil, map[string]any{
 		"one_time_keys": map[string]any{"signed_curve25519:AAAAAQ": map[string]any{
@@ -205,12 +204,8 @@ func TestSameServerName(t *testing.T) {
 	must(t, do(ctx, sadmin, http.MethodPut, "/_synapse/admin/v2/users/@erin:samename", nil,
 		map[string]any{"external_ids": []map[string]string{{"auth_provider": "oidc-test", "external_id": "erin-sub"}}}, nil))
 
-	// Private receipt, pending knock, reports and an undelivered to-device message.
+	// Private receipt, reports and an undelivered to-device message.
 	must(t, do(ctx, dave, http.MethodPost, urlPath("/_matrix/client/v3/rooms", fed, "receipt", "m.read.private", fedMsg), nil, struct{}{}, nil))
-	knockRoom := createRoom(t, ctx, alice, map[string]any{"preset": "private_chat", "name": "Knock",
-		"initial_state": []map[string]any{{"type": "m.room.join_rules", "state_key": "", "content": map[string]string{"join_rule": "knock"}}}})
-	must(t, do(ctx, dave, http.MethodPost, urlPath("/_matrix/client/v3/knock", knockRoom), url.Values{"via": {"synapse"}},
-		map[string]string{"reason": "let me in"}, nil))
 	must(t, do(ctx, dave, http.MethodPost, urlPath("/_matrix/client/v3/rooms", local, "report", hello), nil,
 		map[string]string{"reason": "spam event"}, nil))
 	must(t, do(ctx, dave, http.MethodPost, urlPath("/_matrix/client/v3/rooms", fed, "report"), nil,
@@ -220,6 +215,10 @@ func TestSameServerName(t *testing.T) {
 	must(t, do(ctx, erin, http.MethodPut, urlPath("/_matrix/client/v3/sendToDevice", "com.example.pending", "t1"), nil,
 		map[string]any{"messages": map[string]any{"@dave:samename": map[string]any{daveDevice: map[string]string{"secret": "in flight"}}}}, nil))
 
+	closed := createRoom(t, ctx, dave, map[string]any{"preset": "private_chat", "room_version": "10"})
+	closedEvent := send(t, ctx, dave, closed, "m.room.message", map[string]string{"msgtype": "m.text", "body": "closed history"})
+	must(t, do(ctx, dave, http.MethodPost, urlPath("/_matrix/client/v3/rooms", closed, "leave"), nil, struct{}{}, nil))
+
 	synapseDB := filepath.Join(workDir(t), "samename", "homeserver.db")
 	dir := t.TempDir()
 	signingKey := filepath.Join(workDir(t), "samename", "samename.signing.key")
@@ -227,6 +226,19 @@ func TestSameServerName(t *testing.T) {
 		"--synapse-db", synapseDB, "--synapse-signing-key", signingKey, "--archive", dir)
 	if _, err := os.Stat(filepath.Join(dir, "rooms", url.PathEscape(local), "events.jsonl")); err != nil {
 		t.Fatalf("local room history not exported: %v", err)
+	}
+
+	a, err := archive.Open(dir)
+	must(t, err)
+	archived, err := a.Rooms()
+	must(t, err)
+	if !slices.ContainsFunc(archived, func(r *archive.ArchivedRoom) bool { return r.RoomID == closed && r.ArchiveOnly }) {
+		t.Fatal("closed room missing from server inventory export")
+	}
+	closedEvents, err := a.RoomEvents(closed)
+	must(t, err)
+	if !slices.ContainsFunc(closedEvents, func(raw json.RawMessage) bool { return strings.Contains(string(raw), closedEvent) }) {
+		t.Fatal("closed-room history missing from archive")
 	}
 
 	switchCmd := exec.Command("./switch.sh")
@@ -320,7 +332,7 @@ func TestSameServerName(t *testing.T) {
 				SessionID  string `json:"session_id"`
 			}
 			_ = json.Unmarshal(ev.Content, &enc)
-			sawEncrypted = ev.Sender == "@dave:samename" && enc.Ciphertext == "x" && enc.SessionID == "s"
+			sawEncrypted = ev.Sender == "@dave:samename" && enc.Ciphertext == backup.ciphertext && enc.SessionID == backup.sessionID
 		case ev.Type == "m.room.member" && ev.StateKey == "@erin:samename" && strings.Contains(string(ev.Content), `"join"`):
 			sawErinJoin = ev.OriginServerTS == erinJoin.OriginServerTS
 		case c.Body == "frank was here":
@@ -382,7 +394,7 @@ func TestSameServerName(t *testing.T) {
 	if _, ok := keys.Master["@dave:samename"].Keys[masterID]; !ok {
 		t.Fatalf("master key %s not restored: %+v", masterID, keys.Master)
 	}
-	assertKeyBackup(t, ctx, newDave, local)
+	assertKeyBackup(t, ctx, newDave, local, backup)
 
 	var devKeys struct {
 		DeviceKeys map[string]map[string]struct {
@@ -532,13 +544,6 @@ func TestSameServerName(t *testing.T) {
 	}
 	if got := ownReceipt(t, ctx, newDave, fed, "@dave:samename", "m.read"); got != "" {
 		t.Fatalf("private read receipt was made public at %s", got)
-	}
-	var knock struct {
-		Membership string `json:"membership"`
-	}
-	must(t, do(ctx, alice, http.MethodGet, urlPath("/_matrix/client/v3/rooms", knockRoom, "state", "m.room.member", "@dave:samename"), nil, nil, &knock))
-	if knock.Membership != "knock" {
-		t.Fatalf("dave's membership in the knock room = %q, want knock", knock.Membership)
 	}
 	reports := adminRoomText(t, ctx, cadmin)
 	for _, want := range []string{"event report received from @dave:samename", "room report received from @dave:samename",

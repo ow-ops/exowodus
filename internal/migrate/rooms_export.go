@@ -81,11 +81,15 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 			return fmt.Errorf("room listing: %w", err)
 		}
 	}
+	room.ArchiveOnly = e.Admin != nil
 	room.Version = "1"
 	for _, raw := range room.State {
 		ev, err := decodeEvent(raw)
 		if err != nil {
 			return err
+		}
+		if ev.Type == "m.room.member" && membership(ev) == "join" && mx.ServerName(memberTarget(ev)) == e.Archive.Manifest.ServerName {
+			room.ArchiveOnly = false
 		}
 		if ev.Type == "m.room.create" {
 			var create struct {
@@ -166,7 +170,7 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 	dir := e.Archive.RoomDir(roomID)
 	for _, mxc := range collectMXC(append(slices.Clone(room.State), events...)) {
 		srv, mediaID, err := mx.ParseMXC(mxc)
-		if err != nil || srv != server || known[mxc] {
+		if err != nil || srv != server || known[mxc] || e.quarantined[mxc] {
 			continue
 		}
 		m := archive.Media{MXC: mxc, File: mediaFile(srv, mediaID)}
@@ -175,8 +179,7 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 			return err
 		}
 		if m.ContentType, m.Filename, err = mx.Download(ctx, c, mxc, path); err != nil {
-			log.Warn("could not download media", "mxc", mxc, "err", err)
-			continue
+			return fmt.Errorf("download media %s: %w", mxc, err)
 		}
 		room.Media = append(room.Media, m)
 	}
@@ -315,4 +318,40 @@ func asSlice(v any) []string {
 		}
 	}
 	return out
+}
+
+// ExportDepartedRooms archives rooms with no joined local users.
+func (e *Exporter) ExportDepartedRooms(ctx context.Context, known map[string]bool) error {
+	if !e.AllUsers || e.Admin == nil {
+		return nil
+	}
+	q := map[string]string{"limit": "100", "order_by": "name"}
+	for {
+		var page struct {
+			Rooms []struct {
+				RoomID             string `json:"room_id"`
+				JoinedLocalMembers int    `json:"joined_local_members"`
+			} `json:"rooms"`
+			NextToken any `json:"next_token"`
+		}
+		if _, err := e.Admin.MakeRequest(ctx, http.MethodGet, adminURL(e.Admin, q, "v1", "rooms"), nil, &page); err != nil {
+			return fmt.Errorf("list departed rooms: %w", err)
+		}
+		for _, room := range page.Rooms {
+			if room.JoinedLocalMembers != 0 {
+				continue
+			}
+			if err := e.ExportRoom(ctx, room.RoomID, known, nil); err != nil {
+				return fmt.Errorf("archive departed room %s: %w", room.RoomID, err)
+			}
+		}
+		if page.NextToken == nil {
+			return nil
+		}
+		next := fmt.Sprint(page.NextToken)
+		if next == q["from"] {
+			return fmt.Errorf("room inventory pagination did not advance from %s", next)
+		}
+		q["from"] = next
+	}
 }

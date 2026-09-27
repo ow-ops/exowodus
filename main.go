@@ -95,6 +95,7 @@ func (f *sourceFlags) register(cmd *cobra.Command) {
 }
 
 type source struct {
+	allUsers   bool
 	db         *migrate.SynapseDB
 	mas        *migrate.MAS
 	masDB      *migrate.MASDB
@@ -153,7 +154,7 @@ func (f *sourceFlags) openAPI(ctx context.Context) (*source, error) {
 		if err != nil {
 			return nil, err
 		}
-		s := &source{serverName: admin.UserID.Homeserver(), admin: admin, adminID: string(admin.UserID)}
+		s := &source{allUsers: f.allUsers, serverName: admin.UserID.Homeserver(), admin: admin, adminID: string(admin.UserID)}
 		for _, u := range users {
 			if u.Deactivated {
 				s.deactivated = append(s.deactivated, u)
@@ -208,12 +209,12 @@ func (s *source) each(ctx context.Context, fn func(*migrate.Session) error) erro
 		s.single.Close(context.WithoutCancel(ctx))
 		return err
 	}
-	var failed int
+	var failures []error
 	for _, u := range s.users {
 		sess, relock, err := s.open(ctx, u)
 		if err != nil {
 			slog.Error("skipping user", "user", u.UserID, "err", err)
-			failed++
+			failures = append(failures, fmt.Errorf("%s: %w", u.UserID, err))
 			continue
 		}
 		err = fn(sess)
@@ -224,11 +225,11 @@ func (s *source) each(ctx context.Context, fn func(*migrate.Session) error) erro
 		}
 		if err != nil {
 			slog.Error("user failed", "user", sess.UserID, "err", err)
-			failed++
+			failures = append(failures, fmt.Errorf("%s: %w", sess.UserID, err))
 		}
 	}
-	if failed > 0 {
-		return fmt.Errorf("%d of %d users failed", failed, len(s.users))
+	if len(failures) > 0 {
+		return fmt.Errorf("%d of %d users failed: %w", len(failures), len(s.users), errors.Join(failures...))
 	}
 	return nil
 }
@@ -266,7 +267,7 @@ func (s *source) open(ctx context.Context, u migrate.SynapseUser) (*migrate.Sess
 }
 
 func (s *source) exporter(a *archive.Archive) *migrate.Exporter {
-	return &migrate.Exporter{Archive: a, Admin: s.admin, DB: s.db, MAS: s.mas, MASDB: s.masDB}
+	return &migrate.Exporter{AllUsers: s.allUsers, Archive: a, Admin: s.admin, DB: s.db, MAS: s.mas, MASDB: s.masDB}
 }
 
 func (s *source) Close() {
@@ -343,7 +344,7 @@ func newExportCmd() *cobra.Command {
 		Use:   "export",
 		Short: "Export accounts from the source homeserver into an archive",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) (result error) {
 			ctx := cmd.Context()
 			s, err := src.open(ctx)
 			if err != nil {
@@ -354,6 +355,10 @@ func newExportCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := a.BeginExport(); err != nil {
+				return err
+			}
+			defer func() { result = errors.Join(result, a.FinishExport(result)) }()
 			exp := s.exporter(a)
 			var users []*archive.User
 			err = s.each(ctx, func(sess *migrate.Session) error {
@@ -407,6 +412,9 @@ after replacing Synapse with Continuwuity on the same server name.`,
 			if err != nil {
 				return err
 			}
+			if err := a.CheckExport(); err != nil {
+				return err
+			}
 			users, err := a.Users()
 			if err != nil {
 				return err
@@ -436,6 +444,7 @@ after replacing Synapse with Continuwuity on the same server name.`,
 			}
 
 			defer im.Close(context.WithoutCancel(ctx))
+			var reports []*migrate.Report
 			var jobs []*migrate.UserJob
 			var failed int
 			for _, u := range users {
@@ -445,6 +454,7 @@ after replacing Synapse with Continuwuity on the same server name.`,
 				}
 				if err != nil {
 					slog.Error("user failed", "user", u.UserID, "err", err)
+					reports = append(reports, &migrate.Report{SourceUserID: u.UserID, Failures: []migrate.Failure{{Step: "prepare", Error: err.Error()}}})
 					failed++
 					continue
 				}
@@ -462,7 +472,6 @@ after replacing Synapse with Continuwuity on the same server name.`,
 			if len(rooms) > 0 {
 				roomReports = append(roomReports, im.ReplayRooms(ctx, rooms)...)
 			}
-			var reports []*migrate.Report
 			for _, job := range jobs {
 				rep, err := im.FinishUser(ctx, job, nil)
 				if ctx.Err() != nil {
@@ -470,17 +479,19 @@ after replacing Synapse with Continuwuity on the same server name.`,
 				}
 				if err != nil {
 					slog.Error("user failed", "user", job.User.UserID, "err", err)
+					job.Report.Failures = append(job.Report.Failures, migrate.Failure{Step: "finish", Error: err.Error()})
+					reports = append(reports, job.Report)
 					failed++
 					continue
 				}
 				reports = append(reports, rep)
 			}
 			printRoomSummary(cmd.OutOrStdout(), roomReports)
-			finishImport(ctx, cmd.OutOrStdout(), im, a, users, reports)
+			finishErr := finishImport(ctx, cmd.OutOrStdout(), im, a, users, reports, roomReports)
 			if failed > 0 {
-				return fmt.Errorf("%d of %d users failed", failed, len(users))
+				return errors.Join(finishErr, fmt.Errorf("%d of %d users failed", failed, len(users)))
 			}
-			return nil
+			return finishErr
 		},
 	}
 	dst.register(cmd)
@@ -557,9 +568,8 @@ over its power level, so invite-only and local-only rooms are kept.`,
 				}
 				err = errors.Join(err, derr)
 			}
-			err = errors.Join(err, exp.ExportServer(ctx))
-			finishImport(ctx, cmd.OutOrStdout(), im, a, users, reports)
-			return err
+			err = errors.Join(err, exp.ExportDepartedRooms(ctx, nil), exp.ExportServer(ctx))
+			return errors.Join(err, finishImport(ctx, cmd.OutOrStdout(), im, a, users, reports, nil))
 		},
 	}
 	src.register(cmd)
@@ -686,11 +696,37 @@ func registerAppservice(ctx context.Context, im *migrate.Importer) (unregister f
 }
 
 // Reports are filed before accounts are locked or suspended.
-func finishImport(ctx context.Context, out io.Writer, im *migrate.Importer, a *archive.Archive, users []*archive.User, reports []*migrate.Report) {
+func finishImport(ctx context.Context, out io.Writer, im *migrate.Importer, a *archive.Archive, users []*archive.User, reports []*migrate.Report, rooms []*migrate.RoomReport) error {
 	reports = retryJoins(ctx, im, users, reports)
 	notes, serverFailures := im.ImportServer(ctx)
-	failures := slices.Concat(im.RestoreInvites(ctx, users), im.RestoreKnocks(ctx, users), im.ApplyStatus(ctx, users), serverFailures)
+	failures := slices.Concat(im.RestoreInvites(ctx, users), im.RestoreKnocks(ctx, users), serverFailures)
+	if migrationFailures(reports, rooms, failures) == nil && len(reports) == len(users) {
+		failures = append(failures, im.ApplyStatus(ctx, users)...)
+	} else {
+		notes = append(notes, "Account locks, suspensions and deactivations are deferred until migration succeeds.")
+	}
 	printSummary(out, a, users, reports, failures, notes)
+	reportErr := a.WriteImportReport(struct {
+		Users    []*migrate.Report     `json:"users"`
+		Rooms    []*migrate.RoomReport `json:"rooms,omitempty"`
+		Failures []migrate.Failure     `json:"failures,omitempty"`
+		Notes    []string              `json:"notes,omitempty"`
+	}{Users: reports, Rooms: rooms, Failures: failures, Notes: notes})
+	return errors.Join(ctx.Err(), reportErr, migrationFailures(reports, rooms, failures))
+}
+
+func migrationFailures(users []*migrate.Report, rooms []*migrate.RoomReport, failures []migrate.Failure) error {
+	count := len(failures)
+	for _, r := range users {
+		count += len(r.Failures)
+	}
+	for _, r := range rooms {
+		count += len(r.Failures)
+	}
+	if count > 0 {
+		return fmt.Errorf("migration incomplete: %d unresolved failures; see import-report.json", count)
+	}
+	return nil
 }
 
 // retryJoins retries failed joins: later-migrated accounts can now invite locally.
@@ -746,9 +782,6 @@ func startRelay(ctx context.Context, a *archive.Archive, destURL string, f relay
 
 func exportRooms(ctx context.Context, exp *migrate.Exporter, users []*archive.User, member *mautrix.Client) error {
 	ids := migrate.LocalOnlyRooms(users)
-	if len(ids) == 0 {
-		return nil
-	}
 	known := map[string]bool{}
 	for _, u := range users {
 		for _, m := range u.Media {
@@ -762,12 +795,13 @@ func exportRooms(ctx context.Context, exp *migrate.Exporter, users []*archive.Us
 			errs = append(errs, fmt.Errorf("%s: %w", id, err))
 		}
 	}
+	errs = append(errs, exp.ExportDepartedRooms(ctx, known))
 	return errors.Join(errs...)
 }
 
 // needsAppservice reports whether the import must act as other users.
 func needsAppservice(users []*archive.User, rooms []*archive.ArchivedRoom, srv *archive.Server) bool {
-	if len(rooms) > 0 || (srv != nil && len(srv.Reports)+len(srv.ToDevice) > 0) {
+	if slices.ContainsFunc(rooms, func(r *archive.ArchivedRoom) bool { return !r.ArchiveOnly }) || (srv != nil && len(srv.Reports)+len(srv.ToDevice) > 0) {
 		return true
 	}
 	return slices.ContainsFunc(users, func(u *archive.User) bool { return u.CrossSigning != nil || len(u.Devices) > 0 || u.Guest })
@@ -775,6 +809,10 @@ func needsAppservice(users []*archive.User, rooms []*archive.ArchivedRoom, srv *
 
 func printRoomSummary(out io.Writer, reports []*migrate.RoomReport) {
 	for _, r := range reports {
+		if r.ArchiveOnly {
+			fmt.Fprintf(out, "room %s: retained in archive; no local members to migrate\n", r.RoomID)
+			continue
+		}
 		fmt.Fprintf(out, "room %s -> %s: %d events replayed, %d skipped, %d encrypted skipped, %d failures\n",
 			r.RoomID, r.NewRoomID, r.Replayed, r.Skipped, r.Encrypted, len(r.Failures))
 		for _, f := range r.Failures {

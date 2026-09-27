@@ -34,9 +34,24 @@ key = "/certs/tls.key"
 dual_protocol = true
 EOF
 
-docker run -d --name "$name" --network exodus-e2e --network-alias "$server" -p "127.0.0.1:$port:8008" \
+docker run -d --name "$name" --network exodus-e2e --network-alias "${NETWORK_ALIAS:-$server}" -p "127.0.0.1:$port:8008" \
 	--add-host host.docker.internal:host-gateway \
 	-e CONTINUWUITY_CONFIG=/etc/continuwuity.toml \
 	-v "$dir/continuwuity.toml:/etc/continuwuity.toml:ro" \
 	-v "$dir/data:/data" -v "$WORK/certs:/certs:ro" "$CONTINUWUITY_IMAGE" >/dev/null
 "$E2E/wait.sh" "$port"
+# OIDC disables password login; this mode restarts an existing fixture.
+if [ "${OIDC:-}" = 1 ]; then
+	exit 0
+fi
+# The listener starts before admin_execute has created the test account.
+for _ in {1..100}; do
+	if curl -fsS -o /dev/null -H 'Content-Type: application/json' \
+		-d '{"type":"m.login.password","identifier":{"type":"m.id.user","user":"cadmin"},"password":"cadmin-password","device_id":"e2e-readiness"}' \
+		"http://127.0.0.1:$port/_matrix/client/v3/login" 2>/dev/null; then
+		exit 0
+	fi
+	sleep 0.2
+done
+echo "Continuwuity admin account did not become ready" >&2
+exit 1

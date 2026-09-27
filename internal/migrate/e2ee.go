@@ -43,8 +43,8 @@ func exportKeyBackup(ctx context.Context, c *mautrix.Client) (*archive.KeyBackup
 	return kb, nil
 }
 
-// exportKeys leaves out the exporting session's device.
-func exportKeys(ctx context.Context, c *mautrix.Client, userID string) (*archive.CrossSigning, []archive.Device, error) {
+// exportKeys excludes only devices created for the export session.
+func exportKeys(ctx context.Context, c *mautrix.Client, userID string, ephemeral bool) (*archive.CrossSigning, []archive.Device, error) {
 	var resp struct {
 		Devices     map[string]map[string]json.RawMessage `json:"device_keys"`
 		Master      map[string]json.RawMessage            `json:"master_keys"`
@@ -70,7 +70,7 @@ func exportKeys(ctx context.Context, c *mautrix.Client, userID string) (*archive
 	}
 	var devices []archive.Device
 	for _, d := range list.Devices {
-		if d.DeviceID == who.DeviceID {
+		if ephemeral && d.DeviceID == who.DeviceID {
 			continue
 		}
 		deviceID := string(d.DeviceID)

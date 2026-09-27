@@ -32,11 +32,16 @@ go build -o exodus .
 
 Good to know:
 
-- **Every command is safe to re-run.** The archive records what was done.
-  Per-user reports are written to `exodus-archive/users/*/import-report.json`.
+- **Retry failed steps with the same archive and destination.** Commands exit
+  nonzero on failure. Check
+  `exodus-archive/import-report.json` and the per-user reports under
+  `exodus-archive/users/*/import-report.json` before cutover.
+- **Incomplete exports cannot be imported.** Check
+  `exodus-archive/export-report.json` and rerun `export`. Media download
+  failures also fail the export.
 - **The archive is sensitive.** It holds account data, encrypted key backups,
   password hashes, access tokens and generated passwords. Keep it safe, and
-  delete it once you no longer run the proxy.
+  retain it while you run the proxy or need archive-only room history.
 - **Secrets can be passed as environment variables** instead of flags:
 
   | Variable                         | Flag                        |
@@ -58,7 +63,12 @@ Good to know:
 
 ### Replacing Synapse on the same server name
 
-This keeps sessions, devices and encryption intact.
+This restores sessions, devices and encryption on the same server name.
+Keep a source database and media backup. Before the final export, stop client,
+bridge and federation writes to Synapse while leaving its APIs available to
+exodus. Export reads APIs and database tables separately; it is not a consistent
+snapshot while the source is changing. Route clients to the destination only
+after import completes without failures.
 
 ```sh
 exodus export --from https://example.org --from-admin-token "$ADMIN" --all-users \
@@ -198,8 +208,30 @@ Requirements:
   and `--relay-tls-key`. Continuwuity only accepts a self-signed one with
   `allow_invalid_tls_certificates_yes_i_know_what_the_fuck_i_am_doing_with_this_and_i_know_this_is_insecure`.
 
+The relay stays in the room until all exported events are backfilled and room
+restoration succeeds. Incomplete backfill fails the import; retry with the same
+archive and relay configuration.
+
 Rooms with a version before 3, or whose event IDs cannot be recomputed from the
 exported events, fall back to replay.
+
+### Rooms without local members
+
+`--all-users` also exports retained history from rooms that all local users
+have left. These rooms are marked `archive_only` in `rooms/*/room.json` and
+stay in the archive. Import does not rejoin them or publish their aliases.
+Subset and single-account exports omit this inventory.
+
+### Retrying an incomplete migration
+
+Fix the reported cause and rerun with the same archive. Failed event sends,
+device-key uploads, pushers and room restoration are not marked complete.
+Power transfers that need the old account require rerunning `migrate` while the
+source is still online. Account locks, suspensions and deactivations are deferred
+until the preceding migration steps succeed.
+
+Older archives may have marked failed steps complete. Upgrading does not repair
+those flags or recover skipped data. Compare against the source backup.
 
 ## What is migrated
 
@@ -251,7 +283,8 @@ recreated room.
   join rules are restored.
 - **Federated knocks.** Continuwuity currently fails while processing the knock
   state Synapse returns, after the knock has reached the room. The import
-  reports the error, and the knock stays pending on the room's side.
+  reports the error and exits nonzero; the knock stays pending on the room's
+  side.
 - **Master keys without signatures.** Continuwuity only records other users'
   signatures on master keys that have a `signatures` field, so exodus adds one
   before uploading.
@@ -265,7 +298,10 @@ go test ./...                                              # unit tests
 
 The end-to-end suite covers same-server replacement, a new server name (with
 and without the relay), single users, MAS-backed Synapse, bridges and the
-proxy.
+proxy. Encryption tests use the original recovery key to restore the backup
+and decrypt a Megolm message after relay, replay and new-server migration.
+Unit tests inject failures and verify retries for events, keys, room data and
+pushers.
 
 ## License
 

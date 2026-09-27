@@ -73,11 +73,22 @@ func (im *Importer) ImportServer(ctx context.Context) ([]string, []Failure) {
 		}
 		return nil, []Failure{{Step: "server", Error: "registration tokens, blocked rooms, reports and to-device messages require --to-admin-token"}}
 	}
+	rooms, err := im.Archive.Rooms()
+	if err != nil {
+		return nil, []Failure{{Step: "server", Error: err.Error()}}
+	}
+	archiveOnly := map[string]bool{}
+	for _, room := range rooms {
+		archiveOnly[room.RoomID] = room.ArchiveOnly
+	}
 	var notes []string
 	var failures []Failure
 	server := im.Admin.ServerName()
 	sameServer := server == im.Archive.Manifest.ServerName
 	for _, alias := range slices.Sorted(maps.Keys(srv.Aliases)) {
+		if archiveOnly[srv.Aliases[alias]] {
+			continue
+		}
 		target := alias
 		if !sameServer {
 			target = mx.WithServer(alias, server)
