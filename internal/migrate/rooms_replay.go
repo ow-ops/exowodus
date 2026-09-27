@@ -24,14 +24,15 @@ import (
 )
 
 type RoomReport struct {
-	RoomID     string    `json:"room_id"`
-	NewRoomID  string    `json:"new_room_id"`
-	KeptRoomID bool      `json:"kept_room_id"`
-	Replayed   int       `json:"replayed"`
-	Skipped    int       `json:"skipped"`
-	Encrypted  int       `json:"encrypted_skipped"`
-	Failures   []Failure `json:"failures,omitempty"`
-	Warnings   []string  `json:"warnings,omitempty"`
+	ArchiveOnly bool      `json:"archive_only,omitempty"`
+	RoomID      string    `json:"room_id"`
+	NewRoomID   string    `json:"new_room_id"`
+	KeptRoomID  bool      `json:"kept_room_id"`
+	Replayed    int       `json:"replayed"`
+	Skipped     int       `json:"skipped"`
+	Encrypted   int       `json:"encrypted_skipped"`
+	Failures    []Failure `json:"failures,omitempty"`
+	Warnings    []string  `json:"warnings,omitempty"`
 }
 
 func (r *RoomReport) fail(step, target string, err error) {
@@ -53,9 +54,8 @@ type replay struct {
 	owner     string
 	botNeeded bool
 	// skip holds timeline indexes createRoom already recreates.
-	skip       map[int]bool
-	joined     map[string]bool
-	unjoinable map[string]bool
+	skip   map[int]bool
+	joined map[string]bool
 }
 
 func (im *Importer) newReplay(ctx context.Context, room *archive.ArchivedRoom, rep *RoomReport) (*replay, error) {
@@ -73,7 +73,7 @@ func (im *Importer) newReplay(ctx context.Context, room *archive.ArchivedRoom, r
 	r := &replay{
 		im: im, room: room, st: st, rep: rep, events: events,
 		final: map[string]roomEvent{}, ghosts: map[string]bool{}, puppets: map[string]bool{}, skip: map[int]bool{},
-		joined: map[string]bool{}, unjoinable: map[string]bool{},
+		joined: map[string]bool{},
 	}
 	for _, g := range room.Ghosts {
 		r.ghosts[g] = true
@@ -294,8 +294,7 @@ func (r *replay) Create(ctx context.Context) error {
 		}
 		mxc, err := mx.Upload(ctx, r.as(r.im.Appservice.Bot), filepath.Join(r.im.Archive.RoomDir(r.room.RoomID), m.File), m.ContentType, m.Filename)
 		if err != nil {
-			r.rep.fail("media", m.MXC, err)
-			continue
+			return fmt.Errorf("upload media %s: %w", m.MXC, err)
 		}
 		r.st.Media[m.MXC] = mxc
 	}
@@ -315,7 +314,7 @@ func (r *replay) Create(ctx context.Context) error {
 	for i := r.st.Replayed; i < len(r.events); i++ {
 		if !r.skip[i] {
 			if err := r.replayEvent(ctx, r.events[i]); err != nil {
-				return err
+				return errors.Join(err, r.save())
 			}
 		}
 		r.st.Replayed = i + 1
@@ -412,11 +411,16 @@ func (r *replay) replayEvent(ctx context.Context, raw json.RawMessage) error {
 	if _, done := r.st.Events[ev.EventID]; done {
 		return nil
 	}
+	before := len(r.rep.Failures)
 	if ev.StateKey != nil {
 		r.replayState(ctx, ev)
-		return nil
+	} else {
+		r.replayTimeline(ctx, ev)
 	}
-	r.replayTimeline(ctx, ev)
+	if err := failuresError(r.rep.Failures[before:]); err != nil {
+		delete(r.st.Events, ev.EventID)
+		return err
+	}
 	return nil
 }
 
@@ -531,13 +535,8 @@ func (r *replay) replayTimeline(ctx context.Context, ev roomEvent) {
 		r.rep.Skipped++
 		return
 	}
-	if r.unjoinable[sender] {
-		r.rep.Skipped++
-		return
-	}
 	if err := r.ensureJoined(ctx, sender); err != nil {
 		r.rep.fail("join", sender, err)
-		r.unjoinable[sender] = true
 		r.rep.Skipped++
 		return
 	}
@@ -595,6 +594,7 @@ func (r *replay) Finalize(ctx context.Context) error {
 	if r.st.Done {
 		return nil
 	}
+	before := len(r.rep.Failures)
 	var events []roomEvent
 	c := r.as(r.owner)
 	if _, err := c.MakeRequest(ctx, http.MethodGet, c.BuildClientURL("v3", "rooms", r.st.NewRoomID, "state"), nil, &events); err != nil {
@@ -612,7 +612,7 @@ func (r *replay) Finalize(ctx context.Context) error {
 		ev := r.final[k]
 		content, err := decodeContent(ev.Content)
 		if err != nil {
-			continue
+			return fmt.Errorf("decode final state %s: %w", ev.Type, err)
 		}
 		switch ev.Type {
 		case "m.room.create":
@@ -641,16 +641,25 @@ func (r *replay) Finalize(ctx context.Context) error {
 			r.rep.fail("directory", r.st.NewRoomID, err)
 		}
 	}
+	if err := failuresError(r.rep.Failures[before:]); err != nil {
+		return err
+	}
 	if finalPL != nil && !jsonEqual(current[relay.StateKey("m.room.power_levels", "")], finalPL) {
 		if _, err := r.putState(ctx, r.owner, "m.room.power_levels", "", finalPL, 0); err != nil {
 			r.rep.fail("state", "m.room.power_levels", err)
 		}
+	}
+	if err := failuresError(r.rep.Failures[before:]); err != nil {
+		return err
 	}
 	bot := r.im.Appservice.Bot
 	if r.joined[bot] && r.owner != bot {
 		if _, err := r.putState(ctx, bot, "m.room.member", bot, map[string]string{"membership": "leave"}, 0); err != nil {
 			r.rep.fail("membership", bot, err)
 		}
+	}
+	if err := failuresError(r.rep.Failures[before:]); err != nil {
+		return err
 	}
 	r.st.Done = true
 	return r.save()
@@ -673,7 +682,9 @@ func (r *replay) finalizeMember(ctx context.Context, target string, content map[
 	case "leave":
 		if r.joined[key] {
 			_, err = r.putState(ctx, key, "m.room.member", key, map[string]string{"membership": "leave"}, 0)
-			r.joined[key] = false
+			if err == nil {
+				r.joined[key] = false
+			}
 		}
 	default:
 		_, err = r.putState(ctx, r.owner, "m.room.member", key, content, 0)
@@ -694,9 +705,16 @@ func (im *Importer) ReplayRooms(ctx context.Context, rooms []*archive.ArchivedRo
 	if im.rooms == nil {
 		im.rooms = map[string]string{}
 	}
+	if im.roomFailures == nil {
+		im.roomFailures = map[string]bool{}
+	}
 	var reports []*RoomReport
 	var replays []*replay
 	for _, room := range rooms {
+		if room.ArchiveOnly {
+			reports = append(reports, &RoomReport{RoomID: room.RoomID, ArchiveOnly: true})
+			continue
+		}
 		rep := &RoomReport{RoomID: room.RoomID}
 		reports = append(reports, rep)
 		r, err := im.newReplay(ctx, room, rep)
@@ -706,6 +724,7 @@ func (im *Importer) ReplayRooms(ctx context.Context, rooms []*archive.ArchivedRo
 		}
 		if err != nil {
 			rep.fail("replay", room.RoomID, err)
+			im.roomFailures[room.RoomID] = true
 			continue
 		}
 		replays = append(replays, r)
@@ -720,6 +739,9 @@ func (im *Importer) ReplayRooms(ctx context.Context, rooms []*archive.ArchivedRo
 	for _, r := range replays {
 		if err := r.Finalize(ctx); err != nil {
 			r.rep.fail("finalize", r.room.RoomID, err)
+			im.roomFailures[r.room.RoomID] = true
+		} else {
+			delete(im.roomFailures, r.room.RoomID)
 		}
 		im.eventMaps[r.room.RoomID] = r.st.Events
 		for _, g := range r.room.Ghosts {

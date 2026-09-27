@@ -38,9 +38,10 @@ type Importer struct {
 	Appservice *Appservice
 	Bridges    []*Bridge
 
-	sessions map[string]destAccount
-	media    map[string]string
-	rooms    map[string]string
+	sessions     map[string]destAccount
+	media        map[string]string
+	rooms        map[string]string
+	roomFailures map[string]bool
 	// oldSessions and pending are loaded lazily.
 	oldSessions map[string]archive.Session
 	pending     map[string]archive.PendingPassword
@@ -195,8 +196,9 @@ func (im *Importer) PrepareUser(ctx context.Context, u *archive.User) (*UserJob,
 				return nil, err
 			}
 			if secrets != nil && len(secrets.Pushers) > 0 && !state.Pushers {
+				before := len(rep.Failures)
 				im.importPushers(ctx, job, secrets.Pushers)
-				state.Pushers = true
+				state.Pushers = len(rep.Failures) == before
 			}
 		}
 	}
@@ -244,10 +246,18 @@ func (im *Importer) importDevices(ctx context.Context, job *UserJob, secrets *ar
 		if job.state.Devices[d.ID] {
 			continue
 		}
-		token, err := im.Appservice.Login(ctx, job.acct.id, d.ID, d.DisplayName)
-		if err != nil {
-			job.Report.fail("device", d.ID, err)
-			continue
+		token := job.state.DeviceTokens[d.ID]
+		if token == "" {
+			var err error
+			token, err = im.Appservice.Login(ctx, job.acct.id, d.ID, d.DisplayName)
+			if err != nil {
+				job.Report.fail("device", d.ID, err)
+				continue
+			}
+			job.state.DeviceTokens[d.ID] = token
+			if err := job.save(im.Archive); err != nil {
+				return err
+			}
 		}
 		body := map[string]any{}
 		if len(d.Keys) > 0 {
@@ -266,6 +276,7 @@ func (im *Importer) importDevices(ctx context.Context, job *UserJob, secrets *ar
 			c := mx.WithToken(im.Dest, token)
 			if _, err := c.MakeRequest(ctx, http.MethodPost, c.BuildClientURL("v3", "keys", "upload"), body, nil); err != nil {
 				job.Report.fail("device_keys", d.ID, err)
+				continue
 			}
 		}
 		if secrets != nil {
@@ -345,6 +356,11 @@ func (im *Importer) FinishUser(ctx context.Context, job *UserJob, src *Session) 
 		im.members = map[string][]destAccount{}
 	}
 	for _, r := range u.Rooms {
+		if im.roomFailures[r.RoomID] {
+			rep.fail("room", r.RoomID, errors.New("room history or state restoration is incomplete"))
+			continue
+		}
+		before := len(rep.Failures)
 		if newID, ok := im.rooms[r.RoomID]; ok {
 			// Replayed room: membership was restored by FinalizeRoom.
 			if !state.Rooms[r.RoomID] {
@@ -354,7 +370,7 @@ func (im *Importer) FinishUser(ctx context.Context, job *UserJob, src *Session) 
 					}
 				}
 				im.restoreReadMarker(ctx, acct, r, newID, rep)
-				state.Rooms[r.RoomID] = true
+				state.Rooms[r.RoomID] = len(rep.Failures) == before
 				if err := save(); err != nil {
 					return nil, err
 				}
@@ -363,12 +379,27 @@ func (im *Importer) FinishUser(ctx context.Context, job *UserJob, src *Session) 
 			continue
 		}
 		if !state.Rooms[r.RoomID] {
+			if src != nil && !sameServer {
+				state.PowerPending[r.RoomID] = true
+				if err := save(); err != nil {
+					return nil, err
+				}
+			}
 			if err := im.importRoom(ctx, acct, u.UserID, r, src, sameServer, rep); err != nil {
 				rep.fail("join", r.RoomID, err)
 				continue
 			}
+			if state.PowerPending[r.RoomID] {
+				if src == nil {
+					rep.fail("power_levels", r.RoomID, errors.New("rerun migrate with the source online to finish power transfer"))
+				} else if err := transferPower(ctx, src.Client, r.RoomID, u.UserID, acct.id); err != nil {
+					rep.fail("power_levels", r.RoomID, err)
+				} else {
+					delete(state.PowerPending, r.RoomID)
+				}
+			}
 			im.restoreRoomDetails(ctx, acct, u, r, sameServer, rep)
-			state.Rooms[r.RoomID] = true
+			state.Rooms[r.RoomID] = len(rep.Failures) == before
 			if err := save(); err != nil {
 				return nil, err
 			}
@@ -481,7 +512,10 @@ func (im *Importer) restoreRoomDetails(ctx context.Context, acct destAccount, u 
 }
 
 func (im *Importer) importPushers(ctx context.Context, job *UserJob, pushers []archive.Pusher) {
-	tokens := map[string]string{}
+	tokens := maps.Clone(job.state.DeviceTokens)
+	if tokens == nil {
+		tokens = map[string]string{}
+	}
 	for _, s := range im.oldSessions {
 		if s.UserID == job.acct.id {
 			tokens[s.DeviceID] = s.Token
@@ -903,12 +937,6 @@ func (im *Importer) importRoom(ctx context.Context, acct destAccount, srcID stri
 		return err
 	}
 
-	if live {
-		if err := transferPower(ctx, src.Client, r.RoomID, srcID, destID); err != nil {
-			rep.fail("power_levels", r.RoomID, err)
-		}
-	}
-
 	for typ, content := range r.AccountData {
 		if err := setRoomAccountData(ctx, dest, r.RoomID, typ, content); err != nil {
 			rep.fail("room_account_data", r.RoomID+" "+typ, err)
@@ -1000,4 +1028,12 @@ func writeReport(dir string, rep *Report) error {
 
 func AdminHint(destID string) string {
 	return "!admin users make-user-admin " + destID
+}
+
+func failuresError(failures []Failure) error {
+	errs := make([]error, 0, len(failures))
+	for _, f := range failures {
+		errs = append(errs, fmt.Errorf("%s %s: %s", f.Step, f.Target, f.Error))
+	}
+	return errors.Join(errs...)
 }

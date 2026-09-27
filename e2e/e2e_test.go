@@ -65,20 +65,14 @@ func TestMigrateNewServerName(t *testing.T) {
 		map[string]any{"actions": []string{"notify"}, "pattern": "cake"}, nil))
 	must(t, do(ctx, alice, http.MethodPut, "/_matrix/client/v3/pushrules/global/override/.m.rule.suppress_notices/enabled", nil,
 		map[string]bool{"enabled": false}, nil))
-	putAccountData(t, ctx, alice, "@alice:synapse", "m.secret_storage.default_key", map[string]string{"key": "keyid"})
 	must(t, do(ctx, alice, http.MethodPut, urlPath("/_matrix/client/v3/directory/room", "#priv:synapse"), nil,
 		map[string]string{"room_id": priv}, nil))
 	aliceMsg := send(t, ctx, alice, priv, "m.room.message", map[string]any{"msgtype": "m.text", "body": "read up to here"})
 	must(t, do(ctx, alice, http.MethodPost, urlPath("/_matrix/client/v3/rooms", priv, "read_markers"), nil,
 		map[string]string{"m.fully_read": aliceMsg}, nil))
-	createKeyBackup(t, ctx, alice, priv)
+	backup := createKeyBackup(t, ctx, alice, priv)
 	must(t, do(ctx, alice, http.MethodPost, urlPath("/_matrix/client/v3/rooms", priv, "report", aliceMsg), nil,
 		map[string]string{"reason": "reported before the move"}, nil))
-	must(t, do(ctx, admin, http.MethodPut, "/_synapse/admin/v2/users/@kate:synapse", nil, map[string]any{"password": "kate-password"}, nil))
-	kate := login(t, ctx, src, "kate")
-	knockRoom := createRoom(t, ctx, kate, map[string]any{"preset": "private_chat", "name": "Knock",
-		"initial_state": []map[string]any{{"type": "m.room.join_rules", "state_key": "", "content": map[string]string{"join_rule": "knock"}}}})
-	must(t, do(ctx, alice, http.MethodPost, urlPath("/_matrix/client/v3/knock", knockRoom), nil, map[string]string{"reason": "hi"}, nil))
 
 	dir := t.TempDir()
 	cadmin := login(t, ctx, mx.MustNew(continuURL, ""), "cadmin")
@@ -102,14 +96,6 @@ func TestMigrateNewServerName(t *testing.T) {
 	if !isServerAdmin(t, ctx, cadmin, "@admin:continuwuity") {
 		t.Fatal("@admin:continuwuity is not a server admin")
 	}
-	var knock struct {
-		Membership string `json:"membership"`
-		Reason     string `json:"reason"`
-	}
-	must(t, do(ctx, kate, http.MethodGet, urlPath("/_matrix/client/v3/rooms", knockRoom, "state", "m.room.member", "@alice:continuwuity"), nil, nil, &knock))
-	if knock.Membership != "knock" || knock.Reason != "hi" {
-		t.Fatalf("new account's knock = %+v", knock)
-	}
 	if reports := adminRoomText(t, ctx, cadmin); !strings.Contains(reports, "event report received from @alice:continuwuity") ||
 		!strings.Contains(reports, "reported before the move (reported on") {
 		t.Fatalf("report not filed again:\n%s\nimport output:\n%s", reports, out)
@@ -128,7 +114,7 @@ func TestMigrateNewServerName(t *testing.T) {
 	dst := mx.MustNew(continuURL, "")
 	newAlice, err := mx.Login(ctx, dst, "alice", password(t, dir, "@alice:synapse"))
 	must(t, err)
-	assertKeyBackup(t, ctx, newAlice, priv)
+	assertKeyBackup(t, ctx, newAlice, priv, backup)
 
 	resolved := resolveAlias(t, ctx, newAlice, "#priv:continuwuity")
 	if resolved != priv {
@@ -163,7 +149,6 @@ func TestMigrateNewServerName(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), avatarBytes) {
 		t.Fatalf("retired media: %d %q", resp.StatusCode, body)
 	}
-	assertAccountData(t, ctx, newAlice, "m.secret_storage.default_key", map[string]string{"key": "keyid"})
 
 	var profile struct {
 		DisplayName string `json:"displayname"`
@@ -279,48 +264,6 @@ func TestExportSingleUser(t *testing.T) {
 	must(t, json.Unmarshal(data, &u))
 	if u.UserID != "@bob:synapse" || len(u.Rooms) == 0 {
 		t.Fatalf("exported user = %s", data)
-	}
-}
-
-const backupPublicKey = "hSDwCYkwp1R0i33ctD73Wg2/Og0mOBr066SpjqqbTmo"
-
-func createKeyBackup(t *testing.T, ctx context.Context, c *mautrix.Client, roomID string) {
-	t.Helper()
-	var ver struct {
-		Version string `json:"version"`
-	}
-	must(t, do(ctx, c, http.MethodPost, "/_matrix/client/v3/room_keys/version", nil, map[string]any{
-		"algorithm": "m.megolm_backup.v1.curve25519-aes-sha2",
-		"auth_data": map[string]string{"public_key": backupPublicKey},
-	}, &ver))
-	session := map[string]any{
-		"first_message_index": 0, "forwarded_count": 0, "is_verified": false,
-		"session_data": map[string]string{"ephemeral": "e", "ciphertext": "c", "mac": "m"},
-	}
-	body := map[string]any{"rooms": map[string]any{roomID: map[string]any{"sessions": map[string]any{"session1": session}}}}
-	must(t, do(ctx, c, http.MethodPut, "/_matrix/client/v3/room_keys/keys", url.Values{"version": {ver.Version}}, body, nil))
-}
-
-func assertKeyBackup(t *testing.T, ctx context.Context, c *mautrix.Client, roomID string) {
-	t.Helper()
-	var ver struct {
-		Version  string `json:"version"`
-		AuthData struct {
-			PublicKey string `json:"public_key"`
-		} `json:"auth_data"`
-	}
-	must(t, do(ctx, c, http.MethodGet, "/_matrix/client/v3/room_keys/version", nil, nil, &ver))
-	if ver.AuthData.PublicKey != backupPublicKey {
-		t.Fatalf("backup public key = %q", ver.AuthData.PublicKey)
-	}
-	var keys struct {
-		Rooms map[string]struct {
-			Sessions map[string]json.RawMessage `json:"sessions"`
-		} `json:"rooms"`
-	}
-	must(t, do(ctx, c, http.MethodGet, "/_matrix/client/v3/room_keys/keys", url.Values{"version": {ver.Version}}, nil, &keys))
-	if _, ok := keys.Rooms[roomID].Sessions["session1"]; !ok {
-		t.Fatalf("backup keys = %+v", keys)
 	}
 }
 

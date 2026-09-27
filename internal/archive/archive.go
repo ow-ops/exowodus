@@ -123,13 +123,14 @@ type KeyBackup struct {
 	Rooms     map[string]json.RawMessage `json:"rooms"`
 }
 
-// ArchivedRoom is a room no other server is in, replayed on import.
+// ArchivedRoom holds exported history and state. ArchiveOnly rooms stay offline.
 type ArchivedRoom struct {
-	RoomID  string            `json:"room_id"`
-	Version string            `json:"room_version"`
-	Public  bool              `json:"public"`
-	State   []json.RawMessage `json:"state"`
-	Media   []Media           `json:"media"`
+	ArchiveOnly bool              `json:"archive_only,omitempty"`
+	RoomID      string            `json:"room_id"`
+	Version     string            `json:"room_version"`
+	Public      bool              `json:"public"`
+	State       []json.RawMessage `json:"state"`
+	Media       []Media           `json:"media"`
 	// Set when other servers were ever in the room: they may reject the recreated one.
 	RemoteParticipants bool `json:"remote_participants"`
 	// Unmigrated local senders, recreated for the replay then deactivated.
@@ -188,21 +189,23 @@ type Media struct {
 
 // ImportState records progress so an interrupted import can resume.
 type ImportState struct {
-	DestUserID string            `json:"dest_user_id"`
-	Media      map[string]string `json:"media"`
-	Rooms      map[string]bool   `json:"rooms"`
-	KeyBackup  string            `json:"key_backup_version,omitempty"`
-	KeysDone   bool              `json:"key_backup_done,omitempty"`
-	Signing    bool              `json:"cross_signing_done,omitempty"`
-	Admin      bool              `json:"admin_done,omitempty"`
-	Devices    map[string]bool   `json:"devices,omitempty"`
-	Dehydrated bool              `json:"dehydrated_done,omitempty"`
-	SSO        bool              `json:"sso_done,omitempty"`
-	Pushers    bool              `json:"pushers_done,omitempty"`
-	Email      bool              `json:"email_done,omitempty"`
-	Status     bool              `json:"status_done,omitempty"`
-	Verified   bool              `json:"verified_done,omitempty"`
-	Knocks     map[string]bool   `json:"knocks_done,omitempty"`
+	DestUserID   string            `json:"dest_user_id"`
+	Media        map[string]string `json:"media"`
+	Rooms        map[string]bool   `json:"rooms"`
+	KeyBackup    string            `json:"key_backup_version,omitempty"`
+	KeysDone     bool              `json:"key_backup_done,omitempty"`
+	Signing      bool              `json:"cross_signing_done,omitempty"`
+	Admin        bool              `json:"admin_done,omitempty"`
+	Devices      map[string]bool   `json:"devices,omitempty"`
+	DeviceTokens map[string]string `json:"device_tokens,omitempty"`
+	PowerPending map[string]bool   `json:"power_pending,omitempty"`
+	Dehydrated   bool              `json:"dehydrated_done,omitempty"`
+	SSO          bool              `json:"sso_done,omitempty"`
+	Pushers      bool              `json:"pushers_done,omitempty"`
+	Email        bool              `json:"email_done,omitempty"`
+	Status       bool              `json:"status_done,omitempty"`
+	Verified     bool              `json:"verified_done,omitempty"`
+	Knocks       map[string]bool   `json:"knocks_done,omitempty"`
 }
 
 type Credential struct {
@@ -284,6 +287,12 @@ func (a *Archive) ReadImportState(userID string) (*ImportState, error) {
 	}
 	if s.Rooms == nil {
 		s.Rooms = map[string]bool{}
+	}
+	if s.DeviceTokens == nil {
+		s.DeviceTokens = map[string]string{}
+	}
+	if s.PowerPending == nil {
+		s.PowerPending = map[string]bool{}
 	}
 	if s.Devices == nil {
 		s.Devices = map[string]bool{}
@@ -624,4 +633,41 @@ func writeJSON(path string, v any) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// ExportReport records whether the last export finished successfully.
+type ExportReport struct {
+	Complete bool   `json:"complete"`
+	Error    string `json:"error,omitempty"`
+}
+
+func (a *Archive) BeginExport() error {
+	return writeJSON(filepath.Join(a.Dir, "export-report.json"), ExportReport{})
+}
+
+func (a *Archive) FinishExport(err error) error {
+	r := ExportReport{Complete: err == nil}
+	if err != nil {
+		r.Error = err.Error()
+	}
+	return writeJSON(filepath.Join(a.Dir, "export-report.json"), r)
+}
+
+func (a *Archive) CheckExport() error {
+	var r ExportReport
+	err := readJSON(filepath.Join(a.Dir, "export-report.json"), &r)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil // Archives created before export reports were introduced.
+	}
+	if err != nil {
+		return err
+	}
+	if !r.Complete {
+		return fmt.Errorf("archive export is incomplete; rerun export before importing: %s", r.Error)
+	}
+	return nil
+}
+
+func (a *Archive) WriteImportReport(report any) error {
+	return writeJSON(filepath.Join(a.Dir, "import-report.json"), report)
 }

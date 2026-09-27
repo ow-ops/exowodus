@@ -36,7 +36,9 @@ const syncFilter = `{
 }`
 
 type Exporter struct {
-	Archive *archive.Archive
+	quarantined map[string]bool
+	AllUsers    bool
+	Archive     *archive.Archive
 	// Optional. Without it, the avatar is the only media exported.
 	Admin *mautrix.Client
 	DB    *SynapseDB
@@ -157,13 +159,13 @@ func (e *Exporter) ExportUser(ctx context.Context, s *Session) (*archive.User, e
 		}
 		var roomMembers []string
 		if room.Via, roomMembers, err = viaServers(ctx, s.Client, roomID, server); err != nil {
-			log.Warn("could not list room members", "room", roomID, "err", err)
+			return nil, fmt.Errorf("room %s members: %w", roomID, err)
 		}
 		for _, m := range roomMembers {
 			members[m] = true
 		}
 		if err := s.optional(exportRoomListing(ctx, s, &room, server)); err != nil {
-			log.Warn("could not read room details", "room", roomID, "err", err)
+			return nil, fmt.Errorf("room %s details: %w", roomID, err)
 		}
 		u.Rooms = append(u.Rooms, room)
 	}
@@ -172,7 +174,7 @@ func (e *Exporter) ExportUser(ctx context.Context, s *Session) (*archive.User, e
 		return nil, err
 	}
 
-	if u.CrossSigning, u.Devices, err = exportKeys(ctx, s.Client, s.UserID); s.optional(err) != nil {
+	if u.CrossSigning, u.Devices, err = exportKeys(ctx, s.Client, s.UserID, s.close != nil); s.optional(err) != nil {
 		return nil, fmt.Errorf("keys: %w", err)
 	}
 	if u.Dehydrated, err = exportDehydrated(ctx, s.Client, s.UserID); s.optional(err) != nil {
@@ -310,6 +312,10 @@ func (e *Exporter) exportMedia(ctx context.Context, s *Session, avatar string) (
 		server := mx.ServerName(s.UserID)
 		for _, m := range list {
 			if m.QuarantinedBy != nil {
+				if e.quarantined == nil {
+					e.quarantined = map[string]bool{}
+				}
+				e.quarantined["mxc://"+server+"/"+m.MediaID] = true
 				continue
 			}
 			am := archive.Media{MXC: "mxc://" + server + "/" + m.MediaID, ContentType: m.MediaType}
@@ -319,7 +325,7 @@ func (e *Exporter) exportMedia(ctx context.Context, s *Session, avatar string) (
 			wanted = append(wanted, am)
 		}
 	}
-	if avatar != "" && !slices.ContainsFunc(wanted, func(m archive.Media) bool { return m.MXC == avatar }) {
+	if avatar != "" && !e.quarantined[avatar] && !slices.ContainsFunc(wanted, func(m archive.Media) bool { return m.MXC == avatar }) {
 		wanted = append(wanted, archive.Media{MXC: avatar})
 	}
 
@@ -330,8 +336,7 @@ func (e *Exporter) exportMedia(ctx context.Context, s *Session, avatar string) (
 	for _, m := range wanted {
 		server, mediaID, err := mx.ParseMXC(m.MXC)
 		if err != nil {
-			log.Warn("skipping media", "err", err)
-			continue
+			return nil, fmt.Errorf("media %s: %w", m.MXC, err)
 		}
 		m.File = mediaFile(server, mediaID)
 		path := filepath.Join(dir, m.File)
@@ -346,8 +351,7 @@ func (e *Exporter) exportMedia(ctx context.Context, s *Session, avatar string) (
 		}
 		ct, name, err := mx.Download(ctx, s.Client, m.MXC, path)
 		if err != nil {
-			log.Warn("could not download media", "mxc", m.MXC, "err", err)
-			continue
+			return nil, fmt.Errorf("download media %s: %w", m.MXC, err)
 		}
 		m.ContentType = cmp.Or(m.ContentType, ct)
 		m.Filename = cmp.Or(m.Filename, name)
