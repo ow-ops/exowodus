@@ -333,33 +333,29 @@ func (im *Importer) FinishUser(ctx context.Context, job *UserJob, src *Session) 
 	sameServer := job.sameServer()
 	srcServer, destServer := mx.ServerName(u.UserID), mx.ServerName(acct.id)
 	if src != nil && !sameServer {
-		checkRooms := false
+		changed := false
 		for roomID, complete := range state.Rooms {
-			if _, recreated := im.rooms[roomID]; complete && !recreated {
-				checkRooms = true
-				break
+			if _, recreated := im.rooms[roomID]; !complete || recreated {
+				continue
+			}
+			var member event.MemberEventContent
+			err := acct.client.StateEvent(ctx, id.RoomID(roomID), event.StateMember, acct.id, &member)
+			if err != nil && !mx.IsStatus(err, http.StatusNotFound) {
+				return nil, fmt.Errorf("check membership in %s: %w", roomID, err)
+			}
+			if mx.IsStatus(err, http.StatusNotFound) {
+				if _, leaveErr := acct.client.LeaveRoom(ctx, id.RoomID(roomID)); leaveErr != nil {
+					return nil, fmt.Errorf("leave inconsistent room %s: %w", roomID, leaveErr)
+				}
+			}
+			if err != nil || member.Membership != event.MembershipJoin {
+				delete(state.Rooms, roomID)
+				changed = true
 			}
 		}
-		if checkRooms {
-			joined, err := acct.client.JoinedRooms(ctx)
-			if err != nil {
-				return nil, fmt.Errorf("list destination rooms: %w", err)
-			}
-			joinedSet := map[id.RoomID]bool{}
-			for _, roomID := range joined.JoinedRooms {
-				joinedSet[roomID] = true
-			}
-			changed := false
-			for roomID, complete := range state.Rooms {
-				if _, recreated := im.rooms[roomID]; complete && !recreated && !joinedSet[id.RoomID(roomID)] {
-					delete(state.Rooms, roomID)
-					changed = true
-				}
-			}
-			if changed {
-				if err := save(); err != nil {
-					return nil, err
-				}
+		if changed {
+			if err := save(); err != nil {
+				return nil, err
 			}
 		}
 	}

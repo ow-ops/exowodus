@@ -240,11 +240,15 @@ func TestPowerTransferNeedsSourceUntilSuccessful(t *testing.T) {
 }
 
 func TestCompletedRoomRejoinsWhenMembershipIsMissing(t *testing.T) {
-	joins := 0
+	joins, leaves := 0, 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/joined_rooms"):
-			_, _ = w.Write([]byte(`{"joined_rooms":[]}`))
+		case strings.Contains(r.URL.Path, "/state/m.room.member/"):
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"errcode":"M_NOT_FOUND"}`))
+		case strings.HasSuffix(r.URL.Path, "/leave"):
+			leaves++
+			_, _ = w.Write([]byte(`{}`))
 		case strings.HasSuffix(r.URL.Path, "/invite"):
 			_, _ = w.Write([]byte(`{}`))
 		case strings.Contains(r.URL.Path, "/join/"):
@@ -276,7 +280,7 @@ func TestCompletedRoomRejoinsWhenMembershipIsMissing(t *testing.T) {
 	if _, err := (&Importer{Archive: a, Dest: dest}).FinishUser(t.Context(), job, source); err != nil {
 		t.Fatal(err)
 	}
-	if joins != 1 || job.Report.RoomsJoined != 1 {
-		t.Fatalf("joins=%d report=%+v", joins, job.Report)
+	if leaves != 1 || joins != 1 || job.Report.RoomsJoined != 1 {
+		t.Fatalf("leaves=%d joins=%d report=%+v", leaves, joins, job.Report)
 	}
 }
