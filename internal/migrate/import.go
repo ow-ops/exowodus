@@ -332,6 +332,37 @@ func (im *Importer) FinishUser(ctx context.Context, job *UserJob, src *Session) 
 
 	sameServer := job.sameServer()
 	srcServer, destServer := mx.ServerName(u.UserID), mx.ServerName(acct.id)
+	if src != nil && !sameServer {
+		checkRooms := false
+		for roomID, complete := range state.Rooms {
+			if _, recreated := im.rooms[roomID]; complete && !recreated {
+				checkRooms = true
+				break
+			}
+		}
+		if checkRooms {
+			joined, err := acct.client.JoinedRooms(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("list destination rooms: %w", err)
+			}
+			joinedSet := map[id.RoomID]bool{}
+			for _, roomID := range joined.JoinedRooms {
+				joinedSet[roomID] = true
+			}
+			changed := false
+			for roomID, complete := range state.Rooms {
+				if _, recreated := im.rooms[roomID]; complete && !recreated && !joinedSet[id.RoomID(roomID)] {
+					delete(state.Rooms, roomID)
+					changed = true
+				}
+			}
+			if changed {
+				if err := save(); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
 	mapID := func(userID string) string {
 		switch {
 		case userID == u.UserID:
