@@ -238,3 +238,45 @@ func TestPowerTransferNeedsSourceUntilSuccessful(t *testing.T) {
 		t.Fatalf("power transfer not restored: %+v writes=%d", st, writes)
 	}
 }
+
+func TestCompletedRoomRejoinsWhenMembershipIsMissing(t *testing.T) {
+	joins := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/joined_rooms"):
+			_, _ = w.Write([]byte(`{"joined_rooms":[]}`))
+		case strings.HasSuffix(r.URL.Path, "/invite"):
+			_, _ = w.Write([]byte(`{}`))
+		case strings.Contains(r.URL.Path, "/join/"):
+			joins++
+			_, _ = w.Write([]byte(`{"room_id":"!room:old.org"}`))
+		case strings.HasSuffix(r.URL.Path, "/m.room.power_levels/") && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"users":{"@alice:old.org":100}}`))
+		case strings.HasSuffix(r.URL.Path, "/m.room.power_levels/") && r.Method == http.MethodPut:
+			_, _ = w.Write([]byte(`{"event_id":"$power"}`))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	a, err := archive.Create(t.TempDir(), "old.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := a.ReadImportState("@alice:old.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Rooms["!room:old.org"] = true
+	dest := mx.MustNew(srv.URL, "dest")
+	dest.UserID = "@alice:new.org"
+	u := &archive.User{UserID: "@alice:old.org", Rooms: []archive.Room{{RoomID: "!room:old.org", Via: []string{"other.org"}}}}
+	job := &UserJob{User: u, acct: destAccount{id: string(dest.UserID), client: dest}, state: st, Report: &Report{}}
+	source := &Session{UserID: u.UserID, Client: mx.MustNew(srv.URL, "source")}
+	if _, err := (&Importer{Archive: a, Dest: dest}).FinishUser(t.Context(), job, source); err != nil {
+		t.Fatal(err)
+	}
+	if joins != 1 || job.Report.RoomsJoined != 1 {
+		t.Fatalf("joins=%d report=%+v", joins, job.Report)
+	}
+}
