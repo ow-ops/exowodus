@@ -88,6 +88,30 @@ func TestMediaDownloadFailureFailsExport(t *testing.T) {
 	}
 }
 
+func TestSkipMissingMedia(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/versions") {
+			_, _ = w.Write([]byte(`{"versions":["v1.11"]}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"errcode":"M_NOT_FOUND","error":"missing media"}`))
+	}))
+	defer srv.Close()
+	a, err := archive.Create(t.TempDir(), "example.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exp := &Exporter{Archive: a, SkipMissingMedia: true}
+	media, err := exp.exportMedia(t.Context(), &Session{UserID: "@alice:example.org", Client: mx.MustNew(srv.URL, "token")}, "mxc://example.org/missing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(media) != 0 {
+		t.Fatalf("media = %+v", media)
+	}
+}
+
 func TestDepartedRoomInventory(t *testing.T) {
 	pages := 0
 	state := `[{"event_id":"$create","type":"m.room.create","sender":"@alice:example.org","state_key":"","content":{"room_version":"10"}},{"event_id":"$leave","type":"m.room.member","sender":"@alice:example.org","state_key":"@alice:example.org","content":{"membership":"leave"}}]`

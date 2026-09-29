@@ -179,6 +179,9 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 			return err
 		}
 		if m.ContentType, m.Filename, err = mx.Download(ctx, c, mxc, path); err != nil {
+			if e.skipMissingMedia(mxc, path, err) {
+				continue
+			}
 			return fmt.Errorf("download media %s: %w", mxc, err)
 		}
 		room.Media = append(room.Media, m)

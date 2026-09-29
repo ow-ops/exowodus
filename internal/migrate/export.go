@@ -38,12 +38,23 @@ const syncFilter = `{
 type Exporter struct {
 	quarantined map[string]bool
 	AllUsers    bool
-	Archive     *archive.Archive
+	// SkipMissingMedia keeps importing when the source no longer serves an MXC.
+	SkipMissingMedia bool
+	Archive          *archive.Archive
 	// Optional. Without it, the avatar is the only media exported.
 	Admin *mautrix.Client
 	DB    *SynapseDB
 	MAS   *MAS
 	MASDB *MASDB
+}
+
+func (e *Exporter) skipMissingMedia(mxc, path string, err error) bool {
+	if !e.SkipMissingMedia || !mx.IsStatus(err, http.StatusNotFound) {
+		return false
+	}
+	_ = os.Remove(path)
+	slog.Warn("skipping missing media", "mxc", mxc, "err", err)
+	return true
 }
 
 func (e *Exporter) ExportUser(ctx context.Context, s *Session) (*archive.User, error) {
@@ -351,6 +362,9 @@ func (e *Exporter) exportMedia(ctx context.Context, s *Session, avatar string) (
 		}
 		ct, name, err := mx.Download(ctx, s.Client, m.MXC, path)
 		if err != nil {
+			if e.skipMissingMedia(m.MXC, path, err) {
+				continue
+			}
 			return nil, fmt.Errorf("download media %s: %w", m.MXC, err)
 		}
 		m.ContentType = cmp.Or(m.ContentType, ct)
