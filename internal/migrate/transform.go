@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"maunium.net/go/mautrix"
+	"maunium.net/go/mautrix/event"
 )
 
 // Restored through dedicated endpoints.
@@ -140,9 +141,6 @@ func pushRulePath(kind, ruleID string, attr ...any) mautrix.ClientURLPath {
 // raisePower grants newID oldID's level; false when unchanged.
 func raisePower(content map[string]any, oldID, newID string) bool {
 	users, _ := content["users"].(map[string]any)
-	if users == nil {
-		users = map[string]any{}
-	}
 	def := powerValue(content["users_default"])
 	old := def
 	if v, ok := users[oldID]; ok {
@@ -151,12 +149,33 @@ func raisePower(content map[string]any, oldID, newID string) bool {
 	if old <= def {
 		return false
 	}
-	if v, ok := users[newID]; ok && powerValue(v) >= old {
+	return grantPower(content, newID, old)
+}
+
+func grantPower(content map[string]any, userID string, level int64) bool {
+	users, _ := content["users"].(map[string]any)
+	if users == nil {
+		users = map[string]any{}
+	}
+	if v, ok := users[userID]; ok && powerValue(v) >= level {
 		return false
 	}
-	users[newID] = old
+	users[userID] = level
 	content["users"] = users
 	return true
+}
+
+func isV12Creator(state []*event.Event, userID string) bool {
+	for _, ev := range state {
+		if ev.Type != event.StateCreate || string(ev.Sender) != userID {
+			continue
+		}
+		var content struct {
+			RoomVersion string `json:"room_version"`
+		}
+		return json.Unmarshal(ev.Content.VeryRaw, &content) == nil && content.RoomVersion == "12"
+	}
+	return false
 }
 
 func powerValue(v any) int64 {
