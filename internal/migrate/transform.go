@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"maps"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -167,13 +168,17 @@ func grantPower(content map[string]any, userID string, level int64) bool {
 
 func isV12Creator(state []*event.Event, userID string) bool {
 	for _, ev := range state {
-		if ev.Type != event.StateCreate || string(ev.Sender) != userID {
+		if ev.Type != event.StateCreate {
 			continue
 		}
 		var content struct {
-			RoomVersion string `json:"room_version"`
+			RoomVersion        string   `json:"room_version"`
+			AdditionalCreators []string `json:"additional_creators"`
 		}
-		return json.Unmarshal(ev.Content.VeryRaw, &content) == nil && content.RoomVersion == "12"
+		if json.Unmarshal(ev.Content.VeryRaw, &content) != nil || content.RoomVersion != "12" {
+			return false
+		}
+		return string(ev.Sender) == userID || slices.Contains(content.AdditionalCreators, userID)
 	}
 	return false
 }

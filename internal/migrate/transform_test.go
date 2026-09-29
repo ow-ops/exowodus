@@ -203,10 +203,13 @@ func TestV12Creator(t *testing.T) {
 	creator := &event.Event{
 		Type:    event.StateCreate,
 		Sender:  "@founder:example.org",
-		Content: event.Content{VeryRaw: json.RawMessage(`{"room_version":"12"}`)},
+		Content: event.Content{VeryRaw: json.RawMessage(`{"room_version":"12","additional_creators":["@additional:example.org"]}`)},
 	}
 	if !isV12Creator([]*event.Event{creator}, "@founder:example.org") {
 		t.Fatal("v12 creator not detected")
+	}
+	if !isV12Creator([]*event.Event{creator}, "@additional:example.org") {
+		t.Fatal("v12 additional creator not detected")
 	}
 	if isV12Creator([]*event.Event{creator}, "@other:example.org") {
 		t.Fatal("non-creator detected as creator")
