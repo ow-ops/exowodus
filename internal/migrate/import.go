@@ -403,6 +403,10 @@ func (im *Importer) FinishUser(ctx context.Context, job *UserJob, src *Session) 
 			if err := save(); err != nil {
 				return nil, err
 			}
+		} else if src != nil && !sameServer {
+			if err := transferPower(ctx, src.Client, r.RoomID, u.UserID, acct.id); err != nil {
+				rep.fail("power_levels", r.RoomID, err)
+			}
 		}
 		rep.RoomsJoined++
 		im.members[r.RoomID] = append(im.members[r.RoomID], acct)
@@ -1012,7 +1016,13 @@ func transferPower(ctx context.Context, src *mautrix.Client, roomID, oldID, newI
 		return err
 	}
 	if !raisePower(content, oldID, newID) {
-		return nil
+		state, err := src.StateAsArray(ctx, room)
+		if err != nil {
+			return fmt.Errorf("read room state: %w", err)
+		}
+		if !isV12Creator(state, oldID) || !grantPower(content, newID, 100) {
+			return nil
+		}
 	}
 	_, err := src.SendStateEvent(ctx, room, event.StatePowerLevels, "", content)
 	return err

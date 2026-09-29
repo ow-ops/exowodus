@@ -2,11 +2,14 @@ package migrate
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
 
 	"exodus/internal/mx"
+	"maunium.net/go/mautrix/event"
 )
 
 func mapper(m map[string]string) func(string) string {
@@ -194,4 +197,45 @@ func TestRewriteMXC(t *testing.T) {
 	media := map[string]string{"mxc://old/a": "mxc://new/1", "mxc://old/b": "mxc://new/2"}
 	got, _ := json.Marshal(rewriteMXC(content, media))
 	assertJSONEqual(t, got, `{"url":"mxc://new/1","info":{"thumbnail_url":"mxc://new/2"},"list":["mxc://new/1","keep"]}`)
+}
+
+func TestV12Creator(t *testing.T) {
+	creator := &event.Event{
+		Type:    event.StateCreate,
+		Sender:  "@founder:example.org",
+		Content: event.Content{VeryRaw: json.RawMessage(`{"room_version":"12"}`)},
+	}
+	if !isV12Creator([]*event.Event{creator}, "@founder:example.org") {
+		t.Fatal("v12 creator not detected")
+	}
+	if isV12Creator([]*event.Event{creator}, "@other:example.org") {
+		t.Fatal("non-creator detected as creator")
+	}
+}
+
+func TestTransferPowerGrantsV12CreatorAdmin(t *testing.T) {
+	var powerLevels map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/state/m.room.power_levels/"):
+			_, _ = w.Write([]byte(`{"users_default":0}`))
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/state"):
+			_, _ = w.Write([]byte(`[{"type":"m.room.create","sender":"@founder:example.org","content":{"room_version":"12"}}]`))
+		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/state/m.room.power_levels/"):
+			if err := json.NewDecoder(r.Body).Decode(&powerLevels); err != nil {
+				t.Error(err)
+			}
+			_, _ = w.Write([]byte(`{"event_id":"$power"}`))
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	if err := transferPower(t.Context(), mx.MustNew(srv.URL, "token"), "!room:example.org", "@founder:example.org", "@founder:new.org"); err != nil {
+		t.Fatal(err)
+	}
+	users, _ := powerLevels["users"].(map[string]any)
+	if got := users["@founder:new.org"]; got != float64(100) {
+		t.Fatalf("new creator power = %v", got)
+	}
 }
