@@ -42,10 +42,11 @@ type Exporter struct {
 	SkipMissingMedia bool
 	Archive          *archive.Archive
 	// Optional. Without it, the avatar is the only media exported.
-	Admin *mautrix.Client
-	DB    *SynapseDB
-	MAS   *MAS
-	MASDB *MASDB
+	Admin       *mautrix.Client
+	DB          *SynapseDB
+	MAS         *MAS
+	MASDB       *MASDB
+	TuwunelDump *TuwunelDump
 }
 
 func (e *Exporter) skipMissingMedia(mxc, path string, err error) bool {
@@ -201,8 +202,13 @@ func (e *Exporter) ExportUser(ctx context.Context, s *Session) (*archive.User, e
 	if u.Verified, err = exportVerifications(ctx, s.Client, s.UserID, u.CrossSigning, slices.Sorted(maps.Keys(members))); s.optional(err) != nil {
 		return nil, fmt.Errorf("verifications: %w", err)
 	}
-	if e.DB != nil || e.MASDB != nil {
+	if e.DB != nil || e.MASDB != nil || e.TuwunelDump != nil {
 		secrets := &archive.Secrets{}
+		if e.TuwunelDump != nil {
+			if secrets, err = e.TuwunelDump.Secrets(s.UserID); err != nil {
+				return nil, err
+			}
+		}
 		if e.DB != nil {
 			if secrets, err = e.DB.Secrets(ctx, s.UserID); err != nil {
 				return nil, err

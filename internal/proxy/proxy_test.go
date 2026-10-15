@@ -1,18 +1,155 @@
 package proxy
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+
+	"golang.org/x/crypto/argon2"
 
 	"exodus/internal/archive"
 	"exodus/internal/mx"
 )
+
+func TestTuwunelLoginsThroughProxy(t *testing.T) {
+	a, err := archive.Create(t.TempDir(), "example.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const user = "@alice:example.org"
+	const originalPassword = "pa\u0308ssword"
+	salt := []byte("0123456789abcdef")
+	b64 := base64.RawStdEncoding.EncodeToString
+	hash := fmt.Sprintf("$argon2id$v=19$m=64,t=1,p=1$%s$%s", b64(salt), b64(argon2.IDKey([]byte(originalPassword), salt, 1, 64, 1, 32)))
+	if err := a.AddCredential(archive.Credential{SourceUserID: user, DestUserID: user, Password: "generated"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.WritePendingPasswords(map[string]archive.PendingPassword{user: {SourceUserID: user, Scheme: archive.SchemeTuwunel, Hash: hash}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.WriteSessions(map[string]archive.Session{
+		"original-access":  {UserID: user, DeviceID: "PHONE", Token: "destination-device"},
+		"original-refresh": {UserID: user, DeviceID: "PHONE", Token: "destination-device", Refresh: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	password := "generated"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/_matrix/client/v3/account/whoami":
+			if r.Header.Get("Authorization") != "Bearer destination-device" {
+				w.WriteHeader(401)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"user_id": user, "device_id": "PHONE"})
+		case "/_matrix/client/v3/login":
+			var body struct {
+				Password string `json:"password"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Password != password {
+				w.WriteHeader(403)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"user_id": user, "device_id": "LOGIN", "access_token": "login-token"})
+		case "/_matrix/client/v3/account/password":
+			var body struct {
+				NewPassword   string `json:"new_password"`
+				LogoutDevices bool   `json:"logout_devices"`
+				Auth          *struct {
+					Password string `json:"password"`
+				} `json:"auth"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+				w.WriteHeader(400)
+				return
+			}
+			if body.Auth == nil {
+				w.WriteHeader(401)
+				_, _ = w.Write([]byte(`{"session":"uia","flows":[{"stages":["m.login.password"]}]}`))
+				return
+			}
+			if body.Auth.Password != password || body.LogoutDevices || body.NewPassword != originalPassword {
+				t.Error("password change did not preserve credentials and devices")
+				w.WriteHeader(403)
+				return
+			}
+			password = body.NewPassword
+			_, _ = w.Write([]byte(`{}`))
+		case "/_matrix/client/v3/logout":
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			t.Errorf("unexpected upstream request: %s", r.URL.Path)
+			w.WriteHeader(404)
+		}
+	}))
+	defer upstream.Close()
+	u, _ := url.Parse(upstream.URL)
+	loginBody, _ := json.Marshal(map[string]any{"type": "m.login.password", "identifier": map[string]string{"type": "m.id.user", "user": "alice"}, "password": originalPassword})
+	for _, phase := range []string{"initial", "restart"} {
+		p, err := New(a, u, "", nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		who := do(p, http.MethodGet, "/_matrix/client/v3/account/whoami", "original-access", "")
+		if who.Code != 200 || !strings.Contains(who.Body.String(), `"device_id":"PHONE"`) {
+			t.Fatalf("%s original session failed: %d %s", phase, who.Code, who.Body)
+		}
+		refresh := do(p, http.MethodPost, "/_matrix/client/v3/refresh", "", `{"refresh_token":"original-refresh"}`)
+		var refreshed struct {
+			AccessToken string `json:"access_token"`
+		}
+		if err := json.Unmarshal(refresh.Body.Bytes(), &refreshed); err != nil || refreshed.AccessToken != "destination-device" {
+			t.Fatalf("%s refresh failed: %s", phase, refresh.Body)
+		}
+		login := do(p, http.MethodPost, "/_matrix/client/v3/login", "", string(loginBody))
+		if login.Code != 200 {
+			t.Fatalf("%s original password failed: %d %s", phase, login.Code, login.Body)
+		}
+		pending, err := a.PendingPasswords()
+		if err != nil || len(pending) != 0 {
+			t.Fatal("password restoration was not saved")
+		}
+	}
+}
+
+func TestProxyServesDatabaseInventoriedMedia(t *testing.T) {
+	a, err := archive.Create(t.TempDir(), "example.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join("server", "media", "example.org", "orphan")
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(a.Dir, file)), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(a.Dir, file), []byte("original unowned bytes"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.WriteServer(&archive.Server{Media: []archive.Media{{MXC: "mxc://example.org/orphan", File: file, ContentType: "application/octet-stream"}}}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := New(a, nil, "", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := do(p, http.MethodGet, "/_matrix/media/v3/download/example.org/orphan", "", "")
+	if response.Code != 200 || response.Body.String() != "original unowned bytes" {
+		t.Fatalf("archived media response = %d %s", response.Code, response.Body.String())
+	}
+}
 
 // fakeUpstream answers whoami for "banned-token" and "user-token" and records other requests.
 type fakeUpstream struct {

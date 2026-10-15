@@ -83,3 +83,21 @@ func (e *Exporter) ExportRelayKeys(ctx context.Context, signingKeyPath string) e
 	}
 	return e.Archive.WriteServerKeys(keys)
 }
+
+func (e *Exporter) ExportTuwunelRelayKeys() error {
+	if err := e.TuwunelDump.CheckRelayMaps(); err != nil {
+		return err
+	}
+	key, err := e.TuwunelDump.SigningKey()
+	if err != nil {
+		return err
+	}
+	if err := e.Archive.WriteSigningKey(key); err != nil {
+		return err
+	}
+	keys, err := e.TuwunelDump.RelayKeys()
+	if err != nil {
+		return err
+	}
+	return e.Archive.WriteServerKeys(keys)
+}

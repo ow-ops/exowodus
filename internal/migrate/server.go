@@ -54,6 +54,15 @@ func (e *Exporter) ExportServer(ctx context.Context) error {
 			return err
 		}
 	}
+	if e.TuwunelDump != nil {
+		if err := e.TuwunelDump.AddServer(srv, e.Archive.Manifest.ServerName); err != nil {
+			return err
+		}
+		var err error
+		if srv.Media, err = e.exportTuwunelMedia(ctx); err != nil {
+			return err
+		}
+	}
 	return e.Archive.WriteServer(srv)
 }
 
@@ -82,6 +91,9 @@ func (im *Importer) ImportServer(ctx context.Context) ([]string, []Failure) {
 		archiveOnly[room.RoomID] = room.ArchiveOnly
 	}
 	var notes []string
+	for _, limitation := range srv.Limitations {
+		notes = append(notes, "Source limitation: "+limitation)
+	}
 	var failures []Failure
 	server := im.Admin.ServerName()
 	sameServer := server == im.Archive.Manifest.ServerName
@@ -98,6 +110,16 @@ func (im *Importer) ImportServer(ctx context.Context) ([]string, []Failure) {
 		}
 		room := im.mapRoom(srv.Aliases[alias])
 		_, err := im.Admin.client.CreateAlias(ctx, id.RoomAlias(target), id.RoomID(room))
+		if im.RequireLossless && err != nil {
+			if mx.IsStatus(err, http.StatusConflict) {
+				existing, resolveErr := im.Admin.client.ResolveAlias(ctx, id.RoomAlias(target))
+				if resolveErr == nil && string(existing.RoomID) == room {
+					continue
+				}
+			}
+			failures = append(failures, Failure{Step: "alias", Target: target, Error: err.Error()})
+			continue
+		}
 		if err != nil && !mx.IsStatus(err, http.StatusConflict) {
 			notes = append(notes, fmt.Sprintf("alias %s for %s not restored: %v", target, room, err))
 		}

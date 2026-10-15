@@ -24,8 +24,9 @@ import (
 )
 
 type Importer struct {
-	Archive *archive.Archive
-	Dest    *mautrix.Client
+	RequireLossless bool
+	Archive         *archive.Archive
+	Dest            *mautrix.Client
 	// Without DestToken or DestPassword, accounts get generated passwords.
 	DestToken         string
 	DestPassword      string
@@ -464,7 +465,7 @@ func (im *Importer) restoreReadMarker(ctx context.Context, acct destAccount, r a
 	private := mapEvent(r.PrivateReceipt)
 	if eventID := mapEvent(marker.EventID); eventID != "" {
 		body["m.fully_read"] = eventID
-		if r.Receipt == "" && private == "" {
+		if r.Receipt == "" && private == "" && !im.RequireLossless {
 			private = eventID
 		}
 	}
@@ -481,7 +482,7 @@ func (im *Importer) restoreReadMarker(ctx context.Context, acct destAccount, r a
 		}
 		err := acct.client.SetReadMarkers(ctx, id.RoomID(roomID), b)
 		// Not backfilled yet, or backfilled, which private receipts do not allow.
-		if mx.IsStatus(err, http.StatusNotFound) || mx.IsStatus(err, http.StatusBadRequest) {
+		if !im.RequireLossless && (mx.IsStatus(err, http.StatusNotFound) || mx.IsStatus(err, http.StatusBadRequest)) {
 			slog.Debug("read marker not restored", "room", roomID, "err", err)
 		} else if err != nil {
 			rep.fail("read_marker", roomID, err)

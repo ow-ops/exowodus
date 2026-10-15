@@ -69,4 +69,22 @@ func TestCheckPassword(t *testing.T) {
 			}
 		})
 	}
+	for _, tc := range []struct {
+		password string
+		want     bool
+	}{{"secret", true}, {"wrong", false}} {
+		if got := checkPassword(archive.PendingPassword{Hash: argon, Scheme: archive.SchemeTuwunel}, tc.password, "ignored-pepper", nil); got != tc.want {
+			t.Fatalf("Tuwunel password check = %v, want %v", got, tc.want)
+		}
+	}
+	unicodeHash := fmt.Sprintf("$argon2id$v=19$m=19456,t=2,p=1$%s$%s", b64(salt), b64(argon2.IDKey([]byte("pa\u0308ss"), salt, 2, 19456, 1, 32)))
+	p := archive.PendingPassword{Hash: unicodeHash, Scheme: archive.SchemeTuwunel}
+	if !checkPassword(p, "pa\u0308ss", "pepper", nil) || checkPassword(p, "päss", "pepper", nil) {
+		t.Fatal("Tuwunel password bytes were normalized")
+	}
+	for _, hash := range []string{"$argon2id$v=19$m=8,t=0,p=1$c2FsdA$aGFzaA", "$argon2id$v=19$m=8,t=1,p=256$c2FsdA$aGFzaA", "$argon2id$v=16$m=8,t=1,p=1$c2FsdA$aGFzaA"} {
+		if checkPassword(archive.PendingPassword{Hash: hash, Scheme: archive.SchemeTuwunel}, "secret", "", nil) {
+			t.Fatal("invalid Tuwunel hash accepted")
+		}
+	}
 }

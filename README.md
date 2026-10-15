@@ -1,13 +1,8 @@
 # exodus
 
-Migrate a Matrix homeserver from Synapse to [Continuwuity](https://continuwuity.org),
+Migrate a Matrix homeserver from Synapse or Tuwunel to [Continuwuity](https://continuwuity.org),
 or move a single account from any homeserver (including matrix.org). Continuwuity
 itself is not modified.
-
-Continuwuity cannot read a Synapse database, so exodus works through the Matrix,
-Synapse admin and Matrix Authentication Service (MAS) APIs, plus read-only
-database access for what no API exposes. Client and federation requests use
-[mautrix-go](https://github.com/mautrix/go).
 
 ## Build
 
@@ -61,6 +56,38 @@ Good to know:
   | `EXODUS_SYNAPSE_MACAROON_SECRET` | `--synapse-macaroon-secret` |
 
 ## Usage
+
+### Migrating from Tuwunel
+
+Keep the same `server_name` to preserve message IDs, encrypted history and logins.
+
+1. Pause client, bridge and federation writes, keeping Tuwunel's APIs available.
+2. Back up the database and media, then [prepare the database export](docs/tuwunel.md).
+3. Export, stop Tuwunel, and start Continuwuity with the same `server_name`.
+4. [Configure the relay](#relay---relay-name), import, then route traffic through
+   [the proxy](#the-proxy) to keep existing logins and media URLs working.
+
+```sh
+exodus export --from https://example.org --from-type tuwunel \
+  --from-admin-token "$ADMIN" --all-users --tuwunel-dump ./tuwunel-dump
+
+# Stop Tuwunel and start Continuwuity with the same server_name.
+exodus import --to http://continuwuity:8008 --to-admin-token "$CADMIN" \
+  --registration-token "$REG" --relay-name relay.example.net
+
+exodus proxy --upstream http://continuwuity:8008
+```
+
+Some Tuwunel data, including certain read receipts, cannot be restored in stock
+Continuwuity and blocks import. Check the
+[limitations](docs/tuwunel.md#original-events-and-strict-cutover-checks) before
+cutover. Retry failed steps with the same archive; see `import-report.json`.
+
+Import verifies original messages and checks each exported token against the
+destination user and device. Keep the archive and proxy running for existing
+logins. Whole-server migration cannot disable these checks.
+
+For one account, use `--from-type tuwunel` with the [single-account flow](#moving-a-single-account).
 
 ### Replacing Synapse on the same server name
 
@@ -275,34 +302,7 @@ If a recreated room once had users from other servers, it keeps its ID and the
 report warns about it: if one of those servers rejoins, it may reject the
 recreated room.
 
-## Quirks handled
-
-- **Federated invites.** Continuwuity currently rejects federated invites from
-  Synapse, which still sends stripped `invite_room_state`. New accounts are
-  invited locally by an already migrated member instead. If there is none, the
-  old account briefly makes the room public, the new account joins, and the
-  join rules are restored.
-- **Federated knocks.** Continuwuity currently fails while processing the knock
-  state Synapse returns, after the knock has reached the room. The import
-  reports the error and exits nonzero; the knock stays pending on the room's
-  side.
-- **Master keys without signatures.** Continuwuity only records other users'
-  signatures on master keys that have a `signatures` field, so exodus adds one
-  before uploading.
-
-## Tests
-
-```sh
-go test ./...                                              # unit tests
-./e2e/up.sh && go test -tags e2e ./e2e/; ./e2e/down.sh     # Synapse, MAS and Continuwuity in Docker
-```
-
-The end-to-end suite covers same-server replacement, a new server name (with
-and without the relay), single users, MAS-backed Synapse, bridges and the
-proxy. Encryption tests use the original recovery key to restore the backup
-and decrypt a Megolm message after relay, replay and new-server migration.
-Unit tests inject failures and verify retries for events, keys, room data and
-pushers.
+For test commands and compatibility workarounds, see the [development notes](docs/development.md).
 
 ## License
 

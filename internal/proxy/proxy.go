@@ -128,6 +128,13 @@ func New(a *archive.Archive, upstream *url.URL, pepper string, macaroonKey []byt
 	for _, r := range rooms {
 		p.addMedia(a.RoomDir(r.RoomID), r.Media)
 	}
+	serverData, err := a.ReadServer()
+	if err != nil {
+		return nil, err
+	}
+	if serverData != nil {
+		p.addMedia(a.Dir, serverData.Media)
+	}
 	if upstream != nil {
 		if p.upstream, err = mx.New(upstream.String(), ""); err != nil {
 			return nil, err

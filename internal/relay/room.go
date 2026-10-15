@@ -15,14 +15,18 @@ import (
 	"maunium.net/go/mautrix/id"
 )
 
-// RoomData is a room as exported from the Synapse database.
+// RoomData contains source events and resolved state.
 type RoomData struct {
-	// Events are oldest first.
+	// Accepted event IDs, excluding auth-only outliers.
+	Timeline []string `json:"timeline,omitempty"`
+	// Timeline events and auth dependencies.
 	Events []EventJSON `json:"events"`
 	// EventGroups and Groups hold Synapse's resolved state after each event.
 	EventGroups map[string]int64 `json:"event_groups"`
-	Groups      map[int64]Group  `json:"groups"`
-	Extremities []string         `json:"extremities"`
+	// Tuwunel stores state before each event.
+	BeforeEventGroups map[string]int64 `json:"before_event_groups,omitempty"`
+	Groups            map[int64]Group  `json:"groups"`
+	Extremities       []string         `json:"extremities"`
 	// CurrentState maps StateKey(type, state key) to event IDs.
 	CurrentState map[string]string `json:"current_state"`
 }
@@ -63,14 +67,15 @@ type room struct {
 	id      id.RoomID
 	version id.RoomVersion
 
-	mu          sync.Mutex
-	events      map[string]event
-	groupOf     map[string]int64
-	groups      map[int64]Group
-	resolved    map[int64]map[string]string
-	extra       map[string]map[string]string // state after events without a group
-	current     map[string]string
-	extremities []string
+	mu            sync.Mutex
+	events        map[string]event
+	groupOf       map[string]int64
+	beforeGroupOf map[string]int64
+	groups        map[int64]Group
+	resolved      map[int64]map[string]string
+	extra         map[string]map[string]string // state after events without a group
+	current       map[string]string
+	extremities   []string
 }
 
 func newRoom(roomID, version string, data RoomData) (*room, error) {
@@ -79,19 +84,49 @@ func newRoom(roomID, version string, data RoomData) (*room, error) {
 	}
 	r := &room{id: id.RoomID(roomID), version: id.RoomVersion(version), events: map[string]event{},
 		groupOf: data.EventGroups, groups: data.Groups, resolved: map[int64]map[string]string{},
-		extra: map[string]map[string]string{}, current: maps.Clone(data.CurrentState),
+		beforeGroupOf: data.BeforeEventGroups,
+		extra:         map[string]map[string]string{}, current: maps.Clone(data.CurrentState),
 		extremities: slices.Clone(data.Extremities)}
 	for _, e := range data.Events {
-		p, err := ParsePDU(e.PDU)
+		wire, err := federationPDU(e.PDU, version)
 		if err != nil {
 			return nil, fmt.Errorf("event %s: %w", e.EventID, err)
 		}
-		r.events[e.EventID] = event{pdu: p, raw: e.PDU}
+		p, err := ParsePDU(wire)
+		if err != nil {
+			return nil, fmt.Errorf("event %s: %w", e.EventID, err)
+		}
+		r.events[e.EventID] = event{pdu: p, raw: wire}
 	}
 	if r.current == nil {
 		r.current = map[string]string{}
 	}
 	return r, nil
+}
+
+// Remove fields Tuwunel adds after signing before serving PDUs over federation.
+func federationPDU(raw json.RawMessage, version string) (json.RawMessage, error) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return nil, err
+	}
+	delete(object, "event_id") // relay supports only room versions 3+.
+	if n, _ := strconv.Atoi(version); n >= 12 && string(object["type"]) == `"m.room.create"` {
+		delete(object, "room_id")
+	}
+	if unsigned, ok := object["unsigned"]; ok {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(unsigned, &fields); err != nil {
+			return nil, err
+		}
+		delete(fields, "transaction_id")
+		encoded, err := json.Marshal(fields)
+		if err != nil {
+			return nil, err
+		}
+		object["unsigned"] = encoded
+	}
+	return json.Marshal(object)
 }
 
 func (r *room) groupState(gid int64) map[string]string {
@@ -115,6 +150,16 @@ func (r *room) stateAfter(eventID string) map[string]string {
 	if s, ok := r.extra[eventID]; ok {
 		return s
 	}
+	if gid, ok := r.beforeGroupOf[eventID]; ok {
+		state := maps.Clone(r.groupState(gid))
+		if state == nil {
+			state = map[string]string{}
+		}
+		if ev, ok := r.events[eventID]; ok && ev.pdu.StateKey != nil {
+			state[StateKey(ev.pdu.Type, *ev.pdu.StateKey)] = eventID
+		}
+		return state
+	}
 	if g, ok := r.groupOf[eventID]; ok {
 		if s := r.groupState(g); s != nil {
 			return s
@@ -124,6 +169,9 @@ func (r *room) stateAfter(eventID string) map[string]string {
 }
 
 func (r *room) stateBefore(eventID string) map[string]string {
+	if gid, ok := r.beforeGroupOf[eventID]; ok {
+		return r.groupState(gid)
+	}
 	ev, ok := r.events[eventID]
 	after := r.stateAfter(eventID)
 	if !ok || ev.pdu.StateKey == nil {
