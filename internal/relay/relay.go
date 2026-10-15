@@ -237,9 +237,9 @@ func (rl *Relay) handler() http.Handler {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /_matrix/federation/v1/version", keys.GetServerVersion)
-	mux.HandleFunc("GET /_matrix/key/v2/server", keys.GetServerKey)
-	mux.HandleFunc("GET /_matrix/key/v2/query/{serverName}", keys.GetQueryKeys)
-	mux.HandleFunc("POST /_matrix/key/v2/query", rl.postQueryKeys)
+	mux.HandleFunc("GET /_matrix/key/v2/server", rl.serverKeys)
+	mux.HandleFunc("GET /_matrix/key/v2/query/{serverName}", rl.queryKeys)
+	mux.HandleFunc("POST /_matrix/key/v2/query", rl.postKeyResponses)
 
 	fed := http.NewServeMux()
 	fed.HandleFunc("GET /_matrix/federation/v1/make_join/{roomID}/{userID}", rl.makeJoin)
@@ -304,31 +304,6 @@ func (n notaryKeys) LoadKeys(serverName string) (*federation.ServerKeyResponse, 
 func (notaryKeys) StoreKeys(*federation.ServerKeyResponse) {}
 func (notaryKeys) StoreFetchError(string, error)           {}
 func (notaryKeys) ShouldReQuery(string) bool               { return false }
-
-// postQueryKeys signs notary responses as the relay.
-func (rl *Relay) postQueryKeys(w http.ResponseWriter, r *http.Request) {
-	var req federation.ReqQueryKeys
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		mautrix.MBadJSON.WithMessage("%v", err).Write(w)
-		return
-	}
-	resp := federation.QueryKeysResponse{ServerKeys: []*federation.ServerKeyResponse{}}
-	for server := range req.ServerKeys {
-		var keys *federation.ServerKeyResponse
-		if server == rl.Name {
-			keys = rl.key.GenerateKeyResponse(rl.Name, nil)
-		} else if k, err := (notaryKeys{rl}).LoadKeys(server); err == nil {
-			if sig, err := rl.key.SignJSON(k); err == nil {
-				k.Signatures[rl.Name] = map[id.KeyID]string{rl.key.ID: sig}
-			}
-			keys = k
-		}
-		if keys != nil {
-			resp.ServerKeys = append(resp.ServerKeys, keys)
-		}
-	}
-	writeJSON(w, resp)
-}
 
 func (rl *Relay) withRoom(w http.ResponseWriter, r *http.Request, fn func(*room) any) {
 	rm := rl.room(r.PathValue("roomID"))

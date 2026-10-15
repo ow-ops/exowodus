@@ -1,0 +1,205 @@
+package migrate
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"reflect"
+	"strings"
+
+	"exodus/internal/archive"
+	"exodus/internal/mx"
+	"exodus/internal/relay"
+)
+
+func (im *Importer) VerifySessions(ctx context.Context, users []*archive.User) []Failure {
+	sessions, err := im.Archive.Sessions()
+	if err != nil {
+		return []Failure{{Step: "sessions", Error: err.Error()}}
+	}
+	var failures []Failure
+	checked := map[string]error{}
+	for _, user := range users {
+		secrets, err := im.Archive.ReadSecrets(user.UserID)
+		if err != nil || secrets == nil {
+			failures = append(failures, Failure{Step: "sessions", Target: user.UserID, Error: "source login data unavailable"})
+			continue
+		}
+		for _, token := range secrets.Tokens {
+			session, ok := sessions[token.Token]
+			target := user.UserID + "/" + token.DeviceID
+			if !ok || session.UserID != user.UserID || session.DeviceID != token.DeviceID || session.Refresh != token.Refresh || session.Token == "" {
+				failures = append(failures, Failure{Step: "sessions", Target: target, Error: "source token has no matching proxy session"})
+				continue
+			}
+			key := target + "\x00" + session.Token
+			if _, ok := checked[key]; !ok {
+				who, err := mx.WithToken(im.Dest, session.Token).Whoami(ctx)
+				if err == nil && (string(who.UserID) != user.UserID || string(who.DeviceID) != token.DeviceID) {
+					err = errors.New("destination session belongs to a different user or device")
+				}
+				checked[key] = err
+			}
+			if err := checked[key]; err != nil {
+				failures = append(failures, Failure{Step: "sessions", Target: target, Error: "destination session verification failed"})
+			}
+		}
+	}
+	return failures
+}
+
+// Empty tables still require a scan file.
+func (d *TuwunelDump) CheckLosslessMaps() error {
+	if err := d.CheckRelayMaps(); err != nil {
+		return err
+	}
+	for _, name := range []string{"userdeviceid_metadata", "onetimekeyid4225_otk", "userdeviceidalgorithm_fallback", "senderkey_pusher", "pushkey_deviceid", "todeviceid_events", "bannedroomids", "alias_roomid", "servercurrentevent_data", "servernameevent_data", "mediaid_file", "mediaid_lazy", "mediaid_lazycontent", "readreceiptid_readreceipt", "roomuserid_privateread"} {
+		if d.maps[name] == nil {
+			return fmt.Errorf("--require-lossless requires %s.txt, including when the table is empty", name)
+		}
+	}
+	return nil
+}
+
+func compareTuwunelTimeline(data *relay.RoomData, events []json.RawMessage) error {
+	accepted := map[string]bool{}
+	for _, id := range data.Timeline {
+		accepted[id] = true
+	}
+	expected := map[string]map[string]any{}
+	for _, event := range data.Events {
+		if !accepted[event.EventID] {
+			continue
+		}
+		fields, err := originalEventFields(event.PDU)
+		if err != nil {
+			return err
+		}
+		expected[event.EventID] = fields
+	}
+	for _, raw := range events {
+		event, err := decodeEvent(raw)
+		if err != nil {
+			return err
+		}
+		want, ok := expected[event.EventID]
+		if !ok {
+			return fmt.Errorf("API event %s absent from snapshot or duplicated", event.EventID)
+		}
+		got, err := originalEventFields(raw)
+		if err != nil || !reflect.DeepEqual(want, got) {
+			return fmt.Errorf("event %s differs between API and snapshot", event.EventID)
+		}
+		delete(expected, event.EventID)
+	}
+	if len(expected) != 0 {
+		return fmt.Errorf("%d database timeline events missing from API export", len(expected))
+	}
+	return nil
+}
+
+// CheckLosslessImport runs before creating accounts or changing the target.
+func (im *Importer) CheckLosslessImport(users []*archive.User, rooms []*archive.ArchivedRoom, server *archive.Server, hasRelay bool) error {
+	var failures []error
+	if !im.Archive.Manifest.RequireLossless {
+		failures = append(failures, errors.New("archive lacks preservation checks; re-export with --require-lossless"))
+	}
+	if im.Admin == nil {
+		return errors.New("--require-lossless requires --to-admin-token")
+	}
+	if im.DestPassword != "" || im.DestToken != "" {
+		failures = append(failures, errors.New("preserving source passwords requires generated credentials; omit --to-password and --to-token"))
+	}
+	if im.Admin.ServerName() != im.Archive.Manifest.ServerName {
+		failures = append(failures, errors.New("lossless import requires the same server name"))
+	}
+	if len(rooms) > 0 && !hasRelay {
+		failures = append(failures, errors.New("lossless room import requires --relay-name"))
+	}
+	for _, u := range users {
+		if u.Deactivated {
+			failures = append(failures, fmt.Errorf("%s: full deactivated-account data restoration is not implemented", u.UserID))
+		}
+		if !u.Deactivated {
+			if secrets, err := im.Archive.ReadSecrets(u.UserID); err != nil || secrets == nil {
+				failures = append(failures, fmt.Errorf("%s: database secrets required: %v", u.UserID, err))
+			}
+		}
+		for _, r := range u.Rooms {
+			if r.PrivateReceipt != "" {
+				failures = append(failures, fmt.Errorf("%s: private receipt in %s cannot be preserved on backfilled events", u.UserID, r.RoomID))
+			}
+		}
+		if len(u.Emails) > 1 {
+			failures = append(failures, fmt.Errorf("%s: destination supports only one email", u.UserID))
+		}
+	}
+	for _, room := range rooms {
+		if room.ArchiveOnly {
+			failures = append(failures, fmt.Errorf("%s: rooms without joined local users cannot currently be restored", room.RoomID))
+			continue
+		}
+		var data relay.RoomData
+		ok, err := im.Archive.ReadRoomPDUs(room.RoomID, &data)
+		if err != nil || !ok {
+			failures = append(failures, fmt.Errorf("%s: original PDUs required: %v", room.RoomID, err))
+			continue
+		}
+		if !relay.SupportsVersion(room.Version) || checkEventIDs(data.Events, room.Version) != 0 {
+			failures = append(failures, fmt.Errorf("%s: original event IDs cannot be preserved", room.RoomID))
+		}
+	}
+	if server != nil {
+		for _, limitation := range server.Limitations {
+			failures = append(failures, errors.New(limitation))
+		}
+		for _, message := range server.ToDevice {
+			if !strings.HasSuffix(message.Sender, ":"+im.Archive.Manifest.ServerName) {
+				failures = append(failures, fmt.Errorf("queued message %s: remote sender cannot be restored through the client API", message.Key))
+			}
+		}
+	}
+	if len(failures) != 0 {
+		return fmt.Errorf("lossless import blocked: %w", errors.Join(failures...))
+	}
+	return nil
+}
+
+func hasThreadReceipt(v any) bool {
+	switch value := v.(type) {
+	case map[string]any:
+		if thread, ok := value["thread_id"].(string); ok && thread != "" && thread != "main" {
+			return true
+		}
+		for _, child := range value {
+			if hasThreadReceipt(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range value {
+			if hasThreadReceipt(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Redactions preserve event IDs, so compare content as well.
+func originalEventFields(raw json.RawMessage) (map[string]any, error) {
+	var event map[string]any
+	d := json.NewDecoder(strings.NewReader(string(raw)))
+	d.UseNumber()
+	if err := d.Decode(&event); err != nil {
+		return nil, err
+	}
+	fields := map[string]any{}
+	for _, k := range []string{"type", "sender", "origin_server_ts", "state_key", "content", "redacts"} {
+		if v, ok := event[k]; ok {
+			fields[k] = v
+		}
+	}
+	return fields, nil
+}

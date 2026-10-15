@@ -42,9 +42,9 @@ func newRootCmd() *cobra.Command {
 	var verbose bool
 	root := &cobra.Command{
 		Use:   "exodus",
-		Short: "Migrate Matrix accounts from Synapse to Continuwuity",
+		Short: "Migrate Matrix accounts from Synapse or Tuwunel to Continuwuity",
 		Long: `exodus copies accounts, profiles, media, account data, push rules and room
-memberships from a Synapse homeserver (or any homeserver, such as matrix.org,
+memberships from Synapse or Tuwunel (or any homeserver, such as matrix.org,
 through the client API) to a Continuwuity homeserver.
 
 Moving to a new server name, with the source still online:
@@ -69,6 +69,8 @@ Replacing Synapse on the same server name:
 }
 
 type sourceFlags struct {
+	requireLossless                            bool
+	kind, tuwunelDump, serverUser              string
 	url, token, user, password, adminToken, db string
 	signingKey                                 string
 	masURL, masToken, masDB                    string
@@ -79,10 +81,14 @@ type sourceFlags struct {
 func (f *sourceFlags) register(cmd *cobra.Command) {
 	fs := cmd.Flags()
 	fs.StringVar(&f.url, "from", "", "source homeserver client API URL")
+	fs.StringVar(&f.kind, "from-type", "synapse", "source server type: synapse or tuwunel")
+	fs.StringVar(&f.tuwunelDump, "tuwunel-dump", "", "directory of offline Tuwunel RocksDB hex scans, to keep passwords and sessions")
+	fs.StringVar(&f.serverUser, "tuwunel-server-user", "conduit", "Tuwunel server bot localpart, excluded from bulk migration")
+	fs.BoolVar(&f.requireLossless, "require-lossless", false, "require original messages and login data (mandatory for whole-server Tuwunel export)")
 	fs.StringVar(&f.token, "from-token", os.Getenv("EXODUS_FROM_TOKEN"), "source access token of the user to migrate [$EXODUS_FROM_TOKEN]")
 	fs.StringVar(&f.user, "from-user", "", "source user to log in as (with --from-password)")
 	fs.StringVar(&f.password, "from-password", os.Getenv("EXODUS_FROM_PASSWORD"), "source password [$EXODUS_FROM_PASSWORD]")
-	fs.StringVar(&f.adminToken, "from-admin-token", os.Getenv("EXODUS_FROM_ADMIN_TOKEN"), "Synapse admin access token, to migrate several users [$EXODUS_FROM_ADMIN_TOKEN]")
+	fs.StringVar(&f.adminToken, "from-admin-token", os.Getenv("EXODUS_FROM_ADMIN_TOKEN"), "source admin access token, to migrate several users [$EXODUS_FROM_ADMIN_TOKEN]")
 	fs.StringSliceVar(&f.users, "users", nil, "user IDs to migrate (with --from-admin-token)")
 	fs.BoolVar(&f.allUsers, "all-users", false, "migrate every local account (with --from-admin-token)")
 	fs.BoolVar(&f.skipMissingMedia, "skip-missing-media", false, "continue when source media returns HTTP 404")
@@ -96,6 +102,7 @@ func (f *sourceFlags) register(cmd *cobra.Command) {
 }
 
 type source struct {
+	dump                       *migrate.TuwunelDump
 	allUsers, skipMissingMedia bool
 	db                         *migrate.SynapseDB
 	mas                        *migrate.MAS
@@ -109,12 +116,52 @@ type source struct {
 	single      *migrate.Session
 }
 
+func (f *sourceFlags) preservationDefault() {
+	if f.kind == "tuwunel" && f.allUsers {
+		f.requireLossless = true
+	}
+}
+
 func (f *sourceFlags) open(ctx context.Context) (*source, error) {
+	f.preservationDefault()
+	if f.requireLossless && (f.kind != "tuwunel" || !f.allUsers || f.adminToken == "" || f.tuwunelDump == "" || f.skipMissingMedia || f.masURL != "" || f.masDB != "") {
+		return nil, errors.New("preservation requires a full native Tuwunel export: --all-users --from-admin-token --tuwunel-dump; omit --skip-missing-media and MAS options")
+	}
+	if f.kind != "synapse" && f.kind != "tuwunel" {
+		return nil, errors.New("--from-type must be synapse or tuwunel")
+	}
+	if f.kind == "tuwunel" && (f.db != "" || f.signingKey != "") {
+		return nil, errors.New("--synapse-db and --synapse-signing-key cannot be used with Tuwunel")
+	}
+	if f.tuwunelDump != "" && f.kind != "tuwunel" {
+		return nil, errors.New("--tuwunel-dump requires --from-type tuwunel")
+	}
+	if f.tuwunelDump != "" && (f.masURL != "" || f.masDB != "") {
+		return nil, errors.New("--tuwunel-dump cannot be combined with MAS; use --mas-db for MAS passwords and sessions")
+	}
+	var dump *migrate.TuwunelDump
+	var err error
+	if f.tuwunelDump != "" {
+		if dump, err = migrate.OpenTuwunelDump(f.tuwunelDump); err != nil {
+			return nil, err
+		}
+	}
+	if f.requireLossless {
+		if err := dump.CheckLosslessMaps(); err != nil {
+			return nil, err
+		}
+	}
 	s, err := f.openAPI(ctx)
 	if err != nil {
 		return nil, err
 	}
+	if f.requireLossless {
+		if err := dump.CheckUserInventory(s.userIDs(), "@"+f.serverUser+":"+s.serverName); err != nil {
+			return nil, err
+		}
+	}
 	s.skipMissingMedia = f.skipMissingMedia
+	s.dump = dump
 	if f.masURL != "" {
 		if f.adminToken == "" || f.masToken == "" {
 			return nil, errors.New("--from-mas-url requires --from-admin-token and --from-mas-token")
@@ -155,6 +202,10 @@ func (f *sourceFlags) openAPI(ctx context.Context) (*source, error) {
 		users, err := migrate.SelectSynapseUsers(ctx, admin, f.users)
 		if err != nil {
 			return nil, err
+		}
+		if f.kind == "tuwunel" {
+			bot := "@" + f.serverUser + ":" + admin.UserID.Homeserver()
+			users = slices.DeleteFunc(users, func(u migrate.SynapseUser) bool { return u.UserID == bot })
 		}
 		s := &source{allUsers: f.allUsers, serverName: admin.UserID.Homeserver(), admin: admin, adminID: string(admin.UserID)}
 		for _, u := range users {
@@ -245,7 +296,7 @@ func (s *source) open(ctx context.Context, u migrate.SynapseUser) (*migrate.Sess
 		sess, err = s.mas.Impersonate(ctx, s.admin, u, impersonationTTL)
 	case u.UserID == s.adminID:
 		// Synapse refuses to impersonate the calling admin.
-		sess = &migrate.Session{UserID: s.adminID, Client: s.admin, Admin: u.Admin}
+		sess = &migrate.Session{UserID: s.adminID, Client: s.admin, Admin: u.Admin, Locked: u.Locked, Suspended: u.Suspended, ShadowBanned: u.ShadowBanned, Guest: u.Guest, ExternalIDs: u.ExternalIDs}
 	default:
 		sess, err = migrate.Impersonate(ctx, s.admin, u, impersonationTTL)
 	}
@@ -269,7 +320,7 @@ func (s *source) open(ctx context.Context, u migrate.SynapseUser) (*migrate.Sess
 }
 
 func (s *source) exporter(a *archive.Archive) *migrate.Exporter {
-	return &migrate.Exporter{AllUsers: s.allUsers, SkipMissingMedia: s.skipMissingMedia, Archive: a, Admin: s.admin, DB: s.db, MAS: s.mas, MASDB: s.masDB}
+	return &migrate.Exporter{AllUsers: s.allUsers, SkipMissingMedia: s.skipMissingMedia, Archive: a, Admin: s.admin, DB: s.db, MAS: s.mas, MASDB: s.masDB, TuwunelDump: s.dump}
 }
 
 func (s *source) Close() {
@@ -360,8 +411,18 @@ func newExportCmd() *cobra.Command {
 			if err := a.BeginExport(); err != nil {
 				return err
 			}
+			if src.requireLossless {
+				if err := a.RequireLossless(); err != nil {
+					return err
+				}
+			}
 			defer func() { result = errors.Join(result, a.FinishExport(result)) }()
 			exp := s.exporter(a)
+			if s.dump != nil {
+				if err := s.dump.Retain(a); err != nil {
+					return err
+				}
+			}
 			var users []*archive.User
 			err = s.each(ctx, func(sess *migrate.Session) error {
 				u, err := exp.ExportUser(ctx, sess)
@@ -388,6 +449,9 @@ func newExportCmd() *cobra.Command {
 			if src.signingKey != "" {
 				err = errors.Join(err, exp.ExportRelayKeys(ctx, src.signingKey))
 			}
+			if s.dump != nil && s.dump.HasRelayData() {
+				err = errors.Join(err, exp.ExportTuwunelRelayKeys())
+			}
 			return errors.Join(err, exp.ExportServer(ctx))
 		},
 	}
@@ -401,6 +465,7 @@ func newImportCmd() *cobra.Command {
 	var dst destFlags
 	var relayOpts relayFlags
 	var dir string
+	var requireLossless bool
 	cmd := &cobra.Command{
 		Use:   "import",
 		Short: "Import an archive into Continuwuity",
@@ -433,9 +498,15 @@ after replacing Synapse with Continuwuity on the same server name.`,
 			if err != nil {
 				return err
 			}
+			im.RequireLossless = requireLossless || a.Manifest.RequireLossless
 			srv, err := a.ReadServer()
 			if err != nil {
 				return err
+			}
+			if im.RequireLossless {
+				if err := im.CheckLosslessImport(users, rooms, srv, relayOpts.name != ""); err != nil {
+					return err
+				}
 			}
 			if im.Admin != nil && needsAppservice(users, rooms, srv) {
 				unregister, err := registerAppservice(ctx, im)
@@ -498,7 +569,8 @@ after replacing Synapse with Continuwuity on the same server name.`,
 	}
 	dst.register(cmd)
 	fs := cmd.Flags()
-	fs.StringVar(&relayOpts.name, "relay-name", "", "server name of the temporary relay that hands rooms only your server was in to Continuwuity with their original events (needs export --synapse-db --synapse-signing-key)")
+	fs.StringVar(&relayOpts.name, "relay-name", "", "temporary federation relay server name for original-event transfer (requires exported signing key and PDUs)")
+	fs.BoolVar(&requireLossless, "require-lossless", false, "require preservation checks (inherited from the export)")
 	fs.StringVar(&relayOpts.listen, "relay-listen", ":8448", "address the relay listens on")
 	fs.StringVar(&relayOpts.cert, "relay-tls-cert", "", "TLS certificate of the relay; self-signed when unset")
 	fs.StringVar(&relayOpts.key, "relay-tls-key", "", "TLS key of the relay")
@@ -518,6 +590,10 @@ server name, the old account invites the new one into every room and hands
 over its power level, so invite-only and local-only rooms are kept.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			src.preservationDefault()
+			if src.requireLossless {
+				return errors.New("--require-lossless requires separate export and import with a relay, not streaming migrate")
+			}
 			ctx := cmd.Context()
 			s, err := src.open(ctx)
 			if err != nil {
@@ -702,6 +778,9 @@ func finishImport(ctx context.Context, out io.Writer, im *migrate.Importer, a *a
 	reports = retryJoins(ctx, im, users, reports)
 	notes, serverFailures := im.ImportServer(ctx)
 	failures := slices.Concat(im.RestoreInvites(ctx, users), im.RestoreKnocks(ctx, users), serverFailures)
+	if im.RequireLossless {
+		failures = append(failures, im.VerifySessions(ctx, users)...)
+	}
 	if migrationFailures(reports, rooms, failures) == nil && len(reports) == len(users) {
 		failures = append(failures, im.ApplyStatus(ctx, users)...)
 	} else {
@@ -762,7 +841,7 @@ func startRelay(ctx context.Context, a *archive.Archive, destURL string, f relay
 		return nil, err
 	}
 	if raw == "" {
-		return nil, errors.New("--relay-name requires exporting with --synapse-signing-key")
+		return nil, errors.New("--relay-name requires an exported signing key (Synapse signing-key file or Tuwunel global dump)")
 	}
 	if im.Admin == nil {
 		return nil, errors.New("--relay-name requires --to-admin-token")
@@ -784,6 +863,22 @@ func startRelay(ctx context.Context, a *archive.Archive, destURL string, f relay
 
 func exportRooms(ctx context.Context, exp *migrate.Exporter, users []*archive.User, member *mautrix.Client) error {
 	ids := migrate.LocalOnlyRooms(users)
+	if exp.TuwunelDump != nil && exp.TuwunelDump.HasRelayData() && exp.AllUsers {
+		var err error
+		ids, err = exp.TuwunelDump.RoomIDs()
+		if err != nil {
+			return err
+		}
+		// Include live rooms so export detects rooms missing from the checkpoint.
+		for _, u := range users {
+			for _, r := range u.Rooms {
+				if !slices.Contains(ids, r.RoomID) {
+					ids = append(ids, r.RoomID)
+				}
+			}
+		}
+		slices.Sort(ids)
+	}
 	known := map[string]bool{}
 	for _, u := range users {
 		for _, m := range u.Media {

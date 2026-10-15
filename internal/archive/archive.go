@@ -17,9 +17,16 @@ import (
 const version = 1
 
 type Manifest struct {
-	Version    int       `json:"version"`
-	ServerName string    `json:"server_name"`
-	CreatedAt  time.Time `json:"created_at"`
+	RequireLossless bool      `json:"require_lossless,omitempty"`
+	Version         int       `json:"version"`
+	ServerName      string    `json:"server_name"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+// RequireLossless saves the import policy in the manifest.
+func (a *Archive) RequireLossless() error {
+	a.Manifest.RequireLossless = true
+	return writeJSON(filepath.Join(a.Dir, "manifest.json"), a.Manifest)
 }
 
 type User struct {
@@ -109,6 +116,8 @@ type PendingPassword struct {
 
 // Synapse bcrypt by default, else MAS PHC strings.
 const SchemeMAS = "mas"
+
+const SchemeTuwunel = "tuwunel"
 
 type CrossSigning struct {
 	Master      json.RawMessage `json:"master_key"`
@@ -484,11 +493,14 @@ func readOptionalJSON(path string, v any) error {
 }
 
 type Server struct {
+	Media []Media `json:"media,omitempty"`
+	// Unsupported source data that blocks strict import.
+	Limitations        []string            `json:"limitations,omitempty"`
 	RegistrationTokens []RegistrationToken `json:"registration_tokens,omitempty"`
 	BlockedRooms       []string            `json:"blocked_rooms,omitempty"`
 	Aliases            map[string]string   `json:"aliases,omitempty"`
 	Reports            []Report            `json:"reports,omitempty"`
-	// Messages Synapse had not delivered yet.
+	// Messages the source homeserver had not delivered yet.
 	ToDevice []ToDevice `json:"to_device,omitempty"`
 }
 

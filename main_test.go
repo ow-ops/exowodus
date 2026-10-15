@@ -1,15 +1,193 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"exodus/internal/archive"
 	"exodus/internal/migrate"
+	"exodus/internal/mx"
 )
+
+func TestTuwunelPreservationDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		flags sourceFlags
+		want  bool
+	}{
+		{"whole server", sourceFlags{kind: "tuwunel", allUsers: true}, true},
+		{"individual account", sourceFlags{kind: "tuwunel"}, false},
+		{"Synapse", sourceFlags{kind: "synapse", allUsers: true}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.flags.preservationDefault()
+			if tc.flags.requireLossless != tc.want {
+				t.Fatalf("preservation = %v, want %v", tc.flags.requireLossless, tc.want)
+			}
+		})
+	}
+}
+
+func TestTuwunelDefaultRejectsIncompleteExportBeforeAPI(t *testing.T) {
+	cmd := newExportCmd()
+	cmd.SetArgs([]string{"--from", "http://127.0.0.1:1", "--from-type", "tuwunel", "--all-users", "--from-admin-token", "test"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "preservation requires") {
+		t.Fatalf("incomplete whole-server export was not rejected: %v", err)
+	}
+}
+
+func TestTuwunelCannotDisablePreservation(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"errcode":"M_UNKNOWN_TOKEN","error":"test token"}`))
+	}))
+	defer srv.Close()
+	cmd := newExportCmd()
+	cmd.SetArgs([]string{"--from", srv.URL, "--from-type", "tuwunel", "--all-users", "--from-admin-token", "test", "--require-lossless=false"})
+	if err := cmd.Execute(); err == nil || requests != 0 || !strings.Contains(err.Error(), "preservation requires") {
+		t.Fatalf("whole-server preservation was bypassed: %v", err)
+	}
+}
+
+func TestTuwunelStaleSnapshotCannotOmitJoinedRoom(t *testing.T) {
+	dir := t.TempDir()
+	for _, table := range []string{"userid_password", "token_userdeviceid", "global", "server_signingkeys", "pduid_pdu", "eventid_outlierpdu", "shorteventid_eventid", "shortstatekey_statekey", "shorteventid_shortstatehash", "roomid_shortstatehash", "shortstatehash_statediff", "roomid_pduleaves"} {
+		if err := os.WriteFile(filepath.Join(dir, table+".txt"), nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dump, err := migrate.OpenTuwunelDump(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requested := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/state"):
+			requested = true
+			_, _ = w.Write([]byte(`{"state":[]}`))
+		case strings.HasSuffix(r.URL.Path, "/messages"):
+			_, _ = w.Write([]byte(`{"chunk":[]}`))
+		case r.URL.Path == "/_synapse/admin/v1/rooms":
+			_, _ = w.Write([]byte(`{"rooms":[]}`))
+		default:
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer srv.Close()
+	a, err := archive.Create(t.TempDir(), "example.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exp := &migrate.Exporter{Archive: a, Admin: mx.MustNew(srv.URL, "admin"), AllUsers: true, TuwunelDump: dump}
+	users := []*archive.User{{UserID: "@alice:example.org", Rooms: []archive.Room{{RoomID: "!new:example.org", Via: []string{"remote.example.org"}}}}}
+	err = exportRooms(t.Context(), exp, users, nil)
+	if !requested || err == nil {
+		t.Fatal("joined room created after checkpoint was silently omitted")
+	}
+}
+
+func TestTuwunelBulkSource(t *testing.T) {
+	logouts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/_matrix/client/v3/account/whoami":
+			_, _ = w.Write([]byte(`{"user_id":"@admin:example.org","device_id":"ADMIN"}`))
+		case "/_synapse/admin/v2/users":
+			if r.URL.Query().Get("deactivated") != "true" || r.URL.Query().Get("locked") != "true" {
+				t.Error("account status filters omitted")
+			}
+			if r.URL.Query().Get("from") == "" {
+				_, _ = w.Write([]byte(`{"users":[{"name":"@conduit:example.org"},{"name":"@admin:example.org"}],"next_token":"2"}`))
+			} else {
+				_, _ = w.Write([]byte(`{"users":[{"name":"@alice:example.org"},{"name":"@gone:example.org"}]}`))
+			}
+		case "/_synapse/admin/v2/users/@gone:example.org":
+			_, _ = w.Write([]byte(`{"deactivated":true}`))
+		case "/_synapse/admin/v2/users/@conduit:example.org", "/_synapse/admin/v2/users/@admin:example.org":
+			_, _ = w.Write([]byte(`{"admin":true}`))
+		case "/_synapse/admin/v2/users/@alice:example.org":
+			_, _ = w.Write([]byte(`{}`))
+		case "/_synapse/admin/v1/users/@alice:example.org/login":
+			var body map[string]int64
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["valid_until_ms"] == 0 {
+				t.Error("impersonation expiry missing")
+			}
+			_, _ = w.Write([]byte(`{"access_token":"temporary"}`))
+		case "/_matrix/client/v3/logout":
+			if r.Header.Get("Authorization") != "Bearer temporary" {
+				t.Error("revoking wrong token")
+			}
+			logouts++
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	f := sourceFlags{url: srv.URL, kind: "tuwunel", serverUser: "conduit", adminToken: "admin-token", allUsers: true}
+	s, err := f.openAPI(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if len(s.users) != 2 || len(s.deactivated) != 1 || s.userIDs()["@conduit:example.org"] {
+		t.Fatalf("source = %+v", s)
+	}
+	if err := s.each(t.Context(), func(sess *migrate.Session) error {
+		if sess.UserID == "@admin:example.org" && !sess.Admin {
+			t.Error("admin status lost")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if logouts != 1 {
+		t.Fatalf("temporary logouts = %d", logouts)
+	}
+}
+
+func TestTuwunelSourceValidation(t *testing.T) {
+	for _, f := range []sourceFlags{
+		{kind: "unknown"}, {kind: "tuwunel", db: "database"},
+		{kind: "tuwunel", signingKey: "key"}, {kind: "synapse", tuwunelDump: "dump"},
+		{kind: "tuwunel", tuwunelDump: "dump", masURL: "https://mas.example.org"},
+	} {
+		if _, err := f.open(t.Context()); err == nil {
+			t.Fatalf("invalid flags accepted: %+v", f)
+		}
+	}
+}
+
+func TestTuwunelSingleSource(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/whoami") || r.Header.Get("Authorization") != "Bearer user-token" {
+			t.Errorf("unexpected request %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"user_id":"@alice:example.org","device_id":"PHONE"}`))
+	}))
+	defer srv.Close()
+	f := sourceFlags{kind: "tuwunel", url: srv.URL, token: "user-token"}
+	s, err := f.open(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if s.single == nil || s.single.UserID != "@alice:example.org" || len(s.userIDs()) != 1 {
+		t.Fatalf("source = %+v", s)
+	}
+}
 
 func TestMigrationFailures(t *testing.T) {
 	f := migrate.Failure{Step: "injected", Error: "failure"}

@@ -1,0 +1,398 @@
+package migrate
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
+
+	"exodus/internal/archive"
+)
+
+// TuwunelDump reads offline ldb scan --hex output.
+type TuwunelDump struct {
+	dir         string
+	passwords   map[string][]byte
+	tokens      map[string][]byte
+	refresh     map[string][]byte
+	maps        map[string]map[string][]byte
+	relayOnce   sync.Once
+	relayErr    error
+	relayRooms  map[string]*tuwunelRoomIndex
+	shortEvents map[string]string
+}
+
+var tuwunelExtraMaps = []string{
+	"userdeviceid_metadata", "onetimekeyid4225_otk", "onetimekeyid_onetimekeys",
+	"userdeviceidalgorithm_fallback", "senderkey_pusher", "pushkey_deviceid",
+	"todeviceid_events", "bannedroomids", "alias_roomid",
+	"global", "server_signingkeys", "pduid_pdu", "eventid_outlierpdu",
+	"shorteventid_eventid", "shortstatekey_statekey", "shorteventid_shortstatehash",
+	"roomid_shortstatehash", "shortstatehash_statediff", "roomid_pduleaves",
+	"servercurrentevent_data", "servernameevent_data",
+	"mediaid_file", "mediaid_lazy", "mediaid_lazycontent",
+	"readreceiptid_readreceipt", "roomuserid_privateread",
+}
+
+func OpenTuwunelDump(dir string) (*TuwunelDump, error) {
+	d := &TuwunelDump{dir: dir}
+	var err error
+	if d.passwords, err = readTuwunelScan(filepath.Join(dir, "userid_password.txt")); err != nil {
+		return nil, err
+	}
+	if d.tokens, err = readTuwunelScan(filepath.Join(dir, "token_userdeviceid.txt")); err != nil {
+		return nil, err
+	}
+	d.refresh, err = readTuwunelScan(filepath.Join(dir, "userdeviceid_refresh.txt"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	if d.refresh == nil {
+		for token := range d.tokens {
+			if strings.HasPrefix(token, "refresh_") {
+				return nil, errors.New("Tuwunel refresh tokens require userdeviceid_refresh.txt")
+			}
+		}
+	}
+	d.maps = map[string]map[string][]byte{}
+	var missing []string
+	for _, name := range tuwunelExtraMaps {
+		rows, err := readTuwunelScan(filepath.Join(dir, name+".txt"))
+		if errors.Is(err, fs.ErrNotExist) {
+			missing = append(missing, name)
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		d.maps[name] = rows
+	}
+	if len(missing) != 0 {
+		slog.Info("optional Tuwunel maps omitted from export", "maps", missing)
+	}
+	if d.maps["senderkey_pusher"] != nil && d.maps["pushkey_deviceid"] == nil {
+		return nil, errors.New("Tuwunel pushers require pushkey_deviceid.txt")
+	}
+	if d.HasRelayData() {
+		if err := d.indexRelayData(); err != nil {
+			return nil, err
+		}
+	}
+	return d, nil
+}
+
+func readTuwunelScan(path string) (map[string][]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	rows := map[string][]byte{}
+	s := bufio.NewScanner(f)
+	s.Buffer(make([]byte, 4096), 16*1024*1024)
+	line := 0
+	for s.Scan() {
+		line++
+		text := strings.TrimSpace(s.Text())
+		if text == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(text, " ==> ")
+		if !ok || !strings.HasPrefix(key, "0x") || !strings.HasPrefix(value, "0x") {
+			return nil, fmt.Errorf("%s:%d: expected ldb scan --hex output", path, line)
+		}
+		k, e1 := hex.DecodeString(key[2:])
+		v, e2 := hex.DecodeString(value[2:])
+		if e1 != nil || e2 != nil {
+			return nil, fmt.Errorf("%s:%d: invalid hex row", path, line)
+		}
+		if _, exists := rows[string(k)]; exists {
+			return nil, fmt.Errorf("%s:%d: duplicate key", path, line)
+		}
+		rows[string(k)] = v
+	}
+	if err := s.Err(); err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	return rows, nil
+}
+
+// Retain copies all supplied scans into the archive, including unknown tables.
+func (d *TuwunelDump) Retain(a *archive.Archive) error {
+	entries, err := os.ReadDir(d.dir)
+	if err != nil {
+		return err
+	}
+	dest := filepath.Join(a.Dir, "source", "tuwunel")
+	if err := os.MkdirAll(dest, 0700); err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".txt") {
+			continue
+		}
+		if err := retainTuwunelFile(filepath.Join(d.dir, entry.Name()), filepath.Join(dest, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func retainTuwunelFile(source, destination string) error {
+	in, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(destination+".tmp", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if err := errors.Join(copyErr, closeErr); err != nil {
+		return err
+	}
+	return os.Rename(destination+".tmp", destination)
+}
+
+func (d *TuwunelDump) Secrets(userID string) (*archive.Secrets, error) {
+	hash, ok := d.passwords[userID]
+	if !ok {
+		return nil, fmt.Errorf("Tuwunel dump has no account %s", userID)
+	}
+	s := &archive.Secrets{}
+	if len(hash) != 0 && string(hash) != "*" {
+		if !strings.HasPrefix(string(hash), "$argon2id$") {
+			return nil, fmt.Errorf("unsupported Tuwunel password scheme for %s", userID)
+		}
+		s.PasswordHash, s.PasswordScheme = string(hash), archive.SchemeTuwunel
+	}
+	for token, value := range d.tokens {
+		// Split only the two string fields: the binary expiry can contain 0xff.
+		parts := bytes.SplitN(value, []byte{0xff}, 3)
+		if len(parts) < 2 || !utf8.Valid(parts[0]) || !utf8.Valid(parts[1]) || len(parts[1]) == 0 {
+			return nil, errors.New("invalid Tuwunel token record")
+		}
+		if string(parts[0]) != userID {
+			continue
+		}
+		if len(parts) == 3 && len(parts[2]) != 0 {
+			if len(parts[2]) != 8 {
+				return nil, fmt.Errorf("invalid Tuwunel token expiry for %s", userID)
+			}
+			if binary.BigEndian.Uint64(parts[2]) <= uint64(time.Now().Unix()) {
+				continue
+			}
+		}
+		refresh := strings.HasPrefix(token, "refresh_")
+		if refresh && string(d.refresh[string(parts[0])+"\xff"+string(parts[1])]) != token {
+			continue
+		}
+		s.Tokens = append(s.Tokens, archive.Token{Token: token, DeviceID: string(parts[1]), Refresh: refresh})
+	}
+	slices.SortFunc(s.Tokens, func(a, b archive.Token) int { return strings.Compare(a.Token, b.Token) })
+	if err := d.addDeviceData(userID, s); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func (d *TuwunelDump) CheckUserInventory(users map[string]bool, bot string) error {
+	for user := range d.passwords {
+		if user != bot && !users[user] {
+			return fmt.Errorf("snapshot account %s missing from source API inventory", user)
+		}
+	}
+	for user := range users {
+		if _, ok := d.passwords[user]; !ok {
+			return fmt.Errorf("source account %s missing from database checkpoint", user)
+		}
+	}
+	return nil
+}
+
+// Binary fields after the second separator may contain 0xff.
+func tuwunelDeviceKey(key string) (user, device string, tail []byte, err error) {
+	parts := bytes.SplitN([]byte(key), []byte{0xff}, 3)
+	if len(parts) < 2 || len(parts[0]) == 0 || len(parts[1]) == 0 || !utf8.Valid(parts[0]) || !utf8.Valid(parts[1]) {
+		return "", "", nil, errors.New("invalid Tuwunel device key")
+	}
+	if len(parts) == 3 {
+		tail = parts[2]
+	}
+	return string(parts[0]), string(parts[1]), tail, nil
+}
+
+func (d *TuwunelDump) addDeviceData(userID string, s *archive.Secrets) error {
+	s.OneTimeKeys = map[string]map[string]json.RawMessage{}
+	s.FallbackKeys = map[string]map[string]json.RawMessage{}
+	for _, name := range []string{"userdeviceid_metadata", "onetimekeyid4225_otk", "onetimekeyid_onetimekeys", "userdeviceidalgorithm_fallback", "senderkey_pusher"} {
+		for key, value := range d.maps[name] {
+			user, device, tail, err := tuwunelDeviceKey(key)
+			if err != nil {
+				return fmt.Errorf("%s: %w", name, err)
+			}
+			if user != userID {
+				continue
+			}
+			if !json.Valid(value) {
+				return fmt.Errorf("%s: invalid JSON for %s", name, userID)
+			}
+			switch name {
+			case "userdeviceid_metadata":
+				if tail != nil {
+					return errors.New("invalid Tuwunel device metadata key")
+				}
+				var metadata struct {
+					ID string `json:"device_id"`
+				}
+				if err := json.Unmarshal(value, &metadata); err != nil || metadata.ID != device {
+					return errors.New("Tuwunel device metadata ID mismatch")
+				}
+				s.Devices = append(s.Devices, device)
+			case "onetimekeyid4225_otk", "onetimekeyid_onetimekeys":
+				id := tail
+				if name == "onetimekeyid4225_otk" {
+					// The key ID starts after the eight-byte count and its separator.
+					if len(tail) < 10 || tail[8] != 0xff {
+						return errors.New("invalid Tuwunel ordered one-time key")
+					}
+					id = tail[9:]
+				} else {
+					// Older Conduit-lineage databases store a JSON-quoted key ID.
+					var decoded string
+					if err := json.Unmarshal(id, &decoded); err != nil {
+						return errors.New("invalid Tuwunel legacy one-time key ID")
+					}
+					id = []byte(decoded)
+				}
+				if err := putTuwunelKey(s.OneTimeKeys, device, string(id), value); err != nil {
+					return err
+				}
+			case "userdeviceidalgorithm_fallback":
+				var entry struct {
+					ID   string          `json:"key_id"`
+					Key  json.RawMessage `json:"key"`
+					Used *bool           `json:"used"`
+				}
+				if err := json.Unmarshal(value, &entry); err != nil || entry.Used == nil || !json.Valid(entry.Key) {
+					return errors.New("invalid Tuwunel fallback key record")
+				}
+				if *entry.Used {
+					continue
+				}
+				if !strings.HasPrefix(entry.ID, string(tail)+":") {
+					return errors.New("Tuwunel fallback algorithm mismatch")
+				}
+				if err := putTuwunelKey(s.FallbackKeys, device, entry.ID, entry.Key); err != nil {
+					return err
+				}
+			case "senderkey_pusher":
+				// The second string here is the pushkey, rather than a device ID.
+				if tail != nil {
+					return errors.New("invalid Tuwunel pusher key")
+				}
+				deviceID := d.maps["pushkey_deviceid"][device]
+				if len(deviceID) == 0 || !utf8.Valid(deviceID) {
+					return errors.New("Tuwunel pusher device missing")
+				}
+				s.Pushers = append(s.Pushers, archive.Pusher{DeviceID: string(deviceID), Body: json.RawMessage(value)})
+			}
+		}
+	}
+	slices.Sort(s.Devices)
+	slices.SortFunc(s.Pushers, func(a, b archive.Pusher) int { return bytes.Compare(a.Body, b.Body) })
+	return nil
+}
+
+func putTuwunelKey(keys map[string]map[string]json.RawMessage, device, id string, value []byte) error {
+	algorithm, name, ok := strings.Cut(id, ":")
+	if !ok || algorithm == "" || name == "" || !utf8.ValidString(id) || !json.Valid(value) || string(value) == "null" {
+		return errors.New("invalid Tuwunel encryption key record")
+	}
+	if keys[device] == nil {
+		keys[device] = map[string]json.RawMessage{}
+	}
+	if previous, exists := keys[device][id]; exists && !bytes.Equal(previous, value) {
+		return errors.New("conflicting Tuwunel encryption key records")
+	}
+	keys[device][id] = json.RawMessage(value)
+	return nil
+}
+
+func (d *TuwunelDump) AddServer(s *archive.Server, serverName string) error {
+	for _, table := range []string{"servercurrentevent_data", "servernameevent_data"} {
+		if len(d.maps[table]) != 0 {
+			s.Limitations = append(s.Limitations, fmt.Sprintf("%s has %d pending deliveries; source queues must drain before lossless cutover", table, len(d.maps[table])))
+		}
+	}
+	for _, raw := range d.maps["readreceiptid_readreceipt"] {
+		var receipt map[string]any
+		if err := json.Unmarshal(raw, &receipt); err != nil {
+			return errors.New("invalid Tuwunel receipt record")
+		}
+		if hasThreadReceipt(receipt) {
+			s.Limitations = append(s.Limitations, "threaded read receipts are not supported by the destination")
+			break
+		}
+	}
+	if len(d.maps["roomuserid_privateread"]) != 0 {
+		s.Limitations = append(s.Limitations, "private read receipts on backfilled events cannot currently be restored")
+	}
+	for key := range d.maps["bannedroomids"] {
+		if !validTuwunelRoomID(key) {
+			return errors.New("invalid Tuwunel banned room ID")
+		}
+		s.BlockedRooms = append(s.BlockedRooms, key)
+	}
+	slices.Sort(s.BlockedRooms)
+	if len(d.maps["alias_roomid"]) != 0 {
+		s.Aliases = map[string]string{}
+	}
+	for localpart, room := range d.maps["alias_roomid"] {
+		if localpart == "" || !utf8.ValidString(localpart) || strings.Contains(localpart, ":") || !validTuwunelRoomID(string(room)) {
+			return errors.New("invalid Tuwunel alias record")
+		}
+		s.Aliases["#"+localpart+":"+serverName] = string(room)
+	}
+	for key, value := range d.maps["todeviceid_events"] {
+		user, device, count, err := tuwunelDeviceKey(key)
+		if err != nil || len(count) != 8 {
+			return errors.New("invalid Tuwunel to-device key")
+		}
+		var event struct {
+			Sender  string          `json:"sender"`
+			Type    string          `json:"type"`
+			Content json.RawMessage `json:"content"`
+		}
+		if err := json.Unmarshal(value, &event); err != nil || event.Sender == "" || event.Type == "" || !json.Valid(event.Content) || string(event.Content) == "null" {
+			return errors.New("invalid Tuwunel to-device event")
+		}
+		s.ToDevice = append(s.ToDevice, archive.ToDevice{
+			Key:    "tuwunel/inbox/" + hex.EncodeToString([]byte(key)),
+			Sender: event.Sender, Type: event.Type, Content: event.Content,
+			Recipient: user, DeviceID: device,
+		})
+	}
+	slices.SortFunc(s.ToDevice, func(a, b archive.ToDevice) int { return strings.Compare(a.Key, b.Key) })
+	return nil
+}
+
+func validTuwunelRoomID(id string) bool {
+	// Room version 12 IDs are hashes without a server-name suffix.
+	return utf8.ValidString(id) && len(id) > 1 && strings.HasPrefix(id, "!") && !strings.ContainsAny(id, " \t\r\n")
+}

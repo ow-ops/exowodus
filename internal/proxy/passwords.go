@@ -63,6 +63,12 @@ func LoadMASSchemes(path string) (map[int]MASScheme, error) {
 }
 
 func checkPassword(p archive.PendingPassword, password, pepper string, mas map[int]MASScheme) bool {
+	if p.Scheme == archive.SchemeTuwunel {
+		if !validTuwunelHash(p.Hash) {
+			return false
+		}
+		return checkPHC(p.Hash, []byte(password), nil)
+	}
 	if p.Scheme == archive.SchemeMAS {
 		scheme := mas[p.Version]
 		if scheme.UnicodeNormalization {
@@ -71,6 +77,23 @@ func checkPassword(p archive.PendingPassword, password, pepper string, mas map[i
 		return checkPHC(p.Hash, []byte(password), scheme.Secret)
 	}
 	return checkSynapsePassword(p.Hash, password, pepper)
+}
+
+func validTuwunelHash(encoded string) bool {
+	parts := strings.Split(encoded, "$")
+	if len(parts) != 6 || parts[0] != "" || parts[1] != "argon2id" || parts[2] != "v=19" {
+		return false
+	}
+	params := map[string]uint64{}
+	for _, field := range strings.Split(parts[3], ",") {
+		key, val, ok := strings.Cut(field, "=")
+		n, err := strconv.ParseUint(val, 10, 32)
+		if !ok || err != nil || params[key] != 0 || n == 0 {
+			return false
+		}
+		params[key] = n
+	}
+	return len(params) == 3 && params["t"] > 0 && params["p"] > 0 && params["p"] <= 255 && params["m"] >= 8*params["p"]
 }
 
 // Like Synapse: NFKC, then the pepper, truncated to bcrypt's 72 bytes.
