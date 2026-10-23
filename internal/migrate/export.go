@@ -36,8 +36,10 @@ const syncFilter = `{
 }`
 
 type Exporter struct {
-	quarantined map[string]bool
-	AllUsers    bool
+	Resume         *archive.ExportResume
+	completedRooms map[string]bool
+	quarantined    map[string]bool
+	AllUsers       bool
 	// SkipMissingMedia keeps importing when the source no longer serves an MXC.
 	SkipMissingMedia bool
 	Archive          *archive.Archive
@@ -232,7 +234,10 @@ func (e *Exporter) ExportUser(ctx context.Context, s *Session) (*archive.User, e
 			return nil, err
 		}
 	}
-	return u, e.Archive.WriteUser(u)
+	if err := e.Archive.WriteUser(u); err != nil {
+		return nil, err
+	}
+	return u, e.saveUserExport(ctx, u)
 }
 
 func exportRoomListing(ctx context.Context, s *Session, room *archive.Room, server string) error {
@@ -357,7 +362,7 @@ func (e *Exporter) exportMedia(ctx context.Context, s *Session, avatar string) (
 		}
 		m.File = mediaFile(server, mediaID)
 		path := filepath.Join(dir, m.File)
-		if _, err := os.Stat(path); err == nil && m.ContentType != "" {
+		if _, err := os.Stat(path); err == nil && m.ContentType != "" && e.Resume == nil {
 			out = append(out, m)
 			continue
 		} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -366,7 +371,7 @@ func (e *Exporter) exportMedia(ctx context.Context, s *Session, avatar string) (
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return nil, err
 		}
-		ct, name, err := mx.Download(ctx, s.Client, m.MXC, path)
+		ct, name, err := e.downloadExportMedia(ctx, s.Client, m.MXC, path)
 		if err != nil {
 			if e.skipMissingMedia(m.MXC, path, err) {
 				continue

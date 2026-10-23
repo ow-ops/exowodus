@@ -11,9 +11,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"exodus/internal/relay"
 )
@@ -219,13 +221,18 @@ func (d *TuwunelDump) roomRelayMetadata(ctx context.Context, roomID string) (*re
 	}
 	var err error
 	currentGroup := binary.BigEndian.Uint64(current)
+	slog.Info("reading current room state", "room", roomID, "group", currentGroup)
 	if err := d.loadStateGroups(ctx, data.Groups, currentGroup, stateFile); err != nil {
 		return nil, err
 	}
-	data.CurrentState, err = relay.ResolveState(data.Groups, int64(currentGroup))
+	slog.Info("resolving current room state", "room", roomID, "groups", len(data.Groups))
+	data.CurrentState, err = relay.ResolveStateContext(ctx, data.Groups, int64(currentGroup))
 	if err != nil {
 		return nil, err
 	}
+	slog.Info("reading historical room state", "room", roomID, "events", len(room.events)+len(room.diskEvents))
+	processed := 0
+	progress := time.Now()
 	for entry, err := range d.roomEvents(ctx, roomID) {
 		if err != nil {
 			return nil, err
@@ -264,6 +271,12 @@ func (d *TuwunelDump) roomRelayMetadata(ctx context.Context, roomID string) (*re
 			if !room.hasEvent(dependency) {
 				return nil, fmt.Errorf("auth event %s required by %s missing from dump", dependency, id)
 			}
+		}
+		processed++
+		if time.Since(progress) >= 5*time.Second {
+			slog.Info("reading historical room state", "room", roomID, "processed", processed,
+				"events", len(room.events)+len(room.diskEvents), "groups", len(data.Groups))
+			progress = time.Now()
 		}
 	}
 	for _, id := range data.CurrentState {

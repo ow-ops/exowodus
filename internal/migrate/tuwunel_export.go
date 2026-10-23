@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"encoding/json/jsontext"
@@ -77,7 +78,18 @@ func (d *TuwunelDump) roomEvents(ctx context.Context, roomID string) iter.Seq2[r
 				ids = append(ids, id)
 			}
 		}
-		slices.Sort(ids)
+		// Event array order has no timeline meaning. Read each table in file
+		// order to avoid seeking by event ID through large dumps.
+		slices.SortFunc(ids, func(a, b string) int {
+			left, right := room.diskEvents[a], room.diskEvents[b]
+			if order := cmp.Compare(left.table, right.table); order != 0 {
+				return order
+			}
+			if order := cmp.Compare(left.value.offset, right.value.offset); order != 0 {
+				return order
+			}
+			return cmp.Compare(a, b)
+		})
 		for _, id := range ids {
 			raw, err := reader.read(ctx, id)
 			if !yield(relay.EventJSON{EventID: id, PDU: raw}, err) || err != nil {

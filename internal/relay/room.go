@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"fmt"
@@ -149,9 +150,17 @@ func federationPDU(raw json.RawMessage, version string) (json.RawMessage, error)
 
 // ResolveState applies a group's ancestry without retaining expanded snapshots.
 func ResolveState(groups map[int64]Group, gid int64) (map[string]string, error) {
+	return ResolveStateContext(context.Background(), groups, gid)
+}
+
+// ResolveStateContext resolves a state group while allowing cancellation.
+func ResolveStateContext(ctx context.Context, groups map[int64]Group, gid int64) (map[string]string, error) {
 	var chain []int64
 	seen := map[int64]bool{}
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if seen[gid] {
 			return nil, fmt.Errorf("cycle in state group %d", gid)
 		}
@@ -169,7 +178,19 @@ func ResolveState(groups map[int64]Group, gid int64) (map[string]string, error) 
 	state := map[string]string{}
 	for _, id := range slices.Backward(chain) {
 		group := groups[id]
-		maps.Copy(state, group.State)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		entries := 0
+		for key, value := range group.State {
+			if entries%1024 == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+			}
+			state[key] = value
+			entries++
+		}
 	}
 	return state, nil
 }

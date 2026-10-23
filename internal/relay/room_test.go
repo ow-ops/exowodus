@@ -1,7 +1,9 @@
 package relay
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -96,6 +98,14 @@ func TestResolveStateLongChain(t *testing.T) {
 	delete(groups, 1)
 	if _, err := ResolveState(groups, 10000); err == nil {
 		t.Fatal("missing parent accepted")
+	}
+}
+
+func TestResolveStateCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := ResolveStateContext(ctx, map[int64]Group{1: {}}, 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled resolution: %v", err)
 	}
 }
 

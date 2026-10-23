@@ -268,6 +268,14 @@ func (a *Archive) WriteUser(u *User) error {
 	return writeJSON(filepath.Join(a.UserDir(u.UserID), "user.json"), u)
 }
 
+func (a *Archive) ReadUser(id string) (*User, error) {
+	user := &User{}
+	if err := readJSON(filepath.Join(a.UserDir(id), "user.json"), user); err != nil {
+		return nil, err
+	}
+	return user, nil
+}
+
 func (a *Archive) Users() ([]*User, error) {
 	entries, err := os.ReadDir(filepath.Join(a.Dir, "users"))
 	if err != nil {

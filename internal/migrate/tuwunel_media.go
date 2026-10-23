@@ -49,7 +49,7 @@ func (e *Exporter) exportTuwunelMedia(ctx context.Context, srv *archive.Server) 
 		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 			return err
 		}
-		contentType, name, err := mx.Download(ctx, e.Admin, mxc, path)
+		contentType, name, err := e.downloadExportMedia(ctx, e.Admin, mxc, path)
 		if err != nil {
 			if server != e.Archive.Manifest.ServerName && mx.IsStatus(err, http.StatusNotFound) && mx.IsCode(err, "M_NOT_FOUND") {
 				srv.UnavailableMedia = append(srv.UnavailableMedia, mxc)

@@ -44,16 +44,10 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 	if c == nil {
 		c = member
 	}
-	// Room endpoints of the Synapse admin API mirror the client API's.
-	roomURL := func(query url.Values, path ...any) string {
-		full := append([]any{"v3", "rooms", roomID}, path...)
-		var p mautrix.PrefixableURLPath = mautrix.ClientURLPath(full)
-		if e.Admin != nil {
-			full[0] = "v1"
-			p = mautrix.SynapseAdminURLPath(full)
-		}
-		return c.BuildURLWithFullQuery(p, func(q url.Values) { maps.Copy(q, query) })
+	if reused, err := e.resumeRoom(ctx, roomID, c); err != nil || reused {
+		return err
 	}
+	roomURL := func(query url.Values, path ...any) string { return e.roomURL(c, roomID, query, path...) }
 	log := slog.With("room", roomID)
 	room := &archive.ArchivedRoom{RoomID: roomID}
 
@@ -109,54 +103,83 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 		seenMedia[mxc] = true
 	}
 	count := 0
-	events := func(yield func(json.RawMessage, error) bool) {
-		q := url.Values{"dir": {"f"}, "limit": {messagesPageSize}}
-		for {
-			var page struct {
-				Chunk []json.RawMessage `json:"chunk"`
-				End   string            `json:"end"`
+	tip := ""
+	inspect := func(raw json.RawMessage) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		ev, err := decodeEvent(raw)
+		if err != nil {
+			return err
+		}
+		tip = ev.EventID
+		for _, userID := range []string{ev.Sender, memberTarget(ev)} {
+			switch {
+			case userID == "":
+			case mx.ServerName(userID) != server:
+				room.RemoteParticipants = true
+			default:
+				local[userID] = true
 			}
-			if _, err := c.MakeRequest(ctx, http.MethodGet, roomURL(q, "messages"), nil, &page); err != nil {
-				yield(nil, fmt.Errorf("room messages: %w", err))
-				return
+		}
+		for _, mxc := range collectMXC([]json.RawMessage{raw}) {
+			if !seenMedia[mxc] {
+				seenMedia[mxc] = true
+				mediaRefs = append(mediaRefs, mxc)
 			}
-			for _, raw := range page.Chunk {
-				if err := ctx.Err(); err != nil {
-					yield(nil, err)
+		}
+		count++
+		return nil
+	}
+	historyReady, err := e.resumeHistory(ctx, roomID)
+	if err != nil {
+		return err
+	}
+	if historyReady {
+		log.Info("reusing exported room history")
+		for raw, err := range e.Archive.RoomEventsIter(roomID) {
+			if err != nil {
+				return err
+			}
+			if err := inspect(raw); err != nil {
+				return err
+			}
+		}
+		if err := e.verifyRoomTip(ctx, c, roomID, tip); err != nil {
+			return err
+		}
+	} else {
+		events := func(yield func(json.RawMessage, error) bool) {
+			q := url.Values{"dir": {"f"}, "limit": {messagesPageSize}}
+			for {
+				var page struct {
+					Chunk []json.RawMessage `json:"chunk"`
+					End   string            `json:"end"`
+				}
+				if _, err := c.MakeRequest(ctx, http.MethodGet, roomURL(q, "messages"), nil, &page); err != nil {
+					yield(nil, fmt.Errorf("room messages: %w", err))
 					return
 				}
-				ev, err := decodeEvent(raw)
-				if err != nil {
-					yield(nil, err)
-					return
-				}
-				for _, userID := range []string{ev.Sender, memberTarget(ev)} {
-					switch {
-					case userID == "":
-					case mx.ServerName(userID) != server:
-						room.RemoteParticipants = true
-					default:
-						local[userID] = true
+				for _, raw := range page.Chunk {
+					if err := inspect(raw); err != nil {
+						yield(nil, err)
+						return
+					}
+					if !yield(raw, nil) {
+						return
 					}
 				}
-				if !yield(raw, nil) {
+				if page.End == "" || page.End == q.Get("from") {
 					return
 				}
-				count++
+				q.Set("from", page.End)
 			}
-			for _, mxc := range collectMXC(page.Chunk) {
-				if !seenMedia[mxc] {
-					seenMedia[mxc] = true
-					mediaRefs = append(mediaRefs, mxc)
-				}
-			}
-			if page.End == "" || page.End == q.Get("from") {
-				return
-			}
-			q.Set("from", page.End)
+		}
+		if err := e.Archive.WriteRoomEventsFrom(roomID, events); err != nil {
+			return err
 		}
 	}
-	if err := e.Archive.WriteRoomEventsFrom(roomID, events); err != nil {
+	if err := e.saveHistoryExport(ctx, roomID, tip); err != nil {
 		return err
 	}
 	log.Info("exported room history", "events", count)
@@ -206,7 +229,7 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return err
 		}
-		if m.ContentType, m.Filename, err = mx.Download(ctx, c, mxc, path); err != nil {
+		if m.ContentType, m.Filename, err = e.downloadExportMedia(ctx, c, mxc, path); err != nil {
 			if e.skipMissingMedia(mxc, path, err) {
 				continue
 			}
@@ -214,7 +237,20 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 		}
 		room.Media = append(room.Media, m)
 	}
-	return e.Archive.WriteRoom(room)
+	if err := e.Archive.WriteRoom(room); err != nil {
+		return err
+	}
+	return e.saveRoomExport(ctx, room, tip)
+}
+
+func (e *Exporter) roomURL(client *mautrix.Client, roomID string, query url.Values, path ...any) string {
+	full := append([]any{"v3", "rooms", roomID}, path...)
+	var prefix mautrix.PrefixableURLPath = mautrix.ClientURLPath(full)
+	if e.Admin != nil {
+		full[0] = "v1"
+		prefix = mautrix.SynapseAdminURLPath(full)
+	}
+	return client.BuildURLWithFullQuery(prefix, func(q url.Values) { maps.Copy(q, query) })
 }
 
 type roomEvent struct {

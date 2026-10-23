@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -110,9 +111,21 @@ func (t *tuwunelDiskTable) read(f *os.File, key string) ([]byte, error) {
 	return readTuwunelValue(f, ref)
 }
 
-func readTuwunelValue(f *os.File, ref tuwunelValueRef) ([]byte, error) {
+var tuwunelReadBuffers = sync.Pool{New: func() any {
+	return bufio.NewReaderSize(nil, 64*1024)
+}}
+
+func readTuwunelValue(f io.ReaderAt, ref tuwunelValueRef) ([]byte, error) {
 	decoded := make([]byte, hex.DecodedLen(ref.size))
-	reader := hex.NewDecoder(io.NewSectionReader(f, ref.offset, int64(ref.size)))
+	// The hex decoder reads 1 KiB at a time. Buffer those reads before
+	// accessing the file, especially on SD cards.
+	buffer := tuwunelReadBuffers.Get().(*bufio.Reader)
+	buffer.Reset(io.NewSectionReader(f, ref.offset, int64(ref.size)))
+	defer func() {
+		buffer.Reset(nil)
+		tuwunelReadBuffers.Put(buffer)
+	}()
+	reader := hex.NewDecoder(buffer)
 	if _, err := io.ReadFull(reader, decoded); err != nil {
 		return nil, err
 	}

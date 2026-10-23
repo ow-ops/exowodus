@@ -1,14 +1,20 @@
 package migrate
 
 import (
+	"bytes"
+	"cmp"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
+
+	"exodus/internal/relay"
 )
 
 func TestTuwunelDiskRelay(t *testing.T) {
@@ -53,6 +59,10 @@ func TestTuwunelDiskRelay(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// The disk iterator follows file offsets, while memory uses event IDs.
+		byID := func(a, b relay.EventJSON) int { return cmp.Compare(a.EventID, b.EventID) }
+		slices.SortFunc(got.Events, byID)
+		slices.SortFunc(want.Events, byID)
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("room %s changed", room)
 		}
@@ -61,6 +71,54 @@ func TestTuwunelDiskRelay(t *testing.T) {
 	cancel()
 	if _, err := OpenTuwunelDump(ctx, dir); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation: %v", err)
+	}
+}
+
+type countingTuwunelReader struct {
+	*bytes.Reader
+	reads int
+}
+
+func (r *countingTuwunelReader) ReadAt(p []byte, offset int64) (int, error) {
+	r.reads++
+	return r.Reader.ReadAt(p, offset)
+}
+
+func TestTuwunelValueBufferedReads(t *testing.T) {
+	want := bytes.Repeat([]byte("abcd"), 256*1024)
+	encoded := []byte("prefix" + hex.EncodeToString(want) + "suffix")
+	reader := &countingTuwunelReader{Reader: bytes.NewReader(encoded)}
+	got, err := readTuwunelValue(reader, tuwunelValueRef{offset: 6, size: len(want) * 2})
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("value changed: %v", err)
+	}
+	if reader.reads > 32 {
+		t.Fatalf("2 MiB hex value took %d reads, want at most 32", reader.reads)
+	}
+}
+
+func TestTuwunelRoomEventsFileOrder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pduid_pdu.txt")
+	if err := os.WriteFile(path, []byte("7b7d7b7d7b7d"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dump := &TuwunelDump{
+		disk: map[string]*tuwunelDiskTable{"pduid_pdu": {path: path}},
+		relayRooms: map[string]*tuwunelRoomIndex{"!room": {diskEvents: map[string]tuwunelEventRef{
+			"$z": {table: "pduid_pdu", value: tuwunelValueRef{offset: 0, size: 4}},
+			"$a": {table: "pduid_pdu", value: tuwunelValueRef{offset: 4, size: 4}},
+			"$m": {table: "pduid_pdu", value: tuwunelValueRef{offset: 8, size: 4}},
+		}}},
+	}
+	var ids []string
+	for event, err := range dump.roomEvents(t.Context(), "!room") {
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, event.EventID)
+	}
+	if !slices.Equal(ids, []string{"$z", "$a", "$m"}) {
+		t.Fatalf("read events in %v order", ids)
 	}
 }
 

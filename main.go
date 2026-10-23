@@ -408,6 +408,13 @@ func newExportCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			resume, err := src.exportResume(ctx, s, a)
+			if err != nil {
+				return err
+			}
+			if resume != nil {
+				defer resume.Close()
+			}
 			if err := a.BeginExport(); err != nil {
 				return err
 			}
@@ -418,12 +425,32 @@ func newExportCmd() *cobra.Command {
 			}
 			defer func() { result = errors.Join(result, a.FinishExport(result)) }()
 			exp := s.exporter(a)
-			if s.dump != nil {
+			exp.Resume = resume
+			if resume != nil {
+				if err := resume.RetainDump(ctx, src.tuwunelDump); err != nil {
+					return err
+				}
+			} else if s.dump != nil {
 				if err := s.dump.Retain(a); err != nil {
 					return err
 				}
 			}
 			var users []*archive.User
+			if resume != nil {
+				pending := make([]migrate.SynapseUser, 0, len(s.users))
+				for _, u := range s.users {
+					cached, err := exp.ResumeUser(ctx, u.UserID)
+					if err != nil {
+						return err
+					}
+					if cached != nil {
+						users = append(users, cached)
+					} else {
+						pending = append(pending, u)
+					}
+				}
+				s.users = pending
+			}
 			err = s.each(ctx, func(sess *migrate.Session) error {
 				u, err := exp.ExportUser(ctx, sess)
 				if err != nil {

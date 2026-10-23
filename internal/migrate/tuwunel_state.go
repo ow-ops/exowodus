@@ -6,8 +6,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"slices"
+	"time"
 
 	"exodus/internal/relay"
 )
@@ -18,6 +20,7 @@ func (d *TuwunelDump) loadStateGroups(ctx context.Context, groups map[int64]rela
 	seen := map[uint64]bool{}
 	var chain []int64
 	removals := map[int64][]tuwunelStateRemoval{}
+	progress := time.Now()
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -50,7 +53,13 @@ func (d *TuwunelDump) loadStateGroups(ctx context.Context, groups map[int64]rela
 		}
 		group := relay.Group{Prev: int64(parent), State: map[string]string{}}
 		remove := false
+		entries := 0
 		for pos := 8; pos < len(raw); {
+			if entries%1024 == 0 {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+			}
 			if !remove && binary.BigEndian.Uint64(raw[pos:pos+8]) == 0 {
 				remove = true
 				pos += 8
@@ -72,9 +81,14 @@ func (d *TuwunelDump) loadStateGroups(ctx context.Context, groups map[int64]rela
 				group.State[k] = string(id)
 			}
 			pos += 16
+			entries++
 		}
 		groups[int64(gid)] = group
 		chain = append(chain, int64(gid))
+		if time.Since(progress) >= 5*time.Second {
+			slog.Info("reading Tuwunel state groups", "group", gid, "loaded", len(chain), "groups", len(groups))
+			progress = time.Now()
+		}
 		if parent == 0 {
 			break
 		}
@@ -83,6 +97,9 @@ func (d *TuwunelDump) loadStateGroups(ctx context.Context, groups map[int64]rela
 	// Replacements are already expressed by the additions. Only deletions
 	// that change state need a full snapshot.
 	for _, id := range slices.Backward(chain) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		needsSnapshot := false
 		for _, removed := range removals[id] {
 			added, ok := groups[id].State[removed.key]
@@ -94,7 +111,7 @@ func (d *TuwunelDump) loadStateGroups(ctx context.Context, groups map[int64]rela
 		if !needsSnapshot {
 			continue
 		}
-		state, err := relay.ResolveState(groups, id)
+		state, err := relay.ResolveStateContext(ctx, groups, id)
 		if err != nil {
 			return err
 		}
@@ -107,6 +124,10 @@ func (d *TuwunelDump) loadStateGroups(ctx context.Context, groups map[int64]rela
 		}
 		if changed {
 			groups[id] = relay.Group{State: state}
+		}
+		if time.Since(progress) >= 5*time.Second {
+			slog.Info("applying Tuwunel state removals", "group", id, "groups", len(groups))
+			progress = time.Now()
 		}
 	}
 	return nil

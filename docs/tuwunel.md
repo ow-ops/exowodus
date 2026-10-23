@@ -95,6 +95,17 @@ Backfilled events without historical state are retained. State queries for
 those events return an error. New exports use archive format 2 and require
 an updated Exodus for import. Format 1 archives remain readable.
 
+To resume a whole-server Tuwunel export, rerun the same command with the same
+archive and unchanged dump. Keep source writes paused between attempts. Exodus
+verifies completed accounts, rooms and media against `export-progress/` before
+reuse. A changed source, dump or account selection requires a new `--archive`
+directory.
+
+Failed rooms reuse completed API history and retry the remaining steps,
+including preservation checks. Interrupted history downloads restart that
+room's history. Older partial archives can reuse histories after their retained
+dump and events are verified; other steps run once to create checkpoints.
+
 Whole-server migration requires these scans, even for empty tables. Export
 checks the database timeline against the API. Import checks original event IDs,
 content, senders and timestamps, and verifies destination sessions. It does not

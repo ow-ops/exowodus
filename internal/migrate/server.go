@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/http"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -22,6 +24,17 @@ import (
 func (e *Exporter) ExportServer(ctx context.Context) error {
 	if e.Admin == nil {
 		return nil
+	}
+	if e.Resume != nil {
+		slog.Info("checking server export checkpoint")
+		checkpoint, err := e.Resume.Load(ctx, "server", "server")
+		if err != nil {
+			return err
+		}
+		if checkpoint != nil {
+			slog.Info("reusing exported server data")
+			return nil
+		}
 	}
 	srv := &archive.Server{}
 	if e.MAS != nil {
@@ -62,7 +75,17 @@ func (e *Exporter) ExportServer(ctx context.Context) error {
 			return err
 		}
 	}
-	return e.Archive.WriteServer(srv)
+	if err := e.Archive.WriteServer(srv); err != nil {
+		return err
+	}
+	if e.Resume != nil {
+		paths := []string{filepath.Join(e.Archive.Dir, "server.json")}
+		for _, media := range srv.Media {
+			paths = append(paths, filepath.Join(e.Archive.Dir, media.File))
+		}
+		return e.Resume.Save(ctx, "server", "server", paths, archive.ExportCheckpoint{})
+	}
+	return nil
 }
 
 // ImportServer returns the new registration tokens: Continuwuity chooses

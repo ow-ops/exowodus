@@ -83,6 +83,10 @@ Continuwuity and blocks import. Check the
 [limitations](docs/tuwunel.md#original-events-and-strict-cutover-checks) before
 cutover. Retry failed steps with the same archive; see `import-report.json`.
 
+To resume an interrupted whole-server Tuwunel export, rerun the same export
+command with the same archive and unchanged dump. Keep source writes paused.
+Completed accounts, rooms and media are verified and reused.
+
 Import verifies original messages and checks each exported token against the
 destination user and device. Keep the archive and proxy running for existing
 logins. Whole-server migration cannot disable these checks.
