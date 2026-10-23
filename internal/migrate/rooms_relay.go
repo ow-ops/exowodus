@@ -78,6 +78,7 @@ func (im *Importer) RelayRooms(ctx context.Context, rooms []*archive.ArchivedRoo
 			im.roomFailures[room.RoomID] = true
 			continue
 		}
+		rl.RemoveRoom(room.RoomID)
 		delete(im.roomFailures, room.RoomID)
 		im.rooms[room.RoomID] = room.RoomID
 	}
@@ -174,17 +175,13 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 }
 
 func verifyOriginalRoom(ctx context.Context, c *mautrix.Client, roomID string, events []json.RawMessage) error {
-	expected := map[string]map[string]any{}
+	expected := map[string]json.RawMessage{}
 	for _, raw := range events {
 		ev, err := decodeEvent(raw)
 		if err != nil {
 			return err
 		}
-		fields, err := originalEventFields(raw)
-		if err != nil {
-			return err
-		}
-		expected[ev.EventID] = fields
+		expected[ev.EventID] = raw
 	}
 	var mismatch error
 	_, _, err := paginateBack(ctx, c, roomID, func(ev *event.Event) bool {
@@ -192,13 +189,18 @@ func verifyOriginalRoom(ctx context.Context, c *mautrix.Client, roomID string, e
 		if !ok {
 			return len(expected) == 0
 		}
+		wantFields, fieldErr := originalEventFields(want)
+		if fieldErr != nil {
+			mismatch = fieldErr
+			return true
+		}
 		raw, marshalErr := json.Marshal(ev)
 		if marshalErr != nil {
 			mismatch = marshalErr
 			return true
 		}
 		got, fieldErr := originalEventFields(raw)
-		if fieldErr != nil || !reflect.DeepEqual(want, got) {
+		if fieldErr != nil || !reflect.DeepEqual(wantFields, got) {
 			mismatch = fmt.Errorf("original event %s differs on the destination", ev.ID)
 			return true
 		}

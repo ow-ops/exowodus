@@ -64,7 +64,7 @@ func TestTuwunelStaleSnapshotCannotOmitJoinedRoom(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	dump, err := migrate.OpenTuwunelDump(dir)
+	dump, err := migrate.OpenTuwunelDump(t.Context(), dir)
 	if err != nil {
 		t.Fatal(err)
 	}

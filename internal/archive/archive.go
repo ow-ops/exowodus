@@ -5,9 +5,12 @@ import (
 	"bufio"
 	"encoding/csv"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io/fs"
+	"iter"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -360,6 +363,17 @@ func (a *Archive) Rooms() ([]*ArchivedRoom, error) {
 
 // WriteRoomEvents stores the timeline, oldest first.
 func (a *Archive) WriteRoomEvents(roomID string, events []json.RawMessage) error {
+	return a.WriteRoomEventsFrom(roomID, func(yield func(json.RawMessage, error) bool) {
+		for _, ev := range events {
+			if !yield(ev, nil) {
+				return
+			}
+		}
+	})
+}
+
+// WriteRoomEventsFrom replaces the timeline only after the iterator succeeds.
+func (a *Archive) WriteRoomEventsFrom(roomID string, events iter.Seq2[json.RawMessage, error]) error {
 	path := filepath.Join(a.RoomDir(roomID), "events.jsonl")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
@@ -369,12 +383,19 @@ func (a *Archive) WriteRoomEvents(roomID string, events []json.RawMessage) error
 		return err
 	}
 	w := bufio.NewWriter(f)
-	for _, ev := range events {
-		_, _ = w.Write(ev)
-		_ = w.WriteByte('\n')
+	defer f.Close()
+	for ev, err := range events {
+		if err != nil {
+			return err
+		}
+		if _, err := w.Write(ev); err != nil {
+			return err
+		}
+		if err := w.WriteByte('\n'); err != nil {
+			return err
+		}
 	}
 	if err := w.Flush(); err != nil {
-		f.Close()
 		return err
 	}
 	if err := f.Close(); err != nil {
@@ -384,18 +405,36 @@ func (a *Archive) WriteRoomEvents(roomID string, events []json.RawMessage) error
 }
 
 func (a *Archive) RoomEvents(roomID string) ([]json.RawMessage, error) {
-	f, err := os.Open(filepath.Join(a.RoomDir(roomID), "events.jsonl"))
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
 	var events []json.RawMessage
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 1<<20), 64<<20)
-	for sc.Scan() {
-		events = append(events, json.RawMessage(append([]byte(nil), sc.Bytes()...)))
+	for raw, err := range a.RoomEventsIter(roomID) {
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, raw)
 	}
-	return events, sc.Err()
+	return events, nil
+}
+
+// RoomEventsIter reads the timeline one event at a time.
+func (a *Archive) RoomEventsIter(roomID string) iter.Seq2[json.RawMessage, error] {
+	return func(yield func(json.RawMessage, error) bool) {
+		f, err := os.Open(filepath.Join(a.RoomDir(roomID), "events.jsonl"))
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+		defer f.Close()
+		scanner := bufio.NewScanner(f)
+		scanner.Buffer(make([]byte, 4096), 64<<20)
+		for scanner.Scan() {
+			if !yield(append(json.RawMessage(nil), scanner.Bytes()...), nil) {
+				return
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			yield(nil, err)
+		}
+	}
 }
 
 func (a *Archive) WriteRoomPDUs(roomID string, pdus any) error {
@@ -625,23 +664,27 @@ func (a *Archive) AddCredential(c Credential) error {
 }
 
 func readJSON(path string, v any) error {
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(data, v)
+	defer f.Close()
+	return jsonv2.UnmarshalRead(f, v, json.DefaultOptionsV1())
 }
 
 func writeJSON(path string, v any) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(v, "", "  ")
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	err = jsonv2.MarshalWrite(f, v, json.DefaultOptionsV1(), jsontext.WithIndent("  "))
+	closeErr := f.Close()
+	if err = errors.Join(err, closeErr); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, path)

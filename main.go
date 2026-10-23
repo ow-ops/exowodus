@@ -142,7 +142,7 @@ func (f *sourceFlags) open(ctx context.Context) (*source, error) {
 	var dump *migrate.TuwunelDump
 	var err error
 	if f.tuwunelDump != "" {
-		if dump, err = migrate.OpenTuwunelDump(f.tuwunelDump); err != nil {
+		if dump, err = migrate.OpenTuwunelDump(ctx, f.tuwunelDump); err != nil {
 			return nil, err
 		}
 	}
@@ -865,7 +865,7 @@ func exportRooms(ctx context.Context, exp *migrate.Exporter, users []*archive.Us
 	ids := migrate.LocalOnlyRooms(users)
 	if exp.TuwunelDump != nil && exp.TuwunelDump.HasRelayData() && exp.AllUsers {
 		var err error
-		ids, err = exp.TuwunelDump.RoomIDs()
+		ids, err = exp.TuwunelDump.RoomIDs(ctx)
 		if err != nil {
 			return err
 		}
