@@ -19,6 +19,8 @@ import (
 type RoomData struct {
 	// Accepted event IDs, excluding auth-only outliers.
 	Timeline []string `json:"timeline,omitempty"`
+	// Backfilled events for which the source has no state snapshot.
+	StateUnavailable []string `json:"state_unavailable,omitempty"`
 	// Timeline events and auth dependencies.
 	Events []EventJSON `json:"events"`
 	// EventGroups and Groups hold Synapse's resolved state after each event.
@@ -67,14 +69,15 @@ type room struct {
 	id      id.RoomID
 	version id.RoomVersion
 
-	mu            sync.Mutex
-	events        map[string]event
-	groupOf       map[string]int64
-	beforeGroupOf map[string]int64
-	groups        map[int64]Group
-	extra         map[string]map[string]string // state after events without a group
-	current       map[string]string
-	extremities   []string
+	mu               sync.Mutex
+	events           map[string]event
+	groupOf          map[string]int64
+	beforeGroupOf    map[string]int64
+	stateUnavailable map[string]bool
+	groups           map[int64]Group
+	extra            map[string]map[string]string // state after events without a group
+	current          map[string]string
+	extremities      []string
 }
 
 func newRoom(roomID, version string, data RoomData) (*room, error) {
@@ -83,8 +86,9 @@ func newRoom(roomID, version string, data RoomData) (*room, error) {
 	}
 	r := &room{id: id.RoomID(roomID), version: id.RoomVersion(version), events: map[string]event{},
 		groupOf: data.EventGroups, groups: data.Groups,
-		beforeGroupOf: data.BeforeEventGroups,
-		extra:         map[string]map[string]string{}, current: maps.Clone(data.CurrentState),
+		beforeGroupOf:    data.BeforeEventGroups,
+		stateUnavailable: map[string]bool{},
+		extra:            map[string]map[string]string{}, current: maps.Clone(data.CurrentState),
 		extremities: slices.Clone(data.Extremities)}
 	for _, e := range data.Events {
 		wire, err := federationPDU(e.PDU, version)
@@ -96,6 +100,21 @@ func newRoom(roomID, version string, data RoomData) (*room, error) {
 			return nil, fmt.Errorf("event %s: %w", e.EventID, err)
 		}
 		r.events[e.EventID] = event{pdu: p, raw: wire}
+	}
+	for _, eventID := range data.StateUnavailable {
+		if _, ok := r.events[eventID]; !ok {
+			return nil, fmt.Errorf("event %s with unavailable state is missing", eventID)
+		}
+		if _, ok := r.beforeGroupOf[eventID]; ok {
+			return nil, fmt.Errorf("event %s has both known and unavailable state", eventID)
+		}
+		if _, ok := r.groupOf[eventID]; ok {
+			return nil, fmt.Errorf("event %s has both known and unavailable state", eventID)
+		}
+		if slices.Contains(r.extremities, eventID) {
+			return nil, fmt.Errorf("forward extremity %s has unavailable state", eventID)
+		}
+		r.stateUnavailable[eventID] = true
 	}
 	if r.current == nil {
 		r.current = map[string]string{}
@@ -156,6 +175,9 @@ func ResolveState(groups map[int64]Group, gid int64) (map[string]string, error) 
 }
 
 func (r *room) stateAfter(eventID string) (map[string]string, error) {
+	if r.stateUnavailable[eventID] {
+		return nil, fmt.Errorf("historical state unavailable for backfilled event %s", eventID)
+	}
 	if state, ok := r.extra[eventID]; ok {
 		return state, nil
 	}
@@ -176,6 +198,9 @@ func (r *room) stateAfter(eventID string) (map[string]string, error) {
 }
 
 func (r *room) stateBefore(eventID string) (map[string]string, error) {
+	if r.stateUnavailable[eventID] {
+		return nil, fmt.Errorf("historical state unavailable for backfilled event %s", eventID)
+	}
 	if gid, ok := r.beforeGroupOf[eventID]; ok {
 		return ResolveState(r.groups, gid)
 	}

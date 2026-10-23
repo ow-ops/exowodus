@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -32,30 +34,34 @@ func (d *TuwunelDump) MediaIDs() ([]string, error) {
 	return slices.Sorted(maps.Keys(ids)), nil
 }
 
-func (e *Exporter) exportTuwunelMedia(ctx context.Context) ([]archive.Media, error) {
+func (e *Exporter) exportTuwunelMedia(ctx context.Context, srv *archive.Server) error {
 	ids, err := e.TuwunelDump.MediaIDs()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	var media []archive.Media
 	for _, mxc := range ids {
 		server, id, err := mx.ParseMXC(mxc)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		file := filepath.Join("server", mediaFile(server, id))
 		path := filepath.Join(e.Archive.Dir, file)
 		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-			return nil, err
+			return err
 		}
 		contentType, name, err := mx.Download(ctx, e.Admin, mxc, path)
 		if err != nil {
+			if server != e.Archive.Manifest.ServerName && mx.IsStatus(err, http.StatusNotFound) && mx.IsCode(err, "M_NOT_FOUND") {
+				srv.UnavailableMedia = append(srv.UnavailableMedia, mxc)
+				slog.Warn("remote media unavailable on source", "mxc", mxc, "err", err)
+				continue
+			}
 			if e.skipMissingMedia(mxc, path, err) {
 				continue
 			}
-			return nil, fmt.Errorf("database media %s: %w", mxc, err)
+			return fmt.Errorf("database media %s: %w", mxc, err)
 		}
-		media = append(media, archive.Media{MXC: mxc, File: file, ContentType: contentType, Filename: name})
+		srv.Media = append(srv.Media, archive.Media{MXC: mxc, File: file, ContentType: contentType, Filename: name})
 	}
-	return media, nil
+	return nil
 }

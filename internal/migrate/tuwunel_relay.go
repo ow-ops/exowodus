@@ -95,7 +95,7 @@ type tuwunelEventRef struct {
 type tuwunelRoomIndex struct {
 	diskEvents  map[string]tuwunelEventRef
 	events      map[string]json.RawMessage
-	accepted    map[string]bool
+	timeline    map[string]bool // true for forward events, false for backfill
 	extremities []string
 }
 
@@ -119,7 +119,7 @@ func (d *TuwunelDump) buildRelayIndex(ctx context.Context) error {
 	roomIndex := func(roomID string) *tuwunelRoomIndex {
 		r := d.relayRooms[roomID]
 		if r == nil {
-			r = &tuwunelRoomIndex{diskEvents: map[string]tuwunelEventRef{}, events: map[string]json.RawMessage{}, accepted: map[string]bool{}}
+			r = &tuwunelRoomIndex{diskEvents: map[string]tuwunelEventRef{}, events: map[string]json.RawMessage{}, timeline: map[string]bool{}}
 			d.relayRooms[roomID] = r
 		}
 		return r
@@ -147,7 +147,8 @@ func (d *TuwunelDump) buildRelayIndex(ctx context.Context) error {
 			}
 			r := roomIndex(p.Room)
 			if name == "pduid_pdu" {
-				r.accepted[p.ID] = true
+				backfilled := len(key) == 24 && binary.BigEndian.Uint64([]byte(key)[8:16]) == 0 && int64(binary.BigEndian.Uint64([]byte(key)[16:])) <= 0
+				r.timeline[p.ID] = r.timeline[p.ID] || !backfilled
 			}
 			if _, exists := r.events[p.ID]; !exists {
 				if _, exists := r.diskEvents[p.ID]; !exists {
@@ -181,7 +182,7 @@ func (d *TuwunelDump) RoomIDs(ctx context.Context) ([]string, error) {
 	}
 	var ids []string
 	for id, room := range d.relayRooms {
-		if len(room.accepted) != 0 {
+		if len(room.timeline) != 0 {
 			ids = append(ids, id)
 		}
 	}
@@ -230,7 +231,8 @@ func (d *TuwunelDump) roomRelayMetadata(ctx context.Context, roomID string) (*re
 			return nil, err
 		}
 		id, raw := entry.EventID, entry.PDU
-		if room.accepted[id] {
+		forward, timeline := room.timeline[id]
+		if timeline {
 			data.Timeline = append(data.Timeline, id)
 		}
 		var p struct {
@@ -253,8 +255,10 @@ func (d *TuwunelDump) roomRelayMetadata(ctx context.Context, roomID string) (*re
 		} else if p.Type == "m.room.create" {
 			data.BeforeEventGroups[id] = 0
 			data.Groups[0] = relay.Group{State: map[string]string{}}
-		} else if room.accepted[id] {
+		} else if forward {
 			return nil, fmt.Errorf("Tuwunel accepted event %s has no historical state", id)
+		} else if timeline {
+			data.StateUnavailable = append(data.StateUnavailable, id)
 		}
 		for _, dependency := range p.AuthEvents {
 			if !room.hasEvent(dependency) {
@@ -268,6 +272,9 @@ func (d *TuwunelDump) roomRelayMetadata(ctx context.Context, roomID string) (*re
 		}
 	}
 	for _, id := range room.extremities {
+		if slices.Contains(data.StateUnavailable, id) {
+			return nil, fmt.Errorf("Tuwunel forward extremity %s has no historical state", id)
+		}
 		if !room.hasEvent(id) {
 			return nil, errors.New("Tuwunel forward extremity PDU missing")
 		}
@@ -278,5 +285,6 @@ func (d *TuwunelDump) roomRelayMetadata(ctx context.Context, roomID string) (*re
 	}
 	slices.Sort(data.Extremities)
 	slices.Sort(data.Timeline)
+	slices.Sort(data.StateUnavailable)
 	return data, nil
 }

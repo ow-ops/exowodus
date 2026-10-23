@@ -114,7 +114,7 @@ func (d *TuwunelDump) compareTimeline(ctx context.Context, roomID string, events
 	if room == nil {
 		return fmt.Errorf("Tuwunel room %s missing from dump", roomID)
 	}
-	remaining := maps.Clone(room.accepted)
+	remaining := maps.Clone(room.timeline)
 	reader := tuwunelRoomReader{dump: d, room: room, files: map[string]*os.File{}}
 	defer reader.Close()
 	for raw, err := range events {
@@ -125,7 +125,7 @@ func (d *TuwunelDump) compareTimeline(ctx context.Context, roomID string, events
 		if err != nil {
 			return err
 		}
-		if !remaining[event.EventID] {
+		if _, ok := remaining[event.EventID]; !ok {
 			return fmt.Errorf("API event %s absent from snapshot or duplicated", event.EventID)
 		}
 		original, err := reader.read(ctx, event.EventID)

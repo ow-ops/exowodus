@@ -58,8 +58,7 @@ func (e *Exporter) ExportServer(ctx context.Context) error {
 		if err := e.TuwunelDump.AddServer(srv, e.Archive.Manifest.ServerName); err != nil {
 			return err
 		}
-		var err error
-		if srv.Media, err = e.exportTuwunelMedia(ctx); err != nil {
+		if err := e.exportTuwunelMedia(ctx, srv); err != nil {
 			return err
 		}
 	}
@@ -91,6 +90,9 @@ func (im *Importer) ImportServer(ctx context.Context) ([]string, []Failure) {
 		archiveOnly[room.RoomID] = room.ArchiveOnly
 	}
 	var notes []string
+	for _, mxc := range srv.UnavailableMedia {
+		notes = append(notes, "Remote media unavailable on source: "+mxc)
+	}
 	for _, limitation := range srv.Limitations {
 		notes = append(notes, "Source limitation: "+limitation)
 	}

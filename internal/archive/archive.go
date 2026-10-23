@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const version = 1
+const version = 2
 
 type Manifest struct {
 	RequireLossless bool      `json:"require_lossless,omitempty"`
@@ -254,7 +254,7 @@ func Open(dir string) (*Archive, error) {
 	if err := readJSON(filepath.Join(dir, "manifest.json"), &a.Manifest); err != nil {
 		return nil, err
 	}
-	if a.Manifest.Version != version {
+	if a.Manifest.Version < 1 || a.Manifest.Version > version {
 		return nil, fmt.Errorf("archive %s: unsupported version %d", dir, a.Manifest.Version)
 	}
 	return a, nil
@@ -438,6 +438,12 @@ func (a *Archive) RoomEventsIter(roomID string) iter.Seq2[json.RawMessage, error
 }
 
 func (a *Archive) WriteRoomPDUs(roomID string, pdus any) error {
+	if a.Manifest.Version < version {
+		a.Manifest.Version = version
+		if err := writeJSON(filepath.Join(a.Dir, "manifest.json"), a.Manifest); err != nil {
+			return err
+		}
+	}
 	return writeJSON(filepath.Join(a.RoomDir(roomID), "pdus.json"), pdus)
 }
 
@@ -532,7 +538,8 @@ func readOptionalJSON(path string, v any) error {
 }
 
 type Server struct {
-	Media []Media `json:"media,omitempty"`
+	Media            []Media  `json:"media,omitempty"`
+	UnavailableMedia []string `json:"unavailable_media,omitempty"`
 	// Unsupported source data that blocks strict import.
 	Limitations        []string            `json:"limitations,omitempty"`
 	RegistrationTokens []RegistrationToken `json:"registration_tokens,omitempty"`

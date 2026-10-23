@@ -87,6 +87,14 @@ exodus proxy --upstream http://continuwuity:8008
 Keep dump files unchanged during export. Original event bodies stream from
 these files. Room state and event indexes still use RAM.
 
+Remote media that returns `M_NOT_FOUND` is skipped and listed in
+`server.json` under `unavailable_media`. Missing local media still fails a
+whole-server export.
+
+Backfilled events without historical state are retained. State queries for
+those events return an error. New exports use archive format 2 and require
+an updated Exodus for import. Format 1 archives remain readable.
+
 Whole-server migration requires these scans, even for empty tables. Export
 checks the database timeline against the API. Import checks original event IDs,
 content, senders and timestamps, and verifies destination sessions. It does not

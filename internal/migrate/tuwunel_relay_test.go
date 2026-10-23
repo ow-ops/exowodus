@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"testing"
 
 	"exodus/internal/relay"
@@ -220,5 +221,71 @@ func TestLosslessRequiresCompleteDump(t *testing.T) {
 		if err := missing.CheckLosslessMaps(); err == nil {
 			t.Fatalf("missing %s accepted", name)
 		}
+	}
+}
+
+func TestTuwunelBackfillWithoutHistoricalState(t *testing.T) {
+	for _, tc := range []struct {
+		name                                       string
+		backfilled, badMarker, badCount, extremity bool
+		fail                                       bool
+	}{
+		{name: "backfilled", backfilled: true},
+		{name: "forward", fail: true},
+		{name: "invalid backfill marker", backfilled: true, badMarker: true, fail: true},
+		{name: "positive backfill count", backfilled: true, badCount: true, fail: true},
+		{name: "forward extremity without state", backfilled: true, extremity: true, fail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := tuwunelRoomsFixture(1, 1)
+			const room = "!room0:example.org"
+			const message = "$message0-0"
+			delete(d.maps["shorteventid_shortstatehash"], string(binary.BigEndian.AppendUint64(nil, 2)))
+			if tc.backfilled {
+				key := binary.BigEndian.AppendUint64(nil, 1)
+				marker := uint64(0)
+				if tc.badMarker {
+					marker = 1
+				}
+				key = binary.BigEndian.AppendUint64(key, marker)
+				count := ^uint64(0)
+				if tc.badCount {
+					count = 1
+				}
+				key = binary.BigEndian.AppendUint64(key, count)
+				d.maps["pduid_pdu"][string(key)] = d.maps["pduid_pdu"][message]
+				delete(d.maps["pduid_pdu"], message)
+			}
+			if !tc.extremity {
+				delete(d.maps["roomid_pduleaves"], room+"\xff"+message)
+				d.maps["roomid_pduleaves"][room+"\xff$create0"] = []byte("$create0")
+			}
+			data, err := d.roomRelayMetadata(t.Context(), room)
+			if tc.fail {
+				if err == nil {
+					t.Fatal("missing forward state accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(data.StateUnavailable, []string{message}) || len(data.Timeline) != 2 {
+				t.Fatalf("metadata=%+v", data)
+			}
+			if _, ok := data.BeforeEventGroups[message]; ok {
+				t.Fatal("invented historical state")
+			}
+			events := func(yield func(json.RawMessage, error) bool) {
+				for event, err := range d.roomEvents(t.Context(), room) {
+					if !yield(event.PDU, err) || err != nil {
+						return
+					}
+				}
+			}
+			if err := d.compareTimeline(t.Context(), room, events); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

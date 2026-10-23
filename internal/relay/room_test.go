@@ -2,6 +2,9 @@ package relay
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -93,5 +96,50 @@ func TestResolveStateLongChain(t *testing.T) {
 	delete(groups, 1)
 	if _, err := ResolveState(groups, 10000); err == nil {
 		t.Fatal("missing parent accepted")
+	}
+}
+
+func TestBackfilledEventsWithoutHistoricalState(t *testing.T) {
+	data := RoomData{
+		Timeline:         []string{"$old", "$new"},
+		StateUnavailable: []string{"$old"},
+		Events: []EventJSON{
+			{EventID: "$old", PDU: json.RawMessage(`{"type":"m.room.message","content":{"body":"old"},"prev_events":[]}`)},
+			{EventID: "$new", PDU: json.RawMessage(`{"type":"m.room.message","content":{"body":"new"},"prev_events":["$old"]}`)},
+		},
+		BeforeEventGroups: map[string]int64{"$new": 1},
+		Groups:            map[int64]Group{1: {State: map[string]string{}}},
+		Extremities:       []string{"$new"},
+	}
+	r, err := newRoom("!room:example.org", "10", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay := &Relay{Name: "relay.example.org", rooms: map[string]*room{"!room:example.org": r}}
+	request := httptest.NewRequest(http.MethodGet, "/?v=$new&limit=10", nil)
+	request.SetPathValue("roomID", "!room:example.org")
+	response := httptest.NewRecorder()
+	relay.backfill(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"body":"old"`) {
+		t.Fatalf("backfill=%d %s", response.Code, response.Body.String())
+	}
+	request = httptest.NewRequest(http.MethodGet, "/?event_id=$old", nil)
+	request.SetPathValue("roomID", "!room:example.org")
+	response = httptest.NewRecorder()
+	relay.stateIDs(response, request)
+	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "historical state unavailable") {
+		t.Fatalf("state=%d %s", response.Code, response.Body.String())
+	}
+	if _, err := r.stateAfter("$old"); err == nil {
+		t.Fatal("fabricated historical state")
+	}
+	data.BeforeEventGroups["$old"] = 1
+	if _, err := newRoom("!room:example.org", "10", data); err == nil {
+		t.Fatal("conflicting known and unavailable state accepted")
+	}
+	delete(data.BeforeEventGroups, "$old")
+	data.Extremities = []string{"$old"}
+	if _, err := newRoom("!room:example.org", "10", data); err == nil {
+		t.Fatal("extremity with unavailable state accepted")
 	}
 }
