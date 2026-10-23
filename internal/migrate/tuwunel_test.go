@@ -45,7 +45,7 @@ func TestTuwunelDumpSessions(t *testing.T) {
 		"refresh_stale": record(uint64(time.Now().Add(time.Hour).Unix())),
 	})
 	write("userdeviceid_refresh", map[string][]byte{user + "\xffPHONE": []byte("refresh_live")})
-	d, err := OpenTuwunelDump(dir)
+	d, err := OpenTuwunelDump(t.Context(), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestTuwunelDumpSessions(t *testing.T) {
 	if err := os.Remove(filepath.Join(dir, "userdeviceid_refresh.txt")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenTuwunelDump(dir); err == nil {
+	if _, err := OpenTuwunelDump(t.Context(), dir); err == nil {
 		t.Fatal("missing refresh index accepted")
 	}
 }
@@ -144,7 +144,7 @@ func TestTuwunelDumpDeviceAndServerData(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	d, err := OpenTuwunelDump(dir)
+	d, err := OpenTuwunelDump(t.Context(), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +247,7 @@ func TestTuwunelScanRejectsMalformedData(t *testing.T) {
 		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := readTuwunelScan(path); err == nil {
+		if _, err := readTuwunelScan(t.Context(), path); err == nil {
 			t.Fatal("malformed dump accepted")
 		}
 	}

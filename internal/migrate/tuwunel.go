@@ -1,8 +1,8 @@
 package migrate
 
 import (
-	"bufio"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -24,6 +24,7 @@ import (
 
 // TuwunelDump reads offline ldb scan --hex output.
 type TuwunelDump struct {
+	disk        map[string]*tuwunelDiskTable
 	dir         string
 	passwords   map[string][]byte
 	tokens      map[string][]byte
@@ -47,16 +48,17 @@ var tuwunelExtraMaps = []string{
 	"readreceiptid_readreceipt", "roomuserid_privateread",
 }
 
-func OpenTuwunelDump(dir string) (*TuwunelDump, error) {
-	d := &TuwunelDump{dir: dir}
+func OpenTuwunelDump(ctx context.Context, dir string) (*TuwunelDump, error) {
+	slog.Info("opening Tuwunel dump", "path", dir)
+	d := &TuwunelDump{dir: dir, disk: map[string]*tuwunelDiskTable{}}
 	var err error
-	if d.passwords, err = readTuwunelScan(filepath.Join(dir, "userid_password.txt")); err != nil {
+	if d.passwords, err = readTuwunelScan(ctx, filepath.Join(dir, "userid_password.txt")); err != nil {
 		return nil, err
 	}
-	if d.tokens, err = readTuwunelScan(filepath.Join(dir, "token_userdeviceid.txt")); err != nil {
+	if d.tokens, err = readTuwunelScan(ctx, filepath.Join(dir, "token_userdeviceid.txt")); err != nil {
 		return nil, err
 	}
-	d.refresh, err = readTuwunelScan(filepath.Join(dir, "userdeviceid_refresh.txt"))
+	d.refresh, err = readTuwunelScan(ctx, filepath.Join(dir, "userdeviceid_refresh.txt"))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
@@ -70,7 +72,22 @@ func OpenTuwunelDump(dir string) (*TuwunelDump, error) {
 	d.maps = map[string]map[string][]byte{}
 	var missing []string
 	for _, name := range tuwunelExtraMaps {
-		rows, err := readTuwunelScan(filepath.Join(dir, name+".txt"))
+		slog.Info("reading Tuwunel dump", "table", name)
+		var rows map[string][]byte
+		var err error
+		switch name {
+		case "pduid_pdu", "eventid_outlierpdu", "shortstatehash_statediff":
+			var table *tuwunelDiskTable
+			table, err = indexTuwunelScan(ctx, filepath.Join(dir, name+".txt"))
+			if err == nil {
+				d.disk[name] = table
+				rows = map[string][]byte{}
+			}
+		case "mediaid_file", "mediaid_lazy", "mediaid_lazycontent":
+			rows, err = readTuwunelKeys(ctx, filepath.Join(dir, name+".txt"))
+		default:
+			rows, err = readTuwunelScan(ctx, filepath.Join(dir, name+".txt"))
+		}
 		if errors.Is(err, fs.ErrNotExist) {
 			missing = append(missing, name)
 			continue
@@ -87,45 +104,39 @@ func OpenTuwunelDump(dir string) (*TuwunelDump, error) {
 		return nil, errors.New("Tuwunel pushers require pushkey_deviceid.txt")
 	}
 	if d.HasRelayData() {
-		if err := d.indexRelayData(); err != nil {
+		if err := d.indexRelayData(ctx); err != nil {
 			return nil, err
 		}
 	}
 	return d, nil
 }
 
-func readTuwunelScan(path string) (map[string][]byte, error) {
-	f, err := os.Open(path)
+func readTuwunelScan(ctx context.Context, path string) (map[string][]byte, error) {
+	rows := map[string][]byte{}
+	err := walkTuwunelScan(ctx, path, func(key string, value []byte, _ tuwunelValueRef) error {
+		if _, ok := rows[key]; ok {
+			return errors.New("duplicate key")
+		}
+		rows[key] = bytes.Clone(value)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	return rows, nil
+}
+
+func readTuwunelKeys(ctx context.Context, path string) (map[string][]byte, error) {
 	rows := map[string][]byte{}
-	s := bufio.NewScanner(f)
-	s.Buffer(make([]byte, 4096), 16*1024*1024)
-	line := 0
-	for s.Scan() {
-		line++
-		text := strings.TrimSpace(s.Text())
-		if text == "" {
-			continue
+	err := walkTuwunelScan(ctx, path, func(key string, _ []byte, _ tuwunelValueRef) error {
+		if _, ok := rows[key]; ok {
+			return errors.New("duplicate key")
 		}
-		key, value, ok := strings.Cut(text, " ==> ")
-		if !ok || !strings.HasPrefix(key, "0x") || !strings.HasPrefix(value, "0x") {
-			return nil, fmt.Errorf("%s:%d: expected ldb scan --hex output", path, line)
-		}
-		k, e1 := hex.DecodeString(key[2:])
-		v, e2 := hex.DecodeString(value[2:])
-		if e1 != nil || e2 != nil {
-			return nil, fmt.Errorf("%s:%d: invalid hex row", path, line)
-		}
-		if _, exists := rows[string(k)]; exists {
-			return nil, fmt.Errorf("%s:%d: duplicate key", path, line)
-		}
-		rows[string(k)] = v
-	}
-	if err := s.Err(); err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
+		rows[key] = nil
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return rows, nil
 }

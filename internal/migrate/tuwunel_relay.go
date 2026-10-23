@@ -2,6 +2,7 @@ package migrate
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -11,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 
@@ -86,20 +88,29 @@ func (d *TuwunelDump) RelayKeys() (map[string][]json.RawMessage, error) {
 	return keys, nil
 }
 
+type tuwunelEventRef struct {
+	table string
+	value tuwunelValueRef
+}
+
 type tuwunelRoomIndex struct {
+	diskEvents  map[string]tuwunelEventRef
 	events      map[string]json.RawMessage
 	accepted    map[string]bool
 	extremities []string
 }
 
-func (d *TuwunelDump) indexRelayData() error {
-	d.relayOnce.Do(func() { d.relayErr = d.buildRelayIndex() })
+func (d *TuwunelDump) indexRelayData(ctx context.Context) error {
+	d.relayOnce.Do(func() { d.relayErr = d.buildRelayIndex(ctx) })
 	return d.relayErr
 }
 
-func (d *TuwunelDump) buildRelayIndex() error {
+func (d *TuwunelDump) buildRelayIndex(ctx context.Context) error {
 	d.shortEvents = make(map[string]string, len(d.maps["shorteventid_eventid"]))
 	for short, id := range d.maps["shorteventid_eventid"] {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if len(short) != 8 {
 			return errors.New("invalid Tuwunel short event ID")
 		}
@@ -109,13 +120,13 @@ func (d *TuwunelDump) buildRelayIndex() error {
 	roomIndex := func(roomID string) *tuwunelRoomIndex {
 		r := d.relayRooms[roomID]
 		if r == nil {
-			r = &tuwunelRoomIndex{events: map[string]json.RawMessage{}, accepted: map[string]bool{}}
+			r = &tuwunelRoomIndex{diskEvents: map[string]tuwunelEventRef{}, events: map[string]json.RawMessage{}, accepted: map[string]bool{}}
 			d.relayRooms[roomID] = r
 		}
 		return r
 	}
 	for _, name := range []string{"pduid_pdu", "eventid_outlierpdu"} {
-		for key, raw := range d.maps[name] {
+		if err := d.eachValue(ctx, name, func(key string, raw []byte) error {
 			var p struct {
 				ID   string `json:"event_id"`
 				Room string `json:"room_id"`
@@ -127,7 +138,7 @@ func (d *TuwunelDump) buildRelayIndex() error {
 				if name == "pduid_pdu" {
 					return errors.New("Tuwunel timeline PDU has no room ID")
 				}
-				continue
+				return nil
 			}
 			if p.ID == "" && name == "eventid_outlierpdu" {
 				p.ID = key
@@ -140,8 +151,20 @@ func (d *TuwunelDump) buildRelayIndex() error {
 				r.accepted[p.ID] = true
 			}
 			if _, exists := r.events[p.ID]; !exists {
-				r.events[p.ID] = json.RawMessage(raw)
+				if _, exists := r.diskEvents[p.ID]; !exists {
+					if d.disk[name] != nil {
+						r.diskEvents[p.ID] = tuwunelEventRef{name, d.disk[name].values[key]}
+					} else {
+						r.events[p.ID] = json.RawMessage(raw)
+					}
+				}
 			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		if table := d.disk[name]; table != nil {
+			table.values = nil
 		}
 	}
 	for key := range d.maps["roomid_pduleaves"] {
@@ -153,8 +176,8 @@ func (d *TuwunelDump) buildRelayIndex() error {
 	return nil
 }
 
-func (d *TuwunelDump) RoomIDs() ([]string, error) {
-	if err := d.indexRelayData(); err != nil {
+func (d *TuwunelDump) RoomIDs(ctx context.Context) ([]string, error) {
+	if err := d.indexRelayData(ctx); err != nil {
 		return nil, err
 	}
 	var ids []string
@@ -167,11 +190,11 @@ func (d *TuwunelDump) RoomIDs() ([]string, error) {
 	return ids, nil
 }
 
-func (d *TuwunelDump) RoomRelayData(roomID string) (*relay.RoomData, error) {
+func (d *TuwunelDump) RoomRelayData(ctx context.Context, roomID string) (*relay.RoomData, error) {
 	if err := d.CheckRelayMaps(); err != nil {
 		return nil, err
 	}
-	if err := d.indexRelayData(); err != nil {
+	if err := d.indexRelayData(ctx); err != nil {
 		return nil, err
 	}
 	room := d.relayRooms[roomID]
@@ -180,70 +203,61 @@ func (d *TuwunelDump) RoomRelayData(roomID string) (*relay.RoomData, error) {
 	}
 	data := &relay.RoomData{BeforeEventGroups: map[string]int64{}, Groups: map[int64]relay.Group{}}
 	events, accepted := room.events, room.accepted
-	stateCache := map[uint64]map[string]string{}
-	visiting := map[uint64]bool{}
-	var resolve func(uint64) (map[string]string, error)
-	resolve = func(gid uint64) (map[string]string, error) {
-		if state, ok := stateCache[gid]; ok {
-			return state, nil
-		}
-		if visiting[gid] {
-			return nil, errors.New("cycle in Tuwunel compressed state")
-		}
-		visiting[gid] = true
-		defer delete(visiting, gid)
-		key := string(binary.BigEndian.AppendUint64(nil, gid))
-		raw := d.maps["shortstatehash_statediff"][key]
-		if len(raw) < 8 || len(raw)%8 != 0 {
-			return nil, fmt.Errorf("invalid Tuwunel state group %d", gid)
-		}
-		state := map[string]string{}
-		if parent := binary.BigEndian.Uint64(raw[:8]); parent != 0 {
-			previous, err := resolve(parent)
+	if len(room.diskEvents) != 0 {
+		events = maps.Clone(room.events)
+		files := map[string]*os.File{}
+		defer func() {
+			for _, f := range files {
+				_ = f.Close()
+			}
+		}()
+		for id, ref := range room.diskEvents {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			f := files[ref.table]
+			if f == nil {
+				var err error
+				f, err = os.Open(d.disk[ref.table].path)
+				if err != nil {
+					return nil, err
+				}
+				files[ref.table] = f
+			}
+			raw, err := readTuwunelValue(f, ref.value)
 			if err != nil {
 				return nil, err
 			}
-			maps.Copy(state, previous)
+			events[id] = raw
 		}
-		remove := false
-		for pos := 8; pos < len(raw); {
-			if !remove && binary.BigEndian.Uint64(raw[pos:pos+8]) == 0 {
-				remove = true
-				pos += 8
-				continue
-			}
-			if pos+16 > len(raw) {
-				return nil, errors.New("truncated Tuwunel state delta")
-			}
-			stateKey := d.maps["shortstatekey_statekey"][string(raw[pos:pos+8])]
-			typ, sk, ok := bytes.Cut(stateKey, []byte{0xff})
-			id := d.maps["shorteventid_eventid"][string(raw[pos+8:pos+16])]
-			if !ok || len(typ) == 0 || len(id) == 0 {
-				return nil, errors.New("unresolved Tuwunel state identifier")
-			}
-			k := relay.StateKey(string(typ), string(sk))
-			if remove {
-				if state[k] == string(id) {
-					delete(state, k)
-				}
-			} else {
-				state[k] = string(id)
-			}
-			pos += 16
-		}
-		stateCache[gid] = state
-		return state, nil
 	}
+	var stateFile *os.File
+	if table := d.disk["shortstatehash_statediff"]; table != nil {
+		var err error
+		stateFile, err = os.Open(table.path)
+		if err != nil {
+			return nil, err
+		}
+		defer stateFile.Close()
+	}
+
 	current := d.maps["roomid_shortstatehash"][roomID]
 	if len(current) != 8 {
 		return nil, errors.New("Tuwunel room has no current state")
 	}
 	var err error
-	data.CurrentState, err = resolve(binary.BigEndian.Uint64(current))
+	currentGroup := binary.BigEndian.Uint64(current)
+	if err := d.loadStateGroups(ctx, data.Groups, currentGroup, stateFile); err != nil {
+		return nil, err
+	}
+	data.CurrentState, err = relay.ResolveState(data.Groups, int64(currentGroup))
 	if err != nil {
 		return nil, err
 	}
 	for id, raw := range events {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if accepted[id] {
 			data.Timeline = append(data.Timeline, id)
 		}
@@ -257,12 +271,10 @@ func (d *TuwunelDump) RoomRelayData(roomID string) (*relay.RoomData, error) {
 			if gid > uint64(^uint64(0)>>1) {
 				return nil, errors.New("Tuwunel state group overflows archive format")
 			}
-			state, err := resolve(gid)
-			if err != nil {
+			if err := d.loadStateGroups(ctx, data.Groups, gid, stateFile); err != nil {
 				return nil, err
 			}
 			data.BeforeEventGroups[id] = int64(gid)
-			data.Groups[int64(gid)] = relay.Group{State: state}
 		} else if p.Type == "m.room.create" {
 			data.BeforeEventGroups[id] = 0
 			data.Groups[0] = relay.Group{State: map[string]string{}}
@@ -272,6 +284,9 @@ func (d *TuwunelDump) RoomRelayData(roomID string) (*relay.RoomData, error) {
 		data.Events = append(data.Events, relay.EventJSON{EventID: id, PDU: raw})
 	}
 	for id, raw := range events {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		p, err := relay.ParsePDU(raw)
 		if err != nil {
 			return nil, err

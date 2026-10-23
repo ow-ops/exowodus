@@ -101,32 +101,72 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 		}
 	}
 
-	var events []json.RawMessage
-	q := url.Values{"dir": {"f"}, "limit": {messagesPageSize}}
-	for {
-		var page struct {
-			Chunk []json.RawMessage `json:"chunk"`
-			End   string            `json:"end"`
-		}
-		if _, err := c.MakeRequest(ctx, http.MethodGet, roomURL(q, "messages"), nil, &page); err != nil {
-			return fmt.Errorf("room messages: %w", err)
-		}
-		events = append(events, page.Chunk...)
-		if page.End == "" || page.End == q.Get("from") {
-			break
-		}
-		q.Set("from", page.End)
+	server := e.Archive.Manifest.ServerName
+	local := map[string]bool{}
+	mediaRefs := collectMXC(room.State)
+	seenMedia := map[string]bool{}
+	for _, mxc := range mediaRefs {
+		seenMedia[mxc] = true
 	}
-	log.Info("exported room history", "events", len(events))
-	if err := e.Archive.WriteRoomEvents(roomID, events); err != nil {
+	count := 0
+	events := func(yield func(json.RawMessage, error) bool) {
+		q := url.Values{"dir": {"f"}, "limit": {messagesPageSize}}
+		for {
+			var page struct {
+				Chunk []json.RawMessage `json:"chunk"`
+				End   string            `json:"end"`
+			}
+			if _, err := c.MakeRequest(ctx, http.MethodGet, roomURL(q, "messages"), nil, &page); err != nil {
+				yield(nil, fmt.Errorf("room messages: %w", err))
+				return
+			}
+			for _, raw := range page.Chunk {
+				if err := ctx.Err(); err != nil {
+					yield(nil, err)
+					return
+				}
+				ev, err := decodeEvent(raw)
+				if err != nil {
+					yield(nil, err)
+					return
+				}
+				for _, userID := range []string{ev.Sender, memberTarget(ev)} {
+					switch {
+					case userID == "":
+					case mx.ServerName(userID) != server:
+						room.RemoteParticipants = true
+					default:
+						local[userID] = true
+					}
+				}
+				if !yield(raw, nil) {
+					return
+				}
+				count++
+			}
+			for _, mxc := range collectMXC(page.Chunk) {
+				if !seenMedia[mxc] {
+					seenMedia[mxc] = true
+					mediaRefs = append(mediaRefs, mxc)
+				}
+			}
+			if page.End == "" || page.End == q.Get("from") {
+				return
+			}
+			q.Set("from", page.End)
+		}
+	}
+	if err := e.Archive.WriteRoomEventsFrom(roomID, events); err != nil {
 		return err
 	}
+	log.Info("exported room history", "events", count)
+
 	if e.DB != nil {
 		data, err := e.DB.RoomRelayData(ctx, roomID)
 		if err != nil {
 			return err
 		}
-		if err := redactPDUs(data.Events, events, room.Version); err != nil {
+		if err := redactPDUs(data.Events, e.Archive.RoomEventsIter(roomID), room.Version); err != nil {
 			return err
 		}
 		if mismatched := checkEventIDs(data.Events, room.Version); mismatched > 0 {
@@ -136,14 +176,14 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 		}
 	}
 	if e.TuwunelDump != nil && e.TuwunelDump.HasRelayData() {
-		data, err := e.TuwunelDump.RoomRelayData(roomID)
+		data, err := e.TuwunelDump.RoomRelayData(ctx, roomID)
 		if err != nil {
 			return err
 		}
 		if mismatched := checkEventIDs(data.Events, room.Version); mismatched != 0 {
 			return fmt.Errorf("room %s: %d original Tuwunel event IDs could not be verified", roomID, mismatched)
 		}
-		if err := compareTuwunelTimeline(data, events); err != nil {
+		if err := compareTuwunelTimeline(data, e.Archive.RoomEventsIter(roomID)); err != nil {
 			return fmt.Errorf("room %s: source snapshot/API mismatch: %w", roomID, err)
 		}
 		if err := e.Archive.WriteRoomPDUs(roomID, data); err != nil {
@@ -151,23 +191,6 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 		}
 	}
 
-	server := e.Archive.Manifest.ServerName
-	local := map[string]bool{}
-	for _, raw := range events {
-		ev, err := decodeEvent(raw)
-		if err != nil {
-			return err
-		}
-		for _, userID := range []string{ev.Sender, memberTarget(ev)} {
-			switch {
-			case userID == "":
-			case mx.ServerName(userID) != server:
-				room.RemoteParticipants = true
-			default:
-				local[userID] = true
-			}
-		}
-	}
 	// Deactivated users can only be told apart with admin access.
 	if e.Admin != nil {
 		for _, userID := range slices.Sorted(maps.Keys(local)) {
@@ -183,7 +206,7 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 	}
 
 	dir := e.Archive.RoomDir(roomID)
-	for _, mxc := range collectMXC(append(slices.Clone(room.State), events...)) {
+	for _, mxc := range mediaRefs {
 		srv, mediaID, err := mx.ParseMXC(mxc)
 		if err != nil || srv != server || known[mxc] || e.quarantined[mxc] {
 			continue

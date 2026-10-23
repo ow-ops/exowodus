@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"fmt"
+	"iter"
 	"os"
 	"strings"
 
@@ -35,12 +36,15 @@ func checkEventIDs(pdus []relay.EventJSON, roomVersion string) int {
 
 // redactPDUs applies redactions Synapse has not purged yet. Signatures cover
 // the redacted form, so they stay valid.
-func redactPDUs(pdus []relay.EventJSON, events []json.RawMessage, roomVersion string) error {
+func redactPDUs(pdus []relay.EventJSON, events iter.Seq2[json.RawMessage, error], roomVersion string) error {
 	if !relay.SupportsVersion(roomVersion) {
 		return nil
 	}
 	redacted := map[string]bool{}
-	for _, raw := range events {
+	for raw, readErr := range events {
+		if readErr != nil {
+			return readErr
+		}
 		ev, err := decodeEvent(raw)
 		if err == nil && len(ev.Unsigned.RedactedBecause) > 0 {
 			redacted[ev.EventID] = true

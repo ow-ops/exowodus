@@ -31,7 +31,7 @@ type RoomData struct {
 	CurrentState map[string]string `json:"current_state"`
 }
 
-// Group is a Synapse state group: a delta over its previous group.
+// Group stores changes from its previous state group.
 type Group struct {
 	Prev  int64             `json:"prev,omitempty"`
 	State map[string]string `json:"state"`
@@ -72,7 +72,6 @@ type room struct {
 	groupOf       map[string]int64
 	beforeGroupOf map[string]int64
 	groups        map[int64]Group
-	resolved      map[int64]map[string]string
 	extra         map[string]map[string]string // state after events without a group
 	current       map[string]string
 	extremities   []string
@@ -83,7 +82,7 @@ func newRoom(roomID, version string, data RoomData) (*room, error) {
 		return nil, fmt.Errorf("room version %q is not supported", version)
 	}
 	r := &room{id: id.RoomID(roomID), version: id.RoomVersion(version), events: map[string]event{},
-		groupOf: data.EventGroups, groups: data.Groups, resolved: map[int64]map[string]string{},
+		groupOf: data.EventGroups, groups: data.Groups,
 		beforeGroupOf: data.BeforeEventGroups,
 		extra:         map[string]map[string]string{}, current: maps.Clone(data.CurrentState),
 		extremities: slices.Clone(data.Extremities)}
@@ -129,63 +128,78 @@ func federationPDU(raw json.RawMessage, version string) (json.RawMessage, error)
 	return json.Marshal(object)
 }
 
-func (r *room) groupState(gid int64) map[string]string {
-	if s, ok := r.resolved[gid]; ok {
-		return s
-	}
-	g, ok := r.groups[gid]
-	if !ok {
-		return nil
+// ResolveState applies a group's ancestry without retaining expanded snapshots.
+func ResolveState(groups map[int64]Group, gid int64) (map[string]string, error) {
+	var chain []int64
+	seen := map[int64]bool{}
+	for {
+		if seen[gid] {
+			return nil, fmt.Errorf("cycle in state group %d", gid)
+		}
+		seen[gid] = true
+		group, ok := groups[gid]
+		if !ok {
+			return nil, fmt.Errorf("missing state group %d", gid)
+		}
+		chain = append(chain, gid)
+		if group.Prev == 0 {
+			break
+		}
+		gid = group.Prev
 	}
 	state := map[string]string{}
-	if g.Prev != 0 {
-		maps.Copy(state, r.groupState(g.Prev))
+	for _, id := range slices.Backward(chain) {
+		group := groups[id]
+		maps.Copy(state, group.State)
 	}
-	maps.Copy(state, g.State)
-	r.resolved[gid] = state
-	return state
+	return state, nil
 }
 
-func (r *room) stateAfter(eventID string) map[string]string {
-	if s, ok := r.extra[eventID]; ok {
-		return s
+func (r *room) stateAfter(eventID string) (map[string]string, error) {
+	if state, ok := r.extra[eventID]; ok {
+		return state, nil
 	}
 	if gid, ok := r.beforeGroupOf[eventID]; ok {
-		state := maps.Clone(r.groupState(gid))
-		if state == nil {
-			state = map[string]string{}
+		state, err := ResolveState(r.groups, gid)
+		if err != nil {
+			return nil, err
 		}
 		if ev, ok := r.events[eventID]; ok && ev.pdu.StateKey != nil {
 			state[StateKey(ev.pdu.Type, *ev.pdu.StateKey)] = eventID
 		}
-		return state
+		return state, nil
 	}
-	if g, ok := r.groupOf[eventID]; ok {
-		if s := r.groupState(g); s != nil {
-			return s
-		}
+	if gid, ok := r.groupOf[eventID]; ok {
+		return ResolveState(r.groups, gid)
 	}
-	return map[string]string{}
+	return map[string]string{}, nil
 }
 
-func (r *room) stateBefore(eventID string) map[string]string {
+func (r *room) stateBefore(eventID string) (map[string]string, error) {
 	if gid, ok := r.beforeGroupOf[eventID]; ok {
-		return r.groupState(gid)
+		return ResolveState(r.groups, gid)
 	}
 	ev, ok := r.events[eventID]
-	after := r.stateAfter(eventID)
+	after, err := r.stateAfter(eventID)
+	if err != nil {
+		return nil, err
+	}
 	if !ok || ev.pdu.StateKey == nil {
-		return after
+		return after, nil
 	}
 	before := maps.Clone(after)
 	k := StateKey(ev.pdu.Type, *ev.pdu.StateKey)
 	delete(before, k)
 	if len(ev.pdu.PrevEvents) > 0 {
-		if prev, ok := r.stateAfter(string(ev.pdu.PrevEvents[0]))[k]; ok {
-			before[k] = prev
+		previous, err := r.stateAfter(string(ev.pdu.PrevEvents[0]))
+		if err != nil {
+			return nil, err
+		}
+		if id, ok := previous[k]; ok {
+			before[k] = id
 		}
 	}
-	return before
+	return before, nil
 }
 
 // add appends a new event on top of the room's forward extremities.

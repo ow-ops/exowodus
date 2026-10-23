@@ -48,12 +48,12 @@ func TestTuwunelRelayIndexSeparatesRooms(t *testing.T) {
 	d := tuwunelRoomsFixture(2, 3)
 	d.maps["eventid_outlierpdu"]["$auth"] = []byte(`{"room_id":"!room0:example.org","type":"m.room.join_rules","state_key":"","content":{}}`)
 	d.maps["eventid_outlierpdu"]["$outlier"] = []byte(`{"room_id":"!outlier:example.org","type":"m.room.create","content":{}}`)
-	ids, err := d.RoomIDs()
+	ids, err := d.RoomIDs(t.Context())
 	if err != nil || len(ids) != 2 {
 		t.Fatalf("rooms = %v, error = %v", ids, err)
 	}
 	for i, room := range ids {
-		data, err := d.RoomRelayData(room)
+		data, err := d.RoomRelayData(t.Context(), room)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -79,12 +79,12 @@ func BenchmarkTuwunelRoomRelayData(b *testing.B) {
 	for _, rooms := range []int{1, 100, 1000} {
 		b.Run(fmt.Sprintf("rooms=%d", rooms), func(b *testing.B) {
 			d := tuwunelRoomsFixture(rooms, 100)
-			if err := d.indexRelayData(); err != nil {
+			if err := d.indexRelayData(b.Context()); err != nil {
 				b.Fatal(err)
 			}
 			b.ResetTimer()
 			for b.Loop() {
-				if _, err := d.RoomRelayData("!room0:example.org"); err != nil {
+				if _, err := d.RoomRelayData(b.Context(), "!room0:example.org"); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -150,7 +150,7 @@ func TestTuwunelHistoricalState(t *testing.T) {
 		"c": []byte(`{"event_id":"$second","room_id":"!room:example.org","type":"m.room.topic","state_key":"","content":{"topic":"new"}}`),
 		"d": []byte(`{"event_id":"$message","room_id":"!room:example.org","type":"m.room.message","content":{"body":"hi"},"auth_events":["$create"]}`),
 	}
-	data, err := d.RoomRelayData("!room:example.org")
+	data, err := d.RoomRelayData(t.Context(), "!room:example.org")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,8 +167,23 @@ func TestTuwunelHistoricalState(t *testing.T) {
 			t.Fatal("PDU changed during export")
 		}
 	}
+	if data.Groups[11].Prev != 10 || len(data.Groups[11].State) != 1 {
+		t.Fatal("expanded delta into full snapshot")
+	}
+	d.maps["shortstatehash_statediff"][u64(13)] = append(append([]byte(u64(12)), []byte(u64(0))...), pair(9, 3)...)
+	d.maps["roomid_shortstatehash"]["!room:example.org"] = []byte(u64(13))
+	removed, err := d.RoomRelayData(t.Context(), "!room:example.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := removed.CurrentState[k]; ok {
+		t.Fatal("removed state retained")
+	}
+	if removed.CurrentState[relay.StateKey("m.room.create", "")] != "$create" {
+		t.Fatal("removal lost inherited state")
+	}
 	d.maps["shortstatehash_statediff"][u64(10)] = []byte(u64(12))
-	if _, err := d.RoomRelayData("!room:example.org"); err == nil {
+	if _, err := d.RoomRelayData(t.Context(), "!room:example.org"); err == nil {
 		t.Fatal("state cycle accepted")
 	}
 }

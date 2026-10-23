@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"reflect"
 	"strings"
 
@@ -62,23 +63,22 @@ func (d *TuwunelDump) CheckLosslessMaps() error {
 	return nil
 }
 
-func compareTuwunelTimeline(data *relay.RoomData, events []json.RawMessage) error {
+func compareTuwunelTimeline(data *relay.RoomData, events iter.Seq2[json.RawMessage, error]) error {
 	accepted := map[string]bool{}
 	for _, id := range data.Timeline {
 		accepted[id] = true
 	}
-	expected := map[string]map[string]any{}
+	expected := map[string]json.RawMessage{}
 	for _, event := range data.Events {
 		if !accepted[event.EventID] {
 			continue
 		}
-		fields, err := originalEventFields(event.PDU)
-		if err != nil {
-			return err
-		}
-		expected[event.EventID] = fields
+		expected[event.EventID] = event.PDU
 	}
-	for _, raw := range events {
+	for raw, readErr := range events {
+		if readErr != nil {
+			return readErr
+		}
 		event, err := decodeEvent(raw)
 		if err != nil {
 			return err
@@ -87,8 +87,12 @@ func compareTuwunelTimeline(data *relay.RoomData, events []json.RawMessage) erro
 		if !ok {
 			return fmt.Errorf("API event %s absent from snapshot or duplicated", event.EventID)
 		}
+		wantFields, err := originalEventFields(want)
+		if err != nil {
+			return err
+		}
 		got, err := originalEventFields(raw)
-		if err != nil || !reflect.DeepEqual(want, got) {
+		if err != nil || !reflect.DeepEqual(wantFields, got) {
 			return fmt.Errorf("event %s differs between API and snapshot", event.EventID)
 		}
 		delete(expected, event.EventID)
