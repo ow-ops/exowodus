@@ -36,7 +36,7 @@ func (e *Exporter) ExportServer(ctx context.Context) error {
 			return nil
 		}
 	}
-	srv := &archive.Server{}
+	srv := &archive.Server{SkippedRemoteMedia: true}
 	if e.MAS != nil {
 		var err error
 		if srv.RegistrationTokens, err = e.MAS.RegistrationTokens(ctx); err != nil {
@@ -113,6 +113,9 @@ func (im *Importer) ImportServer(ctx context.Context) ([]string, []Failure) {
 		archiveOnly[room.RoomID] = room.ArchiveOnly
 	}
 	var notes []string
+	if srv.SkippedRemoteMedia {
+		notes = append(notes, "Remote media cache was skipped during export; those files depend on their original servers.")
+	}
 	for _, mxc := range srv.UnavailableMedia {
 		notes = append(notes, "Remote media unavailable on source: "+mxc)
 	}

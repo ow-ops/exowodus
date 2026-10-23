@@ -35,6 +35,7 @@ Good to know:
   `exodus-archive/export-report.json` and rerun `export`. Media download
   failures also fail the export. Pass `--skip-missing-media` to migrate
   accounts while omitting source media that returns HTTP 404.
+  Remote media is always skipped; local uploads are exported.
 - **The archive is sensitive.** It holds account data, encrypted key backups,
   password hashes, access tokens and generated passwords. Keep it safe, and
   retain it while you run the proxy or need archive-only room history.

@@ -133,13 +133,7 @@ func TestResumeCorruptHistory(t *testing.T) {
 
 func TestResumeExportMedia(t *testing.T) {
 	var downloads atomic.Int32
-	var capabilities atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/_matrix/media/v3/config" {
-			capabilities.Add(1)
-			_, _ = fmt.Fprint(w, `{"m.upload.size":1000000}`)
-			return
-		}
 		if strings.HasSuffix(r.URL.Path, "/versions") {
 			_, _ = fmt.Fprint(w, `{"versions":["v1.11"]}`)
 			return
@@ -161,6 +155,12 @@ func TestResumeExportMedia(t *testing.T) {
 	e := Exporter{Archive: a, Resume: resume, TuwunelDump: &TuwunelDump{}}
 	client := mx.MustNew(server.URL, "token")
 	path := filepath.Join(a.Dir, "file")
+	if _, _, err := e.downloadExportMedia(t.Context(), client, "mxc://remote.org/file", path); err == nil {
+		t.Fatal("remote media download accepted")
+	}
+	if downloads.Load() != 0 {
+		t.Fatal("remote media request reached the source")
+	}
 	for i := 0; i < 2; i++ {
 		if _, _, err := e.downloadExportMedia(t.Context(), client, "mxc://example.org/file", path); err != nil {
 			t.Fatal(err)
@@ -177,9 +177,6 @@ func TestResumeExportMedia(t *testing.T) {
 	}
 	if downloads.Load() != 2 {
 		t.Fatal("missing media not downloaded again")
-	}
-	if capabilities.Load() != 1 {
-		t.Fatalf("checked media API %d times", capabilities.Load())
 	}
 }
 

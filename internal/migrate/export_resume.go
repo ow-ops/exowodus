@@ -149,6 +149,13 @@ func (e *Exporter) saveHistoryExport(ctx context.Context, id, tip string) error 
 }
 
 func (e *Exporter) downloadExportMedia(ctx context.Context, client *mautrix.Client, mxc, path string) (string, string, error) {
+	server, _, err := mx.ParseMXC(mxc)
+	if err != nil {
+		return "", "", err
+	}
+	if server != e.Archive.Manifest.ServerName {
+		return "", "", fmt.Errorf("remote media is not exported: %s", mxc)
+	}
 	key, err := filepath.Rel(e.Archive.Dir, path)
 	if err != nil {
 		return "", "", err
@@ -165,22 +172,8 @@ func (e *Exporter) downloadExportMedia(ctx context.Context, client *mautrix.Clie
 			return checkpoint.Media.ContentType, checkpoint.Media.Filename, nil
 		}
 	}
-	download := mx.Download
-	if e.TuwunelDump != nil {
-		if !e.cachedMediaReady {
-			url := client.BuildURL(mautrix.MediaURLPath{"v3", "config"})
-			if _, err := client.MakeRequest(ctx, http.MethodGet, url, nil, nil); err != nil {
-				if ctx.Err() != nil {
-					return "", "", ctx.Err()
-				}
-				// Keep this HTTP error out of missing-file handling.
-				return "", "", fmt.Errorf("Tuwunel media export requires allow_legacy_media = true on the source: %v", err)
-			}
-			e.cachedMediaReady = true
-		}
-		download = mx.DownloadCached
-	}
-	contentType, filename, err := download(ctx, client, mxc, path)
+	slog.Info("reading source media", "mxc", mxc)
+	contentType, filename, err := mx.Download(ctx, client, mxc, path)
 	if err != nil {
 		return "", "", err
 	}

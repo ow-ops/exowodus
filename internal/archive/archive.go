@@ -546,8 +546,9 @@ func readOptionalJSON(path string, v any) error {
 }
 
 type Server struct {
-	Media            []Media  `json:"media,omitempty"`
-	UnavailableMedia []string `json:"unavailable_media,omitempty"`
+	Media              []Media  `json:"media,omitempty"`
+	UnavailableMedia   []string `json:"unavailable_media,omitempty"`
+	SkippedRemoteMedia bool     `json:"skipped_remote_media,omitempty"`
 	// Unsupported source data that blocks strict import.
 	Limitations        []string            `json:"limitations,omitempty"`
 	RegistrationTokens []RegistrationToken `json:"registration_tokens,omitempty"`

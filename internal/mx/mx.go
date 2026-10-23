@@ -184,36 +184,16 @@ flows:
 }
 
 func Download(ctx context.Context, c *mautrix.Client, mxc, path string) (contentType, filename string, err error) {
-	return download(ctx, c, mxc, path, false)
-}
-
-// DownloadCached uses the legacy media endpoint to disable remote fetching.
-func DownloadCached(ctx context.Context, c *mautrix.Client, mxc, path string) (contentType, filename string, err error) {
-	return download(ctx, c, mxc, path, true)
-}
-
-func download(ctx context.Context, c *mautrix.Client, mxc, path string, cached bool) (contentType, filename string, err error) {
 	uri, err := id.ParseContentURI(mxc)
 	if err != nil {
 		return "", "", err
 	}
-	var resp *http.Response
-	if cached {
-		// The authenticated media endpoint does not support allow_remote.
-		url := c.BuildURLWithQuery(mautrix.MediaURLPath{"v3", "download", uri.Homeserver, uri.FileID}, map[string]string{
-			"allow_remote": "false", "allow_redirect": "false", "timeout_ms": "0",
-		})
-		_, resp, err = c.MakeFullRequestWithResp(ctx, mautrix.FullRequest{
-			Method: http.MethodGet, URL: url, DontReadResponse: true,
-		})
-	} else {
-		if c.SpecVersions == nil {
-			if _, err := c.Versions(ctx); err != nil {
-				return "", "", err
-			}
+	if c.SpecVersions == nil {
+		if _, err := c.Versions(ctx); err != nil {
+			return "", "", err
 		}
-		resp, err = c.Download(ctx, uri)
 	}
+	resp, err := c.Download(ctx, uri)
 	if err != nil {
 		return "", "", err
 	}

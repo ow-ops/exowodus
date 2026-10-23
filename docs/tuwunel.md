@@ -87,11 +87,12 @@ exodus proxy --upstream http://continuwuity:8008
 Keep dump files unchanged during export. Original event bodies stream from
 these files. Room state and event indexes still use RAM.
 
-Set `allow_legacy_media = true` in Tuwunel's configuration and restart it before
-exporting; keep writes paused. Export uses the legacy media API with
-`allow_remote=false` to copy local uploads and cached remote media. Missing
-remote files are listed in `server.json` under `unavailable_media`. Missing
-local media fails the export.
+Export downloads local uploads through the authenticated media API. Remote
+media, including cached files and remote avatars, is skipped. Those files
+depend on their original servers remaining available after migration.
+`allow_legacy_media` is not needed. Missing local media still fails the export.
+The archive records this policy as `skipped_remote_media` in `server.json`, and
+import reports it as a note.
 
 Backfilled events without historical state are retained. State queries for
 those events return an error. New exports use archive format 2 and require

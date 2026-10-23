@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -39,10 +38,17 @@ func (e *Exporter) exportTuwunelMedia(ctx context.Context, srv *archive.Server) 
 	if err != nil {
 		return err
 	}
+	skipped := 0
+	srv.SkippedRemoteMedia = true
+	slog.Info("exporting database media", "count", len(ids))
 	for _, mxc := range ids {
 		server, id, err := mx.ParseMXC(mxc)
 		if err != nil {
 			return err
+		}
+		if server != e.Archive.Manifest.ServerName {
+			skipped++
+			continue
 		}
 		file := filepath.Join("server", mediaFile(server, id))
 		path := filepath.Join(e.Archive.Dir, file)
@@ -51,11 +57,6 @@ func (e *Exporter) exportTuwunelMedia(ctx context.Context, srv *archive.Server) 
 		}
 		contentType, name, err := e.downloadExportMedia(ctx, e.Admin, mxc, path)
 		if err != nil {
-			if server != e.Archive.Manifest.ServerName && mx.IsStatus(err, http.StatusNotFound) && mx.IsCode(err, "M_NOT_FOUND") {
-				srv.UnavailableMedia = append(srv.UnavailableMedia, mxc)
-				slog.Warn("remote media unavailable on source", "mxc", mxc, "err", err)
-				continue
-			}
 			if e.skipMissingMedia(mxc, path, err) {
 				continue
 			}
@@ -63,5 +64,6 @@ func (e *Exporter) exportTuwunelMedia(ctx context.Context, srv *archive.Server) 
 		}
 		srv.Media = append(srv.Media, archive.Media{MXC: mxc, File: file, ContentType: contentType, Filename: name})
 	}
+	slog.Info("exported database media", "files", len(srv.Media), "skipped_remote", skipped)
 	return nil
 }
