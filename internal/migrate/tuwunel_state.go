@@ -80,22 +80,34 @@ func (d *TuwunelDump) loadStateGroups(ctx context.Context, groups map[int64]rela
 		}
 		gid = parent
 	}
-	// Store groups with removals as full snapshots; the archive only supports
-	// additions over a parent.
+	// Replacements are already expressed by the additions. Only deletions
+	// that change state need a full snapshot.
 	for _, id := range slices.Backward(chain) {
-		if len(removals[id]) == 0 {
+		needsSnapshot := false
+		for _, removed := range removals[id] {
+			added, ok := groups[id].State[removed.key]
+			if !ok || added == removed.eventID {
+				needsSnapshot = true
+				break
+			}
+		}
+		if !needsSnapshot {
 			continue
 		}
 		state, err := relay.ResolveState(groups, id)
 		if err != nil {
 			return err
 		}
+		changed := false
 		for _, removed := range removals[id] {
 			if state[removed.key] == removed.eventID {
 				delete(state, removed.key)
+				changed = true
 			}
 		}
-		groups[id] = relay.Group{State: state}
+		if changed {
+			groups[id] = relay.Group{State: state}
+		}
 	}
 	return nil
 }

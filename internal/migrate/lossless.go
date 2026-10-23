@@ -1,12 +1,11 @@
 package migrate
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"iter"
-	"reflect"
 	"strings"
 
 	"exodus/internal/archive"
@@ -59,46 +58,6 @@ func (d *TuwunelDump) CheckLosslessMaps() error {
 		if d.maps[name] == nil {
 			return fmt.Errorf("--require-lossless requires %s.txt, including when the table is empty", name)
 		}
-	}
-	return nil
-}
-
-func compareTuwunelTimeline(data *relay.RoomData, events iter.Seq2[json.RawMessage, error]) error {
-	accepted := map[string]bool{}
-	for _, id := range data.Timeline {
-		accepted[id] = true
-	}
-	expected := map[string]json.RawMessage{}
-	for _, event := range data.Events {
-		if !accepted[event.EventID] {
-			continue
-		}
-		expected[event.EventID] = event.PDU
-	}
-	for raw, readErr := range events {
-		if readErr != nil {
-			return readErr
-		}
-		event, err := decodeEvent(raw)
-		if err != nil {
-			return err
-		}
-		want, ok := expected[event.EventID]
-		if !ok {
-			return fmt.Errorf("API event %s absent from snapshot or duplicated", event.EventID)
-		}
-		wantFields, err := originalEventFields(want)
-		if err != nil {
-			return err
-		}
-		got, err := originalEventFields(raw)
-		if err != nil || !reflect.DeepEqual(wantFields, got) {
-			return fmt.Errorf("event %s differs between API and snapshot", event.EventID)
-		}
-		delete(expected, event.EventID)
-	}
-	if len(expected) != 0 {
-		return fmt.Errorf("%d database timeline events missing from API export", len(expected))
 	}
 	return nil
 }
@@ -194,7 +153,7 @@ func hasThreadReceipt(v any) bool {
 // Redactions preserve event IDs, so compare content as well.
 func originalEventFields(raw json.RawMessage) (map[string]any, error) {
 	var event map[string]any
-	d := json.NewDecoder(strings.NewReader(string(raw)))
+	d := json.NewDecoder(bytes.NewReader(raw))
 	d.UseNumber()
 	if err := d.Decode(&event); err != nil {
 		return nil, err

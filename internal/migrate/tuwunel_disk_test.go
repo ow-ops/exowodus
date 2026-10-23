@@ -45,11 +45,11 @@ func TestTuwunelDiskRelay(t *testing.T) {
 		if len(index.events) != 0 {
 			t.Fatal("event bodies retained in index")
 		}
-		got, err := disk.RoomRelayData(t.Context(), room)
+		got, err := collectTuwunelRoom(t.Context(), disk, room)
 		if err != nil {
 			t.Fatal(err)
 		}
-		want, err := memory.RoomRelayData(t.Context(), room)
+		want, err := collectTuwunelRoom(t.Context(), memory, room)
 		if err != nil {
 			t.Fatal(err)
 		}

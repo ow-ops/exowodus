@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/x509"
 	"encoding/binary"
@@ -13,6 +14,20 @@ import (
 	"exodus/internal/relay"
 	"maunium.net/go/mautrix/federation"
 )
+
+func collectTuwunelRoom(ctx context.Context, d *TuwunelDump, roomID string) (*relay.RoomData, error) {
+	data, err := d.roomRelayMetadata(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	for event, err := range d.roomEvents(ctx, roomID) {
+		if err != nil {
+			return nil, err
+		}
+		data.Events = append(data.Events, event)
+	}
+	return data, nil
+}
 
 func tuwunelRoomsFixture(rooms, messages int) *TuwunelDump {
 	d := &TuwunelDump{maps: map[string]map[string][]byte{}}
@@ -53,7 +68,7 @@ func TestTuwunelRelayIndexSeparatesRooms(t *testing.T) {
 		t.Fatalf("rooms = %v, error = %v", ids, err)
 	}
 	for i, room := range ids {
-		data, err := d.RoomRelayData(t.Context(), room)
+		data, err := collectTuwunelRoom(t.Context(), d, room)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -84,7 +99,7 @@ func BenchmarkTuwunelRoomRelayData(b *testing.B) {
 			}
 			b.ResetTimer()
 			for b.Loop() {
-				if _, err := d.RoomRelayData(b.Context(), "!room0:example.org"); err != nil {
+				if _, err := d.roomRelayMetadata(b.Context(), "!room0:example.org"); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -150,9 +165,12 @@ func TestTuwunelHistoricalState(t *testing.T) {
 		"c": []byte(`{"event_id":"$second","room_id":"!room:example.org","type":"m.room.topic","state_key":"","content":{"topic":"new"}}`),
 		"d": []byte(`{"event_id":"$message","room_id":"!room:example.org","type":"m.room.message","content":{"body":"hi"},"auth_events":["$create"]}`),
 	}
-	data, err := d.RoomRelayData(t.Context(), "!room:example.org")
+	data, err := collectTuwunelRoom(t.Context(), d, "!room:example.org")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if data.Groups[12].Prev != 11 || len(data.Groups[12].State) != 1 {
+		t.Fatal("replacement expanded into a full snapshot")
 	}
 	k := relay.StateKey("m.room.topic", "")
 	if len(data.Events) != 4 || data.BeforeEventGroups["$create"] != 0 || data.BeforeEventGroups["$second"] != 11 || data.Groups[11].State[k] != "$first" || data.CurrentState[k] != "$second" || data.Extremities[0] != "$message" {
@@ -172,7 +190,7 @@ func TestTuwunelHistoricalState(t *testing.T) {
 	}
 	d.maps["shortstatehash_statediff"][u64(13)] = append(append([]byte(u64(12)), []byte(u64(0))...), pair(9, 3)...)
 	d.maps["roomid_shortstatehash"]["!room:example.org"] = []byte(u64(13))
-	removed, err := d.RoomRelayData(t.Context(), "!room:example.org")
+	removed, err := collectTuwunelRoom(t.Context(), d, "!room:example.org")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +201,7 @@ func TestTuwunelHistoricalState(t *testing.T) {
 		t.Fatal("removal lost inherited state")
 	}
 	d.maps["shortstatehash_statediff"][u64(10)] = []byte(u64(12))
-	if _, err := d.RoomRelayData(t.Context(), "!room:example.org"); err == nil {
+	if _, err := collectTuwunelRoom(t.Context(), d, "!room:example.org"); err == nil {
 		t.Fatal("state cycle accepted")
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"time"
@@ -110,13 +111,12 @@ func (t *tuwunelDiskTable) read(f *os.File, key string) ([]byte, error) {
 }
 
 func readTuwunelValue(f *os.File, ref tuwunelValueRef) ([]byte, error) {
-	encoded := make([]byte, ref.size)
-	if _, err := f.ReadAt(encoded, ref.offset); err != nil {
+	decoded := make([]byte, hex.DecodedLen(ref.size))
+	reader := hex.NewDecoder(io.NewSectionReader(f, ref.offset, int64(ref.size)))
+	if _, err := io.ReadFull(reader, decoded); err != nil {
 		return nil, err
 	}
-	decoded := make([]byte, hex.DecodedLen(len(encoded)))
-	_, err := hex.Decode(decoded, encoded)
-	return decoded, err
+	return decoded, nil
 }
 
 func (d *TuwunelDump) eachValue(ctx context.Context, name string, fn func(string, []byte) error) error {

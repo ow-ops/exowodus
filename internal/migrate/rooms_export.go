@@ -20,7 +20,7 @@ import (
 	"exodus/internal/mx"
 )
 
-const messagesPageSize = "1000"
+const messagesPageSize = "100"
 
 // LocalOnlyRooms returns rooms no other server is in: they cannot be rejoined
 // once the source is gone.
@@ -176,17 +176,7 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 		}
 	}
 	if e.TuwunelDump != nil && e.TuwunelDump.HasRelayData() {
-		data, err := e.TuwunelDump.RoomRelayData(ctx, roomID)
-		if err != nil {
-			return err
-		}
-		if mismatched := checkEventIDs(data.Events, room.Version); mismatched != 0 {
-			return fmt.Errorf("room %s: %d original Tuwunel event IDs could not be verified", roomID, mismatched)
-		}
-		if err := compareTuwunelTimeline(data, e.Archive.RoomEventsIter(roomID)); err != nil {
-			return fmt.Errorf("room %s: source snapshot/API mismatch: %w", roomID, err)
-		}
-		if err := e.Archive.WriteRoomPDUs(roomID, data); err != nil {
+		if err := e.TuwunelDump.exportRoomPDUs(ctx, e.Archive, roomID, room.Version); err != nil {
 			return err
 		}
 	}

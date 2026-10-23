@@ -84,8 +84,8 @@ exodus import --to http://continuwuity:8008 --to-admin-token "$CADMIN" \
 exodus proxy --upstream http://continuwuity:8008
 ```
 
-Keep dump files unchanged during export. Event bodies and compressed state
-are read from disk. Indexes and individual rooms still need RAM.
+Keep dump files unchanged during export. Original event bodies stream from
+these files. Room state and event indexes still use RAM.
 
 Whole-server migration requires these scans, even for empty tables. Export
 checks the database timeline against the API. Import checks original event IDs,
