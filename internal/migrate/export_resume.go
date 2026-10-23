@@ -165,7 +165,22 @@ func (e *Exporter) downloadExportMedia(ctx context.Context, client *mautrix.Clie
 			return checkpoint.Media.ContentType, checkpoint.Media.Filename, nil
 		}
 	}
-	contentType, filename, err := mx.Download(ctx, client, mxc, path)
+	download := mx.Download
+	if e.TuwunelDump != nil {
+		if !e.cachedMediaReady {
+			url := client.BuildURL(mautrix.MediaURLPath{"v3", "config"})
+			if _, err := client.MakeRequest(ctx, http.MethodGet, url, nil, nil); err != nil {
+				if ctx.Err() != nil {
+					return "", "", ctx.Err()
+				}
+				// Keep this HTTP error out of missing-file handling.
+				return "", "", fmt.Errorf("Tuwunel media export requires allow_legacy_media = true on the source: %v", err)
+			}
+			e.cachedMediaReady = true
+		}
+		download = mx.DownloadCached
+	}
+	contentType, filename, err := download(ctx, client, mxc, path)
 	if err != nil {
 		return "", "", err
 	}
@@ -193,7 +208,7 @@ func (e *Exporter) verifyRoomTip(ctx context.Context, client *mautrix.Client, ro
 		latest = page.Chunk[0].EventID
 	}
 	if latest != tip {
-		return fmt.Errorf("source room %s changed since export; use a new dump and --archive directory", roomID)
+		return fmt.Errorf("source room %s changed since export (saved %q, current %q); pause writes and use a new dump and --archive directory", roomID, tip, latest)
 	}
 	return nil
 }

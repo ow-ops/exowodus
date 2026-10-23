@@ -28,9 +28,19 @@ func TestTuwunelUnavailableMedia(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/_matrix/media/v3/config" {
+					_, _ = fmt.Fprint(w, `{"m.upload.size":1000000}`)
+					return
+				}
 				if strings.HasSuffix(r.URL.Path, "/versions") {
 					_, _ = fmt.Fprint(w, `{"versions":["v1.11"]}`)
 					return
+				}
+				if r.URL.Path != "/_matrix/media/v3/download/"+tc.server+"/file" ||
+					r.URL.Query().Get("allow_remote") != "false" ||
+					r.URL.Query().Get("allow_redirect") != "false" ||
+					r.URL.Query().Get("timeout_ms") != "0" {
+					t.Errorf("media request can fetch remotely: %s", r.URL)
 				}
 				w.WriteHeader(tc.status)
 				if tc.status == 200 {
@@ -72,6 +82,39 @@ func TestTuwunelUnavailableMedia(t *testing.T) {
 			}
 			if tc.status == 200 && len(server.Media) != 1 {
 				t.Fatal("available media omitted")
+			}
+		})
+	}
+}
+
+func TestTuwunelLegacyMediaDisabled(t *testing.T) {
+	for _, skipMissing := range []bool{false, true} {
+		t.Run(fmt.Sprint(skipMissing), func(t *testing.T) {
+			requests := 0
+			source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				if r.URL.Path != "/_matrix/media/v3/config" {
+					t.Errorf("download attempted without cache-only support: %s", r.URL)
+				}
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = fmt.Fprint(w, `{"errcode":"M_NOT_FOUND","error":"disabled"}`)
+			}))
+			defer source.Close()
+			a, err := archive.Create(t.TempDir(), "example.org")
+			if err != nil {
+				t.Fatal(err)
+			}
+			e := Exporter{
+				Archive: a, Admin: mx.MustNew(source.URL, "token"), SkipMissingMedia: skipMissing,
+				TuwunelDump: &TuwunelDump{maps: map[string]map[string][]byte{"mediaid_file": {"mxc://remote.org/file": nil}}},
+			}
+			server := &archive.Server{}
+			err = e.exportTuwunelMedia(t.Context(), server)
+			if err == nil || !strings.Contains(err.Error(), "allow_legacy_media = true") {
+				t.Fatalf("missing cache-only API: %v", err)
+			}
+			if requests != 1 || len(server.UnavailableMedia) != 0 {
+				t.Fatalf("disabled API was treated as missing media: requests=%d unavailable=%v", requests, server.UnavailableMedia)
 			}
 		})
 	}

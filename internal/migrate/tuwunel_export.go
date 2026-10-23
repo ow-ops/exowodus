@@ -14,6 +14,7 @@ import (
 	"os"
 	"reflect"
 	"slices"
+	"strings"
 	"time"
 
 	"exodus/internal/archive"
@@ -149,8 +150,23 @@ func (d *TuwunelDump) compareTimeline(ctx context.Context, roomID string, events
 			return err
 		}
 		got, err := originalEventFields(raw)
-		if err != nil || !reflect.DeepEqual(want, got) {
-			return fmt.Errorf("event %s differs between API and snapshot", event.EventID)
+		if err != nil {
+			return fmt.Errorf("API event %s: %w", event.EventID, err)
+		}
+		if !reflect.DeepEqual(want, got) {
+			var fields []string
+			for key, value := range want {
+				if actual, ok := got[key]; !ok || !reflect.DeepEqual(value, actual) {
+					fields = append(fields, key)
+				}
+			}
+			for key := range got {
+				if _, ok := want[key]; !ok {
+					fields = append(fields, key)
+				}
+			}
+			slices.Sort(fields)
+			return fmt.Errorf("event %s differs between API and snapshot (fields: %s)", event.EventID, strings.Join(fields, ", "))
 		}
 		delete(remaining, event.EventID)
 	}

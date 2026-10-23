@@ -5,8 +5,58 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 )
+
+func TestDownloadCached(t *testing.T) {
+	for _, missing := range []bool{false, true} {
+		t.Run(map[bool]string{false: "stored", true: "missing"}[missing], func(t *testing.T) {
+			calls := 0
+			source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if r.URL.Path != "/_matrix/media/v3/download/remote.org/file" ||
+					r.URL.Query().Get("allow_remote") != "false" ||
+					r.URL.Query().Get("allow_redirect") != "false" ||
+					r.URL.Query().Get("timeout_ms") != "0" ||
+					r.Header.Get("Authorization") != "Bearer token" {
+					t.Errorf("unexpected media request: %s", r.URL)
+				}
+				if missing {
+					w.WriteHeader(http.StatusNotFound)
+					_, _ = w.Write([]byte(`{"errcode":"M_NOT_FOUND","error":"not cached"}`))
+					return
+				}
+				w.Header().Set("Content-Type", "image/png")
+				w.Header().Set("Content-Disposition", `inline; filename="image.png"`)
+				_, _ = w.Write([]byte("cached media"))
+			}))
+			defer source.Close()
+			path := filepath.Join(t.TempDir(), "media")
+			contentType, filename, err := DownloadCached(t.Context(), MustNew(source.URL, "token"), "mxc://remote.org/file", path)
+			if calls != 1 {
+				t.Fatalf("made %d requests; cache-only downloads must not fall back", calls)
+			}
+			if missing {
+				if !IsCode(err, "M_NOT_FOUND") || !IsStatus(err, http.StatusNotFound) {
+					t.Fatalf("missing media error: %v", err)
+				}
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatalf("missing download created a file: %v", err)
+				}
+				return
+			}
+			if err != nil || contentType != "image/png" || filename != "image.png" {
+				t.Fatalf("download metadata: type=%q name=%q err=%v", contentType, filename, err)
+			}
+			body, err := os.ReadFile(path)
+			if err != nil || string(body) != "cached media" {
+				t.Fatalf("download body: %q err=%v", body, err)
+			}
+		})
+	}
+}
 
 func TestRetriesRateLimit(t *testing.T) {
 	var calls int

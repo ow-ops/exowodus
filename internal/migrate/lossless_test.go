@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -11,6 +12,38 @@ import (
 	"exodus/internal/mx"
 	"exodus/internal/relay"
 )
+
+func TestOriginalRedactionFields(t *testing.T) {
+	for _, tc := range []struct {
+		name, original, served string
+		match                  bool
+	}{
+		{"old room API copy", `"redacts":"$target","content":{"reason":"spam"}`, `"redacts":"$target","content":{"reason":"spam","redacts":"$target"}`, true},
+		{"new room API copy", `"content":{"reason":"spam","redacts":"$target"}`, `"redacts":"$target","content":{"reason":"spam","redacts":"$target"}`, true},
+		{"changed target", `"redacts":"$target","content":{}`, `"redacts":"$other","content":{"redacts":"$other"}`, false},
+		{"conflicting target", `"redacts":"$target","content":{}`, `"redacts":"$target","content":{"redacts":"$other"}`, false},
+		{"invalid top target", `"redacts":"$target","content":{}`, `"redacts":42,"content":{"redacts":"$target"}`, false},
+		{"invalid nested target", `"redacts":"$target","content":{}`, `"redacts":"$target","content":{"redacts":42}`, false},
+		{"changed reason", `"redacts":"$target","content":{"reason":"spam"}`, `"redacts":"$target","content":{"reason":"changed","redacts":"$target"}`, false},
+		{"removed content", `"redacts":"$target","content":{"reason":"spam"}`, `"redacts":"$target","content":{"redacts":"$target"}`, false},
+		{"custom content", `"redacts":"$target","content":{"custom":"keep"}`, `"redacts":"$target","content":{"custom":"keep","redacts":"$target"}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want, err := originalEventFields(json.RawMessage(`{"type":"m.room.redaction",` + tc.original + `}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := originalEventFields(json.RawMessage(`{"type":"m.room.redaction",` + tc.served + `}`))
+			if match := err == nil && reflect.DeepEqual(want, got); match != tc.match {
+				t.Fatalf("match=%t want=%t error=%v", match, tc.match, err)
+			}
+		})
+	}
+	message, err := originalEventFields(json.RawMessage(`{"type":"m.room.message","content":{"redacts":"$target"}}`))
+	if err != nil || message["content"].(map[string]any)["redacts"] != "$target" {
+		t.Fatal("normalized a non-redaction event")
+	}
+}
 
 func TestLosslessRejectsDestinationCredentials(t *testing.T) {
 	for _, credential := range []string{"password", "token"} {

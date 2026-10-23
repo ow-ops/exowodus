@@ -164,5 +164,27 @@ func originalEventFields(raw json.RawMessage) (map[string]any, error) {
 			fields[k] = v
 		}
 	}
+	// Client APIs duplicate redacts in content.redacts for compatibility.
+	if fields["type"] == "m.room.redaction" {
+		content, ok := fields["content"].(map[string]any)
+		if !ok {
+			return fields, nil
+		}
+		top, hasTop := fields["redacts"].(string)
+		nested, hasNested := content["redacts"].(string)
+		if value, exists := fields["redacts"]; exists && value != nil && !hasTop {
+			return nil, errors.New("redaction target must be a string")
+		}
+		if value, exists := content["redacts"]; exists && value != nil && !hasNested {
+			return nil, errors.New("redaction target must be a string")
+		}
+		if hasTop && hasNested && top != nested {
+			return nil, errors.New("redaction event has conflicting targets")
+		}
+		if hasNested {
+			fields["redacts"] = nested
+			delete(content, "redacts")
+		}
+	}
 	return fields, nil
 }

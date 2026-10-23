@@ -36,10 +36,11 @@ const syncFilter = `{
 }`
 
 type Exporter struct {
-	Resume         *archive.ExportResume
-	completedRooms map[string]bool
-	quarantined    map[string]bool
-	AllUsers       bool
+	Resume           *archive.ExportResume
+	completedRooms   map[string]bool
+	cachedMediaReady bool
+	quarantined      map[string]bool
+	AllUsers         bool
 	// SkipMissingMedia keeps importing when the source no longer serves an MXC.
 	SkipMissingMedia bool
 	Archive          *archive.Archive
@@ -353,7 +354,7 @@ func (e *Exporter) exportMedia(ctx context.Context, s *Session, avatar string) (
 
 	dir := e.Archive.UserDir(s.UserID)
 	log := slog.With("user", s.UserID)
-	log.Info("downloading media", "count", len(wanted))
+	log.Info("exporting media", "count", len(wanted))
 	var out []archive.Media
 	for _, m := range wanted {
 		server, mediaID, err := mx.ParseMXC(m.MXC)

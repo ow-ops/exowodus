@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
@@ -81,7 +82,7 @@ func TestTuwunelStreamTimelineChecks(t *testing.T) {
 		fail   string
 	}{
 		{"exact", []string{`{"event_id":"$create0","room_id":"!room0:example.org","type":"m.room.create","state_key":"","content":{}}`}, ""},
-		{"different content", []string{`{"event_id":"$create0","type":"m.room.create","state_key":"","content":{"changed":true}}`}, "differs"},
+		{"different content", []string{`{"event_id":"$create0","type":"m.room.create","state_key":"","content":{"changed":true}}`}, "fields: content"},
 		{"duplicate", []string{`{"event_id":"$create0","type":"m.room.create","state_key":"","content":{}}`, `{"event_id":"$create0","type":"m.room.create","state_key":"","content":{}}`}, "duplicated"},
 		{"missing", nil, "missing"},
 		{"unknown", []string{`{"event_id":"$unknown","content":{}}`}, "absent"},
@@ -105,6 +106,37 @@ func TestTuwunelStreamTimelineChecks(t *testing.T) {
 				}
 			} else if err == nil || !strings.Contains(err.Error(), tc.fail) {
 				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+func TestTuwunelTimelineRedactionCompatibility(t *testing.T) {
+	for _, nested := range []bool{false, true} {
+		t.Run(fmt.Sprint(nested), func(t *testing.T) {
+			d := tuwunelRoomsFixture(1, 0)
+			if err := d.indexRelayData(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			const roomID = "!room0:example.org"
+			original := json.RawMessage(`{"event_id":"$redaction","type":"m.room.redaction","redacts":"$target","content":{"reason":"spam"}}`)
+			if nested {
+				original = json.RawMessage(`{"event_id":"$redaction","type":"m.room.redaction","content":{"reason":"spam","redacts":"$target"}}`)
+			}
+			room := d.relayRooms[roomID]
+			before := bytes.Clone(original)
+			room.events["$redaction"] = original
+			room.timeline["$redaction"] = true
+			events := func(yield func(json.RawMessage, error) bool) {
+				if yield(room.events["$create0"], nil) {
+					yield(json.RawMessage(`{"event_id":"$redaction","type":"m.room.redaction","redacts":"$target","content":{"reason":"spam","redacts":"$target"}}`), nil)
+				}
+			}
+			if err := d.compareTimeline(t.Context(), roomID, events); err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(room.events["$redaction"], before) {
+				t.Fatal("comparison changed the original PDU")
 			}
 		})
 	}

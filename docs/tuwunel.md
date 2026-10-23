@@ -87,9 +87,11 @@ exodus proxy --upstream http://continuwuity:8008
 Keep dump files unchanged during export. Original event bodies stream from
 these files. Room state and event indexes still use RAM.
 
-Remote media that returns `M_NOT_FOUND` is skipped and listed in
-`server.json` under `unavailable_media`. Missing local media still fails a
-whole-server export.
+Set `allow_legacy_media = true` in Tuwunel's configuration and restart it before
+exporting; keep writes paused. Export uses the legacy media API with
+`allow_remote=false` to copy local uploads and cached remote media. Missing
+remote files are listed in `server.json` under `unavailable_media`. Missing
+local media fails the export.
 
 Backfilled events without historical state are retained. State queries for
 those events return an error. New exports use archive format 2 and require
@@ -105,6 +107,10 @@ Failed rooms reuse completed API history and retry the remaining steps,
 including preservation checks. Interrupted history downloads restart that
 room's history. Older partial archives can reuse histories after their retained
 dump and events are verified; other steps run once to create checkpoints.
+
+If the source changes, pause writes, back up the database and extract all tables
+into a new dump directory. Export to a new `--archive` directory. Keep the old
+archive and its retained dump unchanged.
 
 Whole-server migration requires these scans, even for empty tables. Export
 checks the database timeline against the API. Import checks original event IDs,
