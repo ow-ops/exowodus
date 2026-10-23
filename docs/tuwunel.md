@@ -10,60 +10,68 @@ until cutover. Run a compatible RocksDB
 [ldb tool](https://github.com/facebook/rocksdb/wiki/Administration-and-Data-Access-Tool)
 against the backup, never the live database.
 
-Create one hex scan per table, starting with the password and token tables:
+Set `DB` to your database backup and `LDB` to your RocksDB tool
+(`rocksdb_ldb` on Homebrew). Run from your migration directory.
+`OUT` must not already exist.
 
 ```sh
-mkdir -m 700 tuwunel-dump
+(
+set -eu
 umask 077
-ldb --db=/backup/tuwunel --column_family=userid_password scan --hex \
-  > tuwunel-dump/userid_password.txt
-ldb --db=/backup/tuwunel --column_family=token_userdeviceid scan --hex \
-  > tuwunel-dump/token_userdeviceid.txt
-ldb --db=/backup/tuwunel --column_family=userdeviceid_refresh scan --hex \
-  > tuwunel-dump/userdeviceid_refresh.txt
+DB=/backup/tuwunel
+LDB=ldb
+OUT=./tuwunel-dump
+
+families=$("$LDB" --db="$DB" list_column_families)
+available=$(printf '%s\n' "$families" | sed -n 's/^{\(.*\)}$/\1/p' | tr ',' '\n' | sed 's/^ *//;s/ *$//')
+[ -n "$available" ] || { echo "Could not list database tables" >&2; exit 1; }
+mkdir -m 700 "$OUT"
+
+for table in \
+  userid_password token_userdeviceid userdeviceid_metadata \
+  userdeviceidalgorithm_fallback senderkey_pusher pushkey_deviceid \
+  todeviceid_events bannedroomids alias_roomid \
+  mediaid_file mediaid_lazy mediaid_lazycontent \
+  readreceiptid_readreceipt roomuserid_privateread \
+  servercurrentevent_data servernameevent_data \
+  global server_signingkeys pduid_pdu eventid_outlierpdu \
+  shorteventid_eventid shortstatekey_statekey shorteventid_shortstatehash \
+  roomid_shortstatehash shortstatehash_statediff roomid_pduleaves \
+  userdeviceid_refresh onetimekeyid4225_otk onetimekeyid_onetimekeys
+do
+  case "$table" in
+    userdeviceid_refresh|onetimekeyid4225_otk|onetimekeyid_onetimekeys)
+      if ! printf '%s\n' "$available" | grep -Fxq "$table"; then
+        continue
+      fi
+      ;;
+  esac
+  echo "Extracting $table" >&2
+  "$LDB" --db="$DB" --column_family="$table" scan --hex > "$OUT/$table.txt.part"
+  mv "$OUT/$table.txt.part" "$OUT/$table.txt"
+done
+
+if [ ! -f "$OUT/onetimekeyid4225_otk.txt" ] && [ ! -f "$OUT/onetimekeyid_onetimekeys.txt" ]; then
+  echo "Missing one-time-key table; extraction incomplete" >&2
+  exit 1
+fi
+echo "Extraction complete: $OUT" >&2
+)
 ```
 
-Check that each scan succeeds. Older databases without refresh tokens do not
-need `userdeviceid_refresh.txt`. Expired tokens and superseded refresh tokens
-are excluded. Protect the dump: it contains password hashes and bearer tokens.
+If a scan fails, the command stops and leaves a `.part` file. Fix the error
+and retry with a new `OUT` directory. Missing refresh-token and legacy
+one-time-key tables are skipped; empty tables are kept.
 
-Export the remaining tables with the same command, replacing `NAME`:
-
-```sh
-ldb --db=/backup/tuwunel --column_family=NAME scan --hex \
-  > tuwunel-dump/NAME.txt
-```
-
-| Table | Data |
-| --- | --- |
-| `userdeviceid_metadata` | Device IDs, including devices without active tokens |
-| `onetimekeyid4225_otk` | One-time keys on current Tuwunel |
-| `onetimekeyid_onetimekeys` | One-time keys on older Conduit-lineage schemas |
-| `userdeviceidalgorithm_fallback` | Unused fallback keys on current Tuwunel |
-| `senderkey_pusher` and `pushkey_deviceid` | Push notifications and their device bindings (both files required) |
-| `todeviceid_events` | Queued device messages |
-| `bannedroomids` | Banned rooms |
-| `alias_roomid` | Local aliases, including aliases outside joined rooms |
-| `mediaid_file`, `mediaid_lazy`, `mediaid_lazycontent` | Stored media, including files without uploader metadata |
-| `readreceiptid_readreceipt`, `roomuserid_privateread` | Unsupported receipt checks |
-| `servercurrentevent_data`, `servernameevent_data` | Pending deliveries; drain before cutover |
-
-Include empty scans for current-schema tables. The older one-time-key table
-applies only to legacy databases. Used fallback keys are excluded.
+Keep the dump private: it contains password hashes, login tokens and the server
+signing key. Drain pending outbound deliveries before cutover. Exodus excludes
+expired tokens, superseded refresh tokens and used fallback keys.
 
 Tuwunel must provide the [Synapse-compatible admin endpoints](https://github.com/matrix-construct/tuwunel/blob/main/docs/development/compliance/synapse-admin.md)
 used by export. If you renamed the `conduit` server bot, pass its localpart with
 `--tuwunel-server-user`. Native dumps cannot be combined with MAS authentication.
 
 ## Original events and strict cutover checks
-
-Original-event transfer also reads these hex scans from the same checkpoint:
-`global`, `server_signingkeys`, `pduid_pdu`, `eventid_outlierpdu`,
-`shorteventid_eventid`, `shortstatekey_statekey`,
-`shorteventid_shortstatehash`, `roomid_shortstatehash`,
-`shortstatehash_statediff`, and `roomid_pduleaves`.
-The `global` scan contains the server's private signing key. Protect it along
-with the password and token scans.
 
 ```sh
 exodus export --from https://example.org --from-type tuwunel \
