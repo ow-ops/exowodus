@@ -104,11 +104,14 @@ func TestTuwunelBulkSource(t *testing.T) {
 		case "/_matrix/client/v3/account/whoami":
 			_, _ = w.Write([]byte(`{"user_id":"@admin:example.org","device_id":"ADMIN"}`))
 		case "/_synapse/admin/v2/users":
+			if r.URL.Query().Get("user_id") != ":example.org" {
+				t.Error("local user filter missing")
+			}
 			if r.URL.Query().Get("deactivated") != "true" || r.URL.Query().Get("locked") != "true" {
 				t.Error("account status filters omitted")
 			}
 			if r.URL.Query().Get("from") == "" {
-				_, _ = w.Write([]byte(`{"users":[{"name":"@conduit:example.org"},{"name":"@admin:example.org"}],"next_token":"2"}`))
+				_, _ = w.Write([]byte(`{"users":[{"name":"@remote:elsewhere.org"},{"name":"@conduit:example.org"},{"name":"@admin:example.org"}],"next_token":"3"}`))
 			} else {
 				_, _ = w.Write([]byte(`{"users":[{"name":"@alice:example.org"},{"name":"@gone:example.org"}]}`))
 			}

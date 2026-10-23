@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"exodus/internal/archive"
+	"exodus/internal/mx"
 )
 
 // TuwunelDump reads offline ldb scan --hex output.
@@ -223,12 +224,19 @@ func (d *TuwunelDump) Secrets(userID string) (*archive.Secrets, error) {
 }
 
 func (d *TuwunelDump) CheckUserInventory(users map[string]bool, bot string) error {
+	serverName := mx.ServerName(bot)
 	for user := range d.passwords {
+		if mx.ServerName(user) != serverName {
+			continue
+		}
 		if user != bot && !users[user] {
 			return fmt.Errorf("snapshot account %s missing from source API inventory", user)
 		}
 	}
 	for user := range users {
+		if mx.ServerName(user) != serverName {
+			return fmt.Errorf("source account %s is not local to %s", user, serverName)
+		}
 		if _, ok := d.passwords[user]; !ok {
 			return fmt.Errorf("source account %s missing from database checkpoint", user)
 		}

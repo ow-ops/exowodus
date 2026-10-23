@@ -2,9 +2,12 @@ package migrate
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"go.mau.fi/util/ptr"
@@ -95,6 +98,10 @@ func SelectSynapseUsers(ctx context.Context, admin *mautrix.Client, ids []string
 	}
 	var users []SynapseUser
 	for _, userID := range ids {
+		if mx.ServerName(userID) != admin.UserID.Homeserver() {
+			return nil, fmt.Errorf("source account %s is not local to %s", userID, admin.UserID.Homeserver())
+		}
+		slog.Info("reading source account", "user", userID)
 		d, err := synapseUser(ctx, admin, userID)
 		if err != nil {
 			return nil, err
@@ -118,24 +125,46 @@ func synapseUser(ctx context.Context, admin *mautrix.Client, userID string) (syn
 
 func listSynapseUsers(ctx context.Context, admin *mautrix.Client) ([]string, error) {
 	var ids []string
-	q := map[string]string{"guests": "true", "deactivated": "true", "locked": "true", "limit": "500"}
+	serverName := admin.UserID.Homeserver()
+	if serverName == "" {
+		return nil, errors.New("source admin user ID is missing")
+	}
+	q := map[string]string{"guests": "true", "deactivated": "true", "locked": "true", "limit": "500", "user_id": ":" + serverName}
+	seen := map[string]bool{}
+	var offset uint64
 	for {
+		slog.Info("listing source users", "from", offset, "local_users", len(ids))
 		var page struct {
 			Users []struct {
 				Name string `json:"name"`
 			} `json:"users"`
-			NextToken any `json:"next_token"`
+			NextToken *json.RawMessage `json:"next_token"`
 		}
 		if _, err := admin.MakeRequest(ctx, http.MethodGet, adminURL(admin, q, "v2", "users"), nil, &page); err != nil {
 			return nil, err
 		}
 		for _, u := range page.Users {
-			ids = append(ids, u.Name)
+			if seen[u.Name] {
+				return nil, fmt.Errorf("duplicate source user %s", u.Name)
+			}
+			seen[u.Name] = true
+			if mx.ServerName(u.Name) == serverName {
+				ids = append(ids, u.Name)
+			}
 		}
 		if page.NextToken == nil {
 			return ids, nil
 		}
-		q["from"] = fmt.Sprint(page.NextToken)
+		var next string
+		if err := json.Unmarshal(*page.NextToken, &next); err != nil {
+			next = string(*page.NextToken)
+		}
+		nextOffset, err := strconv.ParseUint(next, 10, 64)
+		if err != nil || nextOffset <= offset || len(page.Users) == 0 {
+			return nil, fmt.Errorf("source user pagination did not advance: from=%d next=%q users=%d", offset, next, len(page.Users))
+		}
+		offset = nextOffset
+		q["from"] = next
 	}
 }
 

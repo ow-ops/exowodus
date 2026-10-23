@@ -102,7 +102,7 @@ func TestTuwunelDumpRetainsUnknownTablesExactly(t *testing.T) {
 }
 
 func TestTuwunelSnapshotAccountInventory(t *testing.T) {
-	d := &TuwunelDump{passwords: map[string][]byte{"@alice:example.org": nil, "@conduit:example.org": nil}}
+	d := &TuwunelDump{passwords: map[string][]byte{"@alice:example.org": nil, "@conduit:example.org": nil, "@remote:elsewhere.org": []byte("*")}}
 	if err := d.CheckUserInventory(map[string]bool{"@alice:example.org": true}, "@conduit:example.org"); err != nil {
 		t.Fatal(err)
 	}
