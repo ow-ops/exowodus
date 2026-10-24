@@ -104,19 +104,19 @@ func TestTuwunelDumpRetainsUnknownTablesExactly(t *testing.T) {
 
 func TestTuwunelSnapshotAccountInventory(t *testing.T) {
 	d := &TuwunelDump{passwords: map[string][]byte{"@alice:example.org": nil, "@conduit:example.org": nil, "@remote:elsewhere.org": []byte("*")}}
-	if err := d.CheckUserInventory(map[string]bool{"@alice:example.org": true}, "@conduit:example.org"); err != nil {
+	if err := d.CheckUserInventory(map[string]bool{"@alice:example.org": true}, "@conduit:example.org", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.CheckUserInventory(map[string]bool{}, "@conduit:example.org"); err == nil {
+	if err := d.CheckUserInventory(map[string]bool{}, "@conduit:example.org", nil); err == nil {
 		t.Fatal("deleted account missing from source API accepted")
 	}
-	if err := d.CheckUserInventory(map[string]bool{"@alice:example.org": true, "@new:example.org": true}, "@conduit:example.org"); err == nil ||
+	if err := d.CheckUserInventory(map[string]bool{"@alice:example.org": true, "@new:example.org": true}, "@conduit:example.org", nil); err == nil ||
 		!strings.Contains(err.Error(), "userid_password.txt") || !strings.Contains(err.Error(), "new backup") {
 		t.Fatalf("missing account error: %v", err)
 	}
 	const bridgeUser = "@discord_123:example.org"
 	d.passwords[bridgeUser] = nil
-	if err := d.CheckUserInventory(map[string]bool{"@alice:example.org": true, bridgeUser: true}, "@conduit:example.org"); err != nil {
+	if err := d.CheckUserInventory(map[string]bool{"@alice:example.org": true, bridgeUser: true}, "@conduit:example.org", nil); err != nil {
 		t.Fatalf("passwordless bridge account rejected: %v", err)
 	}
 }

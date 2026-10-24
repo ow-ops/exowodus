@@ -71,6 +71,15 @@ func (e *Exporter) ExportServer(ctx context.Context) error {
 		if err := e.TuwunelDump.AddServer(srv, e.Archive.Manifest.ServerName); err != nil {
 			return err
 		}
+		if e.AllUsers {
+			bridges, err := e.TuwunelDump.appservices()
+			if err != nil {
+				return err
+			}
+			for _, b := range bridges {
+				srv.AppserviceRegistrations = append(srv.AppserviceRegistrations, b.registration)
+			}
+		}
 		if err := e.exportTuwunelMedia(ctx, srv); err != nil {
 			return err
 		}

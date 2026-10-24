@@ -37,10 +37,11 @@ for table in \
   global server_signingkeys pduid_pdu eventid_outlierpdu \
   shorteventid_eventid shortstatekey_statekey shorteventid_shortstatehash \
   roomid_shortstatehash shortstatehash_statediff roomid_pduleaves \
-  userdeviceid_refresh onetimekeyid4225_otk onetimekeyid_onetimekeys
+  userdeviceid_refresh onetimekeyid4225_otk onetimekeyid_onetimekeys \
+  id_appserviceregistrations
 do
   case "$table" in
-    userdeviceid_refresh|onetimekeyid4225_otk|onetimekeyid_onetimekeys)
+    userdeviceid_refresh|onetimekeyid4225_otk|onetimekeyid_onetimekeys|id_appserviceregistrations)
       if ! printf '%s\n' "$available" | grep -Fxq "$table"; then
         continue
       fi
@@ -60,8 +61,31 @@ echo "Extraction complete: $OUT" >&2
 ```
 
 If a scan fails, the command stops and leaves a `.part` file. Fix the error
-and retry with a new `OUT` directory. Missing refresh-token and legacy
-one-time-key tables are skipped; empty tables are kept.
+and retry with a new `OUT` directory. Missing refresh-token, legacy one-time-key
+and appservice tables are skipped; empty tables are kept.
+
+Whole-server export skips bridge ghosts identified by exclusive namespaces in
+`id_appserviceregistrations.txt`. Accounts with saved passwords, tokens or device
+data, bridge bots and admins are kept. Import restores the registrations on the
+same server name. Back up each bridge's database and configuration separately.
+Registrations loaded only from Tuwunel's configuration are absent from this scan.
+
+For an existing dump, extract this table from the same database backup:
+
+```sh
+(
+set -eu
+umask 077
+DB=/backup/tuwunel
+LDB=ldb
+OUT=./tuwunel-dump
+
+"$LDB" --db="$DB" --column_family=id_appserviceregistrations scan --hex > "$OUT/id_appserviceregistrations.txt.part"
+mv "$OUT/id_appserviceregistrations.txt.part" "$OUT/id_appserviceregistrations.txt"
+)
+```
+
+Adding a scan changes the dump; use a new `--archive` directory.
 
 Keep the dump private: it contains password hashes, login tokens and the server
 signing key. Drain pending outbound deliveries before cutover. Exodus excludes

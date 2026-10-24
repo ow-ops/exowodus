@@ -38,6 +38,7 @@ type TuwunelDump struct {
 }
 
 var tuwunelExtraMaps = []string{
+	"id_appserviceregistrations",
 	"userdeviceid_metadata", "onetimekeyid4225_otk", "onetimekeyid_onetimekeys",
 	"userdeviceidalgorithm_fallback", "senderkey_pusher", "pushkey_deviceid",
 	"todeviceid_events", "bannedroomids", "alias_roomid",
@@ -223,17 +224,20 @@ func (d *TuwunelDump) Secrets(userID string) (*archive.Secrets, error) {
 	return s, nil
 }
 
-func (d *TuwunelDump) CheckUserInventory(users map[string]bool, bot string) error {
+func (d *TuwunelDump) CheckUserInventory(users map[string]bool, bot string, bridgeUsers map[string]bool) error {
 	serverName := mx.ServerName(bot)
 	for user := range d.passwords {
 		if mx.ServerName(user) != serverName {
 			continue
 		}
-		if user != bot && !users[user] {
+		if user != bot && !bridgeUsers[user] && !users[user] {
 			return fmt.Errorf("snapshot account %s missing from source API inventory", user)
 		}
 	}
 	for user := range users {
+		if bridgeUsers[user] {
+			continue
+		}
 		if mx.ServerName(user) != serverName {
 			return fmt.Errorf("source account %s is not local to %s", user, serverName)
 		}

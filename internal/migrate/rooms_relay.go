@@ -95,6 +95,9 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 	if owner == "" {
 		return errors.New("no migrated member is in the room")
 	}
+	if err := r.registerGhosts(ctx); err != nil {
+		return err
+	}
 	if r.st.Done {
 		if im.RequireLossless {
 			return verifyOriginalRoom(ctx, r.as(r.mapUser(owner)), room.RoomID, r.events)
@@ -251,7 +254,7 @@ func (r *replay) relayHandOver(rl *relay.Relay, owner string, members []string) 
 	return rl.Author(roomID, owner, "m.room.power_levels", "", content)
 }
 
-// relayMembers returns the most powerful joined migrated member, and all of them.
+// relayMembers returns the most powerful joined local member, and all of them.
 func (r *replay) relayMembers() (string, []string) {
 	pl, _ := decodeContent(r.final[relay.StateKey("m.room.power_levels", "")].Content)
 	users, _ := pl["users"].(map[string]any)
@@ -259,7 +262,7 @@ func (r *replay) relayMembers() (string, []string) {
 	var ownerLevel int64 = -1
 	var members []string
 	for _, ev := range r.final {
-		if ev.Type != "m.room.member" || membership(ev) != "join" || !r.im.Migrated[*ev.StateKey] {
+		if ev.Type != "m.room.member" || membership(ev) != "join" || (!r.im.Migrated[*ev.StateKey] && !r.puppets[*ev.StateKey]) {
 			continue
 		}
 		userID := *ev.StateKey

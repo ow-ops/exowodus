@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,55 @@ import (
 	"exodus/internal/migrate"
 	"exodus/internal/mx"
 )
+
+func TestTuwunelSourceSkipsDumpBridgeGhosts(t *testing.T) {
+	dir := t.TempDir()
+	for _, table := range []string{
+		"userid_password", "token_userdeviceid", "global", "server_signingkeys", "pduid_pdu", "eventid_outlierpdu",
+		"shorteventid_eventid", "shortstatekey_statekey", "shorteventid_shortstatehash", "roomid_shortstatehash", "shortstatehash_statediff", "roomid_pduleaves",
+		"userdeviceid_metadata", "onetimekeyid4225_otk", "userdeviceidalgorithm_fallback", "senderkey_pusher", "pushkey_deviceid", "todeviceid_events",
+		"bannedroomids", "alias_roomid", "servercurrentevent_data", "servernameevent_data", "mediaid_file", "mediaid_lazy", "mediaid_lazycontent", "readreceiptid_readreceipt", "roomuserid_privateread",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, table+".txt"), nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	passwords := fmt.Sprintf("0x%x ==> 0x\n0x%x ==> 0x\n", "@admin:example.org", "@ghost_old:example.org")
+	if err := os.WriteFile(filepath.Join(dir, "userid_password.txt"), []byte(passwords), 0600); err != nil {
+		t.Fatal(err)
+	}
+	registration := "id: bridge\nas_token: test\nhs_token: test\nsender_localpart: bridgebot\nnamespaces:\n  users:\n    - regex: '^@ghost_.*:example\\.org$'\n      exclusive: true\n"
+	scan := fmt.Sprintf("0x%x ==> 0x%x\n", "bridge", registration)
+	if err := os.WriteFile(filepath.Join(dir, "id_appserviceregistrations.txt"), []byte(scan), 0600); err != nil {
+		t.Fatal(err)
+	}
+	liveUser := "@ghost_new:example.org"
+	homeserver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/whoami"):
+			_, _ = w.Write([]byte(`{"user_id":"@admin:example.org"}`))
+		case r.URL.Path == "/_synapse/admin/v2/users":
+			_ = json.NewEncoder(w).Encode(map[string]any{"users": []map[string]string{{"name": "@admin:example.org"}, {"name": liveUser}}})
+		default:
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer homeserver.Close()
+	f := sourceFlags{kind: "tuwunel", allUsers: true, serverUser: "conduit", tuwunelDump: dir, adminToken: "admin", url: homeserver.URL}
+	source, err := f.open(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	if len(source.users) != 1 || source.users[0].UserID != "@admin:example.org" {
+		t.Fatalf("selected users = %v", source.users)
+	}
+	liveUser = "@real_new:example.org"
+	if _, err := f.open(t.Context()); err == nil || !strings.Contains(err.Error(), liveUser) {
+		t.Fatalf("real account absent from checkpoint accepted: %v", err)
+	}
+}
 
 func TestExportStartupFailurePreservesReport(t *testing.T) {
 	for _, tc := range []struct {

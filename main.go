@@ -155,8 +155,28 @@ func (f *sourceFlags) open(ctx context.Context) (*source, error) {
 	if err != nil {
 		return nil, err
 	}
+	var bridgeUsers map[string]bool
+	if dump != nil && f.allUsers {
+		bridgeUsers, err = dump.BridgeUsers(s.userIDs(), s.serverName)
+		if err != nil {
+			return nil, err
+		}
+		skip := func(user migrate.SynapseUser) bool {
+			if user.Admin || len(user.ExternalIDs) > 0 || user.UserID == s.adminID {
+				delete(bridgeUsers, user.UserID)
+				return false
+			}
+			if !bridgeUsers[user.UserID] {
+				return false
+			}
+			slog.Info("skipping appservice account", "user", user.UserID)
+			return true
+		}
+		s.users = slices.DeleteFunc(s.users, skip)
+		s.deactivated = slices.DeleteFunc(s.deactivated, skip)
+	}
 	if f.requireLossless {
-		if err := dump.CheckUserInventory(s.userIDs(), "@"+f.serverUser+":"+s.serverName); err != nil {
+		if err := dump.CheckUserInventory(s.userIDs(), "@"+f.serverUser+":"+s.serverName, bridgeUsers); err != nil {
 			return nil, err
 		}
 	}
@@ -566,6 +586,9 @@ after replacing Synapse with Continuwuity on the same server name.`,
 					continue
 				}
 				jobs = append(jobs, job)
+			}
+			if err := im.RestoreBridges(ctx, srv); err != nil {
+				return err
 			}
 			var roomReports []*migrate.RoomReport
 			if len(rooms) > 0 && relayOpts.name != "" {
