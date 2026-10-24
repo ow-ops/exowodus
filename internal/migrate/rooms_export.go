@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"iter"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -18,6 +20,7 @@ import (
 
 	"exodus/internal/archive"
 	"exodus/internal/mx"
+	"exodus/internal/relay"
 )
 
 const messagesPageSize = "100"
@@ -50,20 +53,39 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 	roomURL := func(query url.Values, path ...any) string { return e.roomURL(c, roomID, query, path...) }
 	log := slog.With("room", roomID)
 	room := &archive.ArchivedRoom{RoomID: roomID}
+	var checkpoint *relay.RoomData
+	var stateEvents iter.Seq2[json.RawMessage, error]
+	if e.HistoryAtCheckpoint {
+		if e.TuwunelDump == nil || !e.TuwunelDump.HasRelayData() || !e.AllUsers || e.Admin == nil {
+			return errors.New("checkpoint history requires a whole-server Tuwunel dump and admin API access")
+		}
+		var err error
+		checkpoint, err = e.TuwunelDump.roomRelayMetadata(ctx, roomID)
+		if err != nil {
+			return err
+		}
+		stateEvents = e.TuwunelDump.roomStateEvents(ctx, roomID, checkpoint.CurrentState)
+		log.Info("exporting room from database checkpoint")
+	}
 
 	if e.Admin != nil {
-		var state struct {
-			State []json.RawMessage `json:"state"`
+		if !e.HistoryAtCheckpoint {
+			var state struct {
+				State []json.RawMessage `json:"state"`
+			}
+			if _, err := c.MakeRequest(ctx, http.MethodGet, roomURL(nil, "state"), nil, &state); err != nil {
+				return fmt.Errorf("room state: %w", err)
+			}
+			room.State = state.State
 		}
-		if _, err := c.MakeRequest(ctx, http.MethodGet, roomURL(nil, "state"), nil, &state); err != nil {
-			return fmt.Errorf("room state: %w", err)
-		}
-		room.State = state.State
 		var details struct {
 			Public bool `json:"public"`
 		}
 		if _, err := c.MakeRequest(ctx, http.MethodGet, roomURL(nil), nil, &details); err != nil {
-			return fmt.Errorf("room details: %w", err)
+			if checkpoint == nil || !mx.IsStatus(err, http.StatusNotFound) {
+				return fmt.Errorf("room details: %w", err)
+			}
+			log.Info("room details unavailable; leaving directory listing private")
 		}
 		room.Public = details.Public
 	} else {
@@ -77,7 +99,29 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 	}
 	room.ArchiveOnly = e.Admin != nil
 	room.Version = "1"
-	for _, raw := range room.State {
+	if stateEvents == nil {
+		stateEvents = func(yield func(json.RawMessage, error) bool) {
+			for _, raw := range room.State {
+				if !yield(raw, nil) {
+					return
+				}
+			}
+		}
+	}
+	var mediaRefs []string
+	seenMedia := map[string]bool{}
+	collectMedia := func(raw json.RawMessage) {
+		for _, mxc := range collectMXC([]json.RawMessage{raw}) {
+			if !seenMedia[mxc] {
+				seenMedia[mxc] = true
+				mediaRefs = append(mediaRefs, mxc)
+			}
+		}
+	}
+	for raw, err := range stateEvents {
+		if err != nil {
+			return err
+		}
 		ev, err := decodeEvent(raw)
 		if err != nil {
 			return err
@@ -93,15 +137,11 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 				room.Version = create.RoomVersion
 			}
 		}
+		collectMedia(raw)
 	}
 
 	server := e.Archive.Manifest.ServerName
 	local := map[string]bool{}
-	mediaRefs := collectMXC(room.State)
-	seenMedia := map[string]bool{}
-	for _, mxc := range mediaRefs {
-		seenMedia[mxc] = true
-	}
 	count := 0
 	tip := ""
 	inspect := func(raw json.RawMessage) error {
@@ -122,12 +162,7 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 				local[userID] = true
 			}
 		}
-		for _, mxc := range collectMXC([]json.RawMessage{raw}) {
-			if !seenMedia[mxc] {
-				seenMedia[mxc] = true
-				mediaRefs = append(mediaRefs, mxc)
-			}
-		}
+		collectMedia(raw)
 		count++
 		return nil
 	}
@@ -146,6 +181,20 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 			}
 		}
 		if err := e.verifyRoomTip(ctx, c, roomID, tip); err != nil {
+			return err
+		}
+	} else if e.HistoryAtCheckpoint {
+		events := func(yield func(json.RawMessage, error) bool) {
+			for raw, err := range e.TuwunelDump.checkpointTimeline(ctx, roomID) {
+				if err == nil {
+					err = inspect(raw)
+				}
+				if !yield(raw, err) || err != nil {
+					return
+				}
+			}
+		}
+		if err := e.Archive.WriteRoomEventsFrom(roomID, events); err != nil {
 			return err
 		}
 	} else {
@@ -198,7 +247,11 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 			return err
 		}
 	}
-	if e.TuwunelDump != nil && e.TuwunelDump.HasRelayData() {
+	if checkpoint != nil {
+		if err := e.TuwunelDump.writeRoomPDUs(ctx, e.Archive, roomID, room.Version, checkpoint); err != nil {
+			return err
+		}
+	} else if e.TuwunelDump != nil && e.TuwunelDump.HasRelayData() {
 		if err := e.TuwunelDump.exportRoomPDUs(ctx, e.Archive, roomID, room.Version); err != nil {
 			return err
 		}
@@ -237,7 +290,12 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 		}
 		room.Media = append(room.Media, m)
 	}
-	if err := e.Archive.WriteRoom(room); err != nil {
+	if checkpoint != nil {
+		err = e.Archive.WriteRoomWithState(room, stateEvents)
+	} else {
+		err = e.Archive.WriteRoom(room)
+	}
+	if err != nil {
 		return err
 	}
 	return e.saveRoomExport(ctx, room, tip)
@@ -389,7 +447,7 @@ func asSlice(v any) []string {
 
 // ExportDepartedRooms archives rooms with no joined local users.
 func (e *Exporter) ExportDepartedRooms(ctx context.Context, known map[string]bool) error {
-	if !e.AllUsers || e.Admin == nil {
+	if !e.AllUsers || e.Admin == nil || e.HistoryAtCheckpoint {
 		return nil
 	}
 	q := map[string]string{"limit": "100", "order_by": "name"}

@@ -41,6 +41,12 @@ func TestTuwunelResumeIdentity(t *testing.T) {
 		t.Fatal("different source accepted")
 	}
 	f = original
+	f.historyAtCheckpoint = true
+	if resume, err := f.exportResume(t.Context(), source, a); err == nil {
+		resume.Close()
+		t.Fatal("checkpoint history reused an archive with a different history policy")
+	}
+	f = original
 	source.users = append(source.users, migrate.SynapseUser{UserID: "@bob:example.org"})
 	if resume, err := f.exportResume(t.Context(), source, a); err == nil {
 		resume.Close()

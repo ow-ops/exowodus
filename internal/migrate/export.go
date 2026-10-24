@@ -36,10 +36,11 @@ const syncFilter = `{
 }`
 
 type Exporter struct {
-	Resume         *archive.ExportResume
-	completedRooms map[string]bool
-	quarantined    map[string]bool
-	AllUsers       bool
+	Resume              *archive.ExportResume
+	completedRooms      map[string]bool
+	quarantined         map[string]bool
+	AllUsers            bool
+	HistoryAtCheckpoint bool
 	// SkipMissingMedia keeps importing when the source no longer serves an MXC.
 	SkipMissingMedia bool
 	Archive          *archive.Archive
@@ -111,6 +112,9 @@ func (e *Exporter) ExportUser(ctx context.Context, s *Session) (*archive.User, e
 		u.AccountData[ev.Type.Type] = ev.Content.VeryRaw
 	}
 	for _, roomID := range slices.Sorted(maps.Keys(sync.Rooms.Invite)) {
+		if e.HistoryAtCheckpoint && e.TuwunelDump.relayRooms[string(roomID)] == nil {
+			continue
+		}
 		for _, ev := range sync.Rooms.Invite[roomID].State.Events {
 			if ev.Type == event.StateMember && ev.GetStateKey() == s.UserID {
 				u.Invites = append(u.Invites, archive.Invite{RoomID: string(roomID), Inviter: string(ev.Sender)})
@@ -119,6 +123,9 @@ func (e *Exporter) ExportUser(ctx context.Context, s *Session) (*archive.User, e
 	}
 
 	for _, roomID := range slices.Sorted(maps.Keys(sync.Rooms.Knock)) {
+		if e.HistoryAtCheckpoint && e.TuwunelDump.relayRooms[string(roomID)] == nil {
+			continue
+		}
 		k := archive.Knock{RoomID: string(roomID)}
 		for _, ev := range sync.Rooms.Knock[roomID].State.Events {
 			if server := ev.Sender.Homeserver(); server != mx.ServerName(s.UserID) && !slices.Contains(k.Via, server) {
@@ -161,6 +168,16 @@ func (e *Exporter) ExportUser(ctx context.Context, s *Session) (*archive.User, e
 	log.Info("collecting rooms", "count", len(roomIDs))
 	for _, roomID := range roomIDs {
 		room := archive.Room{RoomID: roomID}
+		if e.HistoryAtCheckpoint {
+			include, err := e.TuwunelDump.checkpointUserRoom(ctx, s.UserID, &room)
+			if err != nil {
+				return nil, fmt.Errorf("checkpoint room %s: %w", roomID, err)
+			}
+			if !include {
+				log.Info("room membership absent from checkpoint; skipping", "room", roomID)
+				continue
+			}
+		}
 		if joinedRoom := sync.Rooms.Join[id.RoomID(roomID)]; joinedRoom != nil {
 			if evs := joinedRoom.AccountData.Events; len(evs) > 0 {
 				room.AccountData = map[string]json.RawMessage{}
@@ -178,7 +195,9 @@ func (e *Exporter) ExportUser(ctx context.Context, s *Session) (*archive.User, e
 		for _, m := range roomMembers {
 			members[m] = true
 		}
-		if err := s.optional(exportRoomListing(ctx, s, &room, server)); err != nil {
+		if e.HistoryAtCheckpoint {
+			e.TuwunelDump.trimCheckpointReceipts(&room)
+		} else if err := s.optional(exportRoomListing(ctx, s, &room, server)); err != nil {
 			return nil, fmt.Errorf("room %s details: %w", roomID, err)
 		}
 		u.Rooms = append(u.Rooms, room)

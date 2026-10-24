@@ -120,6 +120,22 @@ func TestTuwunelPreservationDefault(t *testing.T) {
 	}
 }
 
+func TestCheckpointHistoryRequiresNativeWholeServerExport(t *testing.T) {
+	for _, args := range [][]string{
+		{"--from-type", "synapse", "--all-users"},
+		{"--from-type", "tuwunel", "--tuwunel-dump", "unused"},
+		{"--from-type", "tuwunel", "--all-users"},
+	} {
+		cmd := newExportCmd()
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs(append([]string{"--from", "http://127.0.0.1:1", "--history-at-checkpoint"}, args...))
+		if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--history-at-checkpoint requires") {
+			t.Fatalf("invalid checkpoint history options accepted: %v", err)
+		}
+	}
+}
+
 func TestTuwunelDefaultRejectsIncompleteExportBeforeAPI(t *testing.T) {
 	cmd := newExportCmd()
 	cmd.SetArgs([]string{"--from", "http://127.0.0.1:1", "--from-type", "tuwunel", "--all-users", "--from-admin-token", "test"})
@@ -179,6 +195,11 @@ func TestTuwunelStaleSnapshotCannotOmitJoinedRoom(t *testing.T) {
 	err = exportRooms(t.Context(), exp, users, nil)
 	if !requested || err == nil {
 		t.Fatal("joined room created after checkpoint was silently omitted")
+	}
+	requested = false
+	exp.HistoryAtCheckpoint = true
+	if err := exportRooms(t.Context(), exp, users, nil); err != nil || requested {
+		t.Fatalf("checkpoint export requested a newer room: %v", err)
 	}
 }
 

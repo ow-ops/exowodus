@@ -189,6 +189,10 @@ func (d *TuwunelDump) exportRoomPDUs(ctx context.Context, a *archive.Archive, ro
 	if err := d.compareTimeline(ctx, roomID, a.RoomEventsIter(roomID)); err != nil {
 		return fmt.Errorf("room %s: source snapshot/API mismatch: %w", roomID, err)
 	}
+	return d.writeRoomPDUs(ctx, a, roomID, version, data)
+}
+
+func (d *TuwunelDump) writeRoomPDUs(ctx context.Context, a *archive.Archive, roomID, version string, data *relay.RoomData) error {
 	events := func(yield func(relay.EventJSON, error) bool) {
 		count := 0
 		progress := time.Now()

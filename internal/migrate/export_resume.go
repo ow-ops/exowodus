@@ -187,6 +187,9 @@ func (e *Exporter) downloadExportMedia(ctx context.Context, client *mautrix.Clie
 }
 
 func (e *Exporter) verifyRoomTip(ctx context.Context, client *mautrix.Client, roomID, tip string) error {
+	if e.HistoryAtCheckpoint {
+		return nil
+	}
 	var page struct {
 		Chunk []struct {
 			EventID string `json:"event_id"`

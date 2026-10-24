@@ -346,6 +346,30 @@ func (a *Archive) WriteRoom(r *ArchivedRoom) error {
 	return writeJSON(filepath.Join(a.RoomDir(r.RoomID), "room.json"), r)
 }
 
+func (a *Archive) WriteRoomWithState(r *ArchivedRoom, state iter.Seq2[json.RawMessage, error]) error {
+	return writeJSON(filepath.Join(a.RoomDir(r.RoomID), "room.json"), struct {
+		*ArchivedRoom
+		State roomStateStream `json:"state"`
+	}{r, roomStateStream(state)})
+}
+
+type roomStateStream iter.Seq2[json.RawMessage, error]
+
+func (state roomStateStream) MarshalJSONTo(enc *jsontext.Encoder) error {
+	if err := enc.WriteToken(jsontext.BeginArray); err != nil {
+		return err
+	}
+	for raw, err := range state {
+		if err != nil {
+			return err
+		}
+		if err := enc.WriteValue(raw); err != nil {
+			return err
+		}
+	}
+	return enc.WriteToken(jsontext.EndArray)
+}
+
 func (a *Archive) Rooms() ([]*ArchivedRoom, error) {
 	entries, err := os.ReadDir(filepath.Join(a.Dir, "rooms"))
 	if errors.Is(err, fs.ErrNotExist) {
@@ -546,6 +570,7 @@ func readOptionalJSON(path string, v any) error {
 }
 
 type Server struct {
+	HistoryAtCheckpoint     bool     `json:"history_at_checkpoint,omitempty"`
 	AppserviceRegistrations []string `json:"appservice_registrations,omitempty"`
 	Media                   []Media  `json:"media,omitempty"`
 	UnavailableMedia        []string `json:"unavailable_media,omitempty"`

@@ -38,10 +38,12 @@ func (f *sourceFlags) exportResume(ctx context.Context, s *source, a *archive.Ar
 		Users                                []migrate.SynapseUser
 		AllUsers, Lossless, SkipMissingMedia bool
 		Dump                                 map[string]string
+		HistoryAtCheckpoint                  bool `json:",omitempty"`
 	}{
 		Version: 1, URL: strings.TrimRight(f.url, "/"), Kind: f.kind, Admin: s.adminID, ServerUser: f.serverUser,
 		Users: accounts, AllUsers: f.allUsers, Lossless: f.requireLossless,
 		SkipMissingMedia: f.skipMissingMedia, Dump: dump,
+		HistoryAtCheckpoint: f.historyAtCheckpoint,
 	}
 	raw, err := json.Marshal(input)
 	if err != nil {

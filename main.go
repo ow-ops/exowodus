@@ -76,6 +76,7 @@ type sourceFlags struct {
 	masURL, masToken, masDB                    string
 	users                                      []string
 	allUsers, skipMissingMedia                 bool
+	historyAtCheckpoint                        bool
 }
 
 func (f *sourceFlags) register(cmd *cobra.Command) {
@@ -92,6 +93,7 @@ func (f *sourceFlags) register(cmd *cobra.Command) {
 	fs.StringSliceVar(&f.users, "users", nil, "user IDs to migrate (with --from-admin-token)")
 	fs.BoolVar(&f.allUsers, "all-users", false, "migrate every local account (with --from-admin-token)")
 	fs.BoolVar(&f.skipMissingMedia, "skip-missing-media", false, "continue when source media returns HTTP 404")
+	fs.BoolVar(&f.historyAtCheckpoint, "history-at-checkpoint", false, "export Tuwunel room history and state from the dump, omitting later changes")
 	fs.StringVar(&f.masURL, "from-mas-url", "", "Matrix Authentication Service URL, when Synapse delegates authentication to it")
 	fs.StringVar(&f.masToken, "from-mas-token", os.Getenv("EXODUS_FROM_MAS_TOKEN"), "MAS admin API token (urn:mas:admin scope) [$EXODUS_FROM_MAS_TOKEN]")
 	fs.StringVar(&f.masDB, "mas-db", os.Getenv("EXODUS_MAS_DB"), "MAS database (postgres:// DSN), to keep passwords and legacy client sessions [$EXODUS_MAS_DB]")
@@ -104,6 +106,7 @@ func (f *sourceFlags) register(cmd *cobra.Command) {
 type source struct {
 	dump                       *migrate.TuwunelDump
 	allUsers, skipMissingMedia bool
+	historyAtCheckpoint        bool
 	db                         *migrate.SynapseDB
 	mas                        *migrate.MAS
 	masDB                      *migrate.MASDB
@@ -124,6 +127,9 @@ func (f *sourceFlags) preservationDefault() {
 
 func (f *sourceFlags) open(ctx context.Context) (*source, error) {
 	f.preservationDefault()
+	if f.historyAtCheckpoint && (f.kind != "tuwunel" || !f.allUsers || f.tuwunelDump == "") {
+		return nil, errors.New("--history-at-checkpoint requires --from-type tuwunel --all-users --tuwunel-dump")
+	}
 	if f.requireLossless && (f.kind != "tuwunel" || !f.allUsers || f.adminToken == "" || f.tuwunelDump == "" || f.skipMissingMedia || f.masURL != "" || f.masDB != "") {
 		return nil, errors.New("preservation requires a full native Tuwunel export: --all-users --from-admin-token --tuwunel-dump; omit --skip-missing-media and MAS options")
 	}
@@ -181,6 +187,7 @@ func (f *sourceFlags) open(ctx context.Context) (*source, error) {
 		}
 	}
 	s.skipMissingMedia = f.skipMissingMedia
+	s.historyAtCheckpoint = f.historyAtCheckpoint
 	s.dump = dump
 	if f.masURL != "" {
 		if f.adminToken == "" || f.masToken == "" {
@@ -340,7 +347,7 @@ func (s *source) open(ctx context.Context, u migrate.SynapseUser) (*migrate.Sess
 }
 
 func (s *source) exporter(a *archive.Archive) *migrate.Exporter {
-	return &migrate.Exporter{AllUsers: s.allUsers, SkipMissingMedia: s.skipMissingMedia, Archive: a, Admin: s.admin, DB: s.db, MAS: s.mas, MASDB: s.masDB, TuwunelDump: s.dump}
+	return &migrate.Exporter{AllUsers: s.allUsers, SkipMissingMedia: s.skipMissingMedia, HistoryAtCheckpoint: s.historyAtCheckpoint, Archive: a, Admin: s.admin, DB: s.db, MAS: s.mas, MASDB: s.masDB, TuwunelDump: s.dump}
 }
 
 func (s *source) Close() {
@@ -926,11 +933,13 @@ func exportRooms(ctx context.Context, exp *migrate.Exporter, users []*archive.Us
 		if err != nil {
 			return err
 		}
-		// Include live rooms so export detects rooms missing from the checkpoint.
-		for _, u := range users {
-			for _, r := range u.Rooms {
-				if !slices.Contains(ids, r.RoomID) {
-					ids = append(ids, r.RoomID)
+		if !exp.HistoryAtCheckpoint {
+			// Include live rooms so export detects rooms missing from the checkpoint.
+			for _, u := range users {
+				for _, r := range u.Rooms {
+					if !slices.Contains(ids, r.RoomID) {
+						ids = append(ids, r.RoomID)
+					}
 				}
 			}
 		}

@@ -140,10 +140,27 @@ If the source changes, pause writes, back up the database and extract all tables
 into a new dump directory. Export to a new `--archive` directory. Keep the old
 archive and its retained dump unchanged.
 
+To export room history and state from the backup, use `--history-at-checkpoint`
+with a new archive:
+
+```sh
+exodus export --from https://example.org --from-type tuwunel \
+  --from-admin-token "$ADMIN" --all-users --tuwunel-dump ./tuwunel-dump \
+  --history-at-checkpoint --archive ./exodus-checkpoint
+```
+
+This omits later messages, redactions, membership changes and rooms absent from
+the checkpoint. Read markers pointing outside its timeline are also omitted.
+Account data and directory visibility still come from the API. Account, device,
+event-ID and auth checks remain enabled; missing auth events still block export.
+Pause writes for cutover and keep the original backup. `server.json` records
+`history_at_checkpoint`, and import reports it as a note. Resume with the same
+flag, archive and unchanged dump.
+
 Whole-server migration requires these scans, even for empty tables. Export
-checks the database timeline against the API. Import checks original event IDs,
-content, senders and timestamps, and verifies destination sessions. It does not
-fall back to replaying messages.
+checks the database timeline against the API unless `--history-at-checkpoint` is
+set. Import checks original event IDs, content, senders and timestamps, and
+verifies destination sessions. It does not fall back to replaying messages.
 
 Import blocks these known unsupported cases:
 
