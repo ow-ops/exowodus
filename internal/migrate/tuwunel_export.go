@@ -139,7 +139,10 @@ func (d *TuwunelDump) compareTimeline(ctx context.Context, roomID string, events
 			return err
 		}
 		if _, ok := remaining[event.EventID]; !ok {
-			return fmt.Errorf("API event %s absent from snapshot or duplicated", event.EventID)
+			if _, present := room.timeline[event.EventID]; present {
+				return fmt.Errorf("API event %s duplicated in room history", event.EventID)
+			}
+			return fmt.Errorf("API event %s absent from snapshot", event.EventID)
 		}
 		original, err := reader.read(ctx, event.EventID)
 		if err != nil {
@@ -194,8 +197,8 @@ func (d *TuwunelDump) exportRoomPDUs(ctx context.Context, a *archive.Archive, ro
 				yield(relay.EventJSON{}, err)
 				return
 			}
-			if checkEventIDs([]relay.EventJSON{event}, version) != 0 {
-				yield(relay.EventJSON{}, fmt.Errorf("room %s: original Tuwunel event %s ID could not be verified", roomID, event.EventID))
+			if err := checkEventID(event, version); err != nil {
+				yield(relay.EventJSON{}, fmt.Errorf("room %s: original Tuwunel event %s ID could not be verified: %w", roomID, event.EventID, err))
 				return
 			}
 			if !yield(event, nil) {

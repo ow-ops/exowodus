@@ -15,23 +15,47 @@ import (
 	"exodus/internal/relay"
 )
 
-// checkEventIDs returns how many recomputed event IDs differ from Synapse's.
 func checkEventIDs(pdus []relay.EventJSON, roomVersion string) int {
-	if !relay.SupportsVersion(roomVersion) {
-		return len(pdus)
-	}
 	var mismatched int
 	for _, p := range pdus {
-		ev, err := relay.ParsePDU(p.PDU)
-		if err != nil {
-			mismatched++
-			continue
-		}
-		if eventID, err := ev.GetEventID(id.RoomVersion(roomVersion)); err != nil || string(eventID) != p.EventID {
+		if err := checkEventID(p, roomVersion); err != nil {
 			mismatched++
 		}
 	}
 	return mismatched
+}
+
+func checkEventID(p relay.EventJSON, roomVersion string) error {
+	if !relay.SupportsVersion(roomVersion) {
+		return fmt.Errorf("unsupported room version %q", roomVersion)
+	}
+	ev, err := relay.ParsePDU(p.PDU)
+	if err != nil {
+		return err
+	}
+	version := id.RoomVersion(roomVersion)
+	if ev.Type == "m.room.create" && version.RoomIDIsCreateEventID() {
+		if ev.RoomID != "" && string(ev.RoomID) != "!"+strings.TrimPrefix(p.EventID, "$") {
+			return fmt.Errorf("create event room ID %s does not match event ID %s", ev.RoomID, p.EventID)
+		}
+		// Tuwunel stores room_id on v12 create events; the wire format omits it.
+		ev.RoomID = ""
+	}
+	if ev.Type == "m.room.redaction" && !version.RedactsInContent() {
+		// The content hash includes redacts, but the reference hash excludes it.
+		if err := ev.FillContentHash(); err != nil {
+			return err
+		}
+		ev.Redacts = nil
+	}
+	eventID, err := ev.GetEventID(version)
+	if err != nil {
+		return err
+	}
+	if string(eventID) != p.EventID {
+		return fmt.Errorf("calculated event ID %s does not match %s", eventID, p.EventID)
+	}
+	return nil
 }
 
 // redactPDUs applies redactions Synapse has not purged yet. Signatures cover
