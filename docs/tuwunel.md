@@ -109,6 +109,9 @@ including preservation checks. Interrupted history downloads restart that
 room's history. Older partial archives can reuse histories after their retained
 dump and events are verified; other steps run once to create checkpoints.
 
+Errors before export starts leave `export-report.json` unchanged. Use the
+terminal error for that attempt; the report may describe an earlier run.
+
 If the source changes, pause writes, back up the database and extract all tables
 into a new dump directory. Export to a new `--archive` directory. Keep the old
 archive and its retained dump unchanged.

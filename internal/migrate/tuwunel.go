@@ -238,7 +238,7 @@ func (d *TuwunelDump) CheckUserInventory(users map[string]bool, bot string) erro
 			return fmt.Errorf("source account %s is not local to %s", user, serverName)
 		}
 		if _, ok := d.passwords[user]; !ok {
-			return fmt.Errorf("source account %s missing from database checkpoint", user)
+			return fmt.Errorf("source account %s missing from %s; pause writes, take a new backup and extract all tables", user, filepath.Join(d.dir, "userid_password.txt"))
 		}
 	}
 	return nil

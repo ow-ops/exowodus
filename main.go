@@ -398,6 +398,12 @@ func newExportCmd() *cobra.Command {
 		Short: "Export accounts from the source homeserver into an archive",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) (result error) {
+			started := false
+			defer func() {
+				if result != nil && !started {
+					result = fmt.Errorf("export did not start; export-report.json was not updated: %w", result)
+				}
+			}()
 			ctx := cmd.Context()
 			s, err := src.open(ctx)
 			if err != nil {
@@ -418,12 +424,13 @@ func newExportCmd() *cobra.Command {
 			if err := a.BeginExport(); err != nil {
 				return err
 			}
+			started = true
+			defer func() { result = errors.Join(result, a.FinishExport(result)) }()
 			if src.requireLossless {
 				if err := a.RequireLossless(); err != nil {
 					return err
 				}
 			}
-			defer func() { result = errors.Join(result, a.FinishExport(result)) }()
 			exp := s.exporter(a)
 			exp.Resume = resume
 			if resume != nil {

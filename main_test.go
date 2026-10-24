@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +16,40 @@ import (
 	"exodus/internal/migrate"
 	"exodus/internal/mx"
 )
+
+func TestExportStartupFailurePreservesReport(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{{"failed export", errors.New("previous export failed")}, {"complete export", nil}} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, err := archive.Create(t.TempDir(), "example.org")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := a.FinishExport(tc.err); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(a.Dir, "export-report.json")
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := newExportCmd()
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{"--from", "http://127.0.0.1:1", "--from-type", "tuwunel", "--all-users", "--from-admin-token", "test", "--archive", a.Dir})
+			err = cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), "export did not start; export-report.json was not updated") {
+				t.Fatalf("startup error: %v", err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("startup failure overwrote the previous report: %v", err)
+			}
+		})
+	}
+}
 
 func TestTuwunelPreservationDefault(t *testing.T) {
 	for _, tc := range []struct {
