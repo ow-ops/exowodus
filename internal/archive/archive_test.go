@@ -114,22 +114,24 @@ func TestStreamJSONCompatibility(t *testing.T) {
 func TestArchiveVersionCompatibility(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "manifest.json")
-	if err := writeJSON(path, Manifest{Version: 1, ServerName: "example.org", RequireLossless: true}); err != nil {
-		t.Fatal(err)
-	}
-	a, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := a.WriteRoomPDUs("!room:example.org", map[string]any{"events": []any{}}); err != nil {
-		t.Fatal(err)
-	}
-	upgraded, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if upgraded.Manifest.Version != 2 || !upgraded.Manifest.RequireLossless {
-		t.Fatalf("manifest=%+v", upgraded.Manifest)
+	for _, old := range []int{1, 2} {
+		if err := writeJSON(path, Manifest{Version: old, ServerName: "example.org", RequireLossless: true}); err != nil {
+			t.Fatal(err)
+		}
+		a, err := Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := a.WriteRoomPDUs("!room:example.org", map[string]any{"events": []any{}}); err != nil {
+			t.Fatal(err)
+		}
+		upgraded, err := Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if upgraded.Manifest.Version != version || !upgraded.Manifest.RequireLossless {
+			t.Fatalf("manifest=%+v", upgraded.Manifest)
+		}
 	}
 	if err := writeJSON(path, Manifest{Version: version + 1, ServerName: "example.org"}); err != nil {
 		t.Fatal(err)

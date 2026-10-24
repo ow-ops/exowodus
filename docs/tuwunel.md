@@ -119,8 +119,8 @@ The archive records this policy as `skipped_remote_media` in `server.json`, and
 import reports it as a note.
 
 Backfilled events without historical state are retained. State queries for
-those events return an error. New exports use archive format 2 and require
-an updated Exodus for import. Format 1 archives remain readable.
+those events return an error. Archive format 3 stores state deletions as deltas.
+Update Exodus for export, import and proxy; formats 1 and 2 remain readable.
 
 To resume a whole-server Tuwunel export, rerun the same command with the same
 archive and unchanged dump. Keep source writes paused between attempts. Exodus

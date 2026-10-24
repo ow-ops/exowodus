@@ -8,18 +8,13 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"slices"
 	"time"
 
 	"exodus/internal/relay"
 )
 
-type tuwunelStateRemoval struct{ key, eventID string }
-
 func (d *TuwunelDump) loadStateGroups(ctx context.Context, groups map[int64]relay.Group, gid uint64, stateFile *os.File) error {
 	seen := map[uint64]bool{}
-	var chain []int64
-	removals := map[int64][]tuwunelStateRemoval{}
 	progress := time.Now()
 	for {
 		if err := ctx.Err(); err != nil {
@@ -76,7 +71,9 @@ func (d *TuwunelDump) loadStateGroups(ctx context.Context, groups map[int64]rela
 			}
 			k := relay.StateKey(string(typ), string(sk))
 			if remove {
-				removals[int64(gid)] = append(removals[int64(gid)], tuwunelStateRemoval{key: k, eventID: string(id)})
+				if replacement, ok := group.State[k]; !ok || replacement == string(id) {
+					group.Removed = append(group.Removed, relay.StateRemoval{Key: k, EventID: string(id)})
+				}
 			} else {
 				group.State[k] = string(id)
 			}
@@ -84,51 +81,14 @@ func (d *TuwunelDump) loadStateGroups(ctx context.Context, groups map[int64]rela
 			entries++
 		}
 		groups[int64(gid)] = group
-		chain = append(chain, int64(gid))
 		if time.Since(progress) >= 5*time.Second {
-			slog.Info("reading Tuwunel state groups", "group", gid, "loaded", len(chain), "groups", len(groups))
+			slog.Info("reading Tuwunel state groups", "group", gid, "loaded", len(seen), "groups", len(groups))
 			progress = time.Now()
 		}
 		if parent == 0 {
 			break
 		}
 		gid = parent
-	}
-	// Replacements are already expressed by the additions. Only deletions
-	// that change state need a full snapshot.
-	for _, id := range slices.Backward(chain) {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		needsSnapshot := false
-		for _, removed := range removals[id] {
-			added, ok := groups[id].State[removed.key]
-			if !ok || added == removed.eventID {
-				needsSnapshot = true
-				break
-			}
-		}
-		if !needsSnapshot {
-			continue
-		}
-		state, err := relay.ResolveStateContext(ctx, groups, id)
-		if err != nil {
-			return err
-		}
-		changed := false
-		for _, removed := range removals[id] {
-			if state[removed.key] == removed.eventID {
-				delete(state, removed.key)
-				changed = true
-			}
-		}
-		if changed {
-			groups[id] = relay.Group{State: state}
-		}
-		if time.Since(progress) >= 5*time.Second {
-			slog.Info("applying Tuwunel state removals", "group", id, "groups", len(groups))
-			progress = time.Now()
-		}
 	}
 	return nil
 }

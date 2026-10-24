@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const version = 2
+const version = 3
 
 type Manifest struct {
 	RequireLossless bool      `json:"require_lossless,omitempty"`

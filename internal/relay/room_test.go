@@ -109,6 +109,30 @@ func TestResolveStateCancellation(t *testing.T) {
 	}
 }
 
+func TestResolveStateRemovals(t *testing.T) {
+	groups := map[int64]Group{
+		1: {State: map[string]string{"member": "$old", "topic": "$topic"}},
+		2: {Prev: 1, Removed: []StateRemoval{{Key: "member", EventID: "$old"}}},
+		3: {Prev: 2, State: map[string]string{"member": "$new"}},
+		4: {Prev: 3, Removed: []StateRemoval{{Key: "member", EventID: "$old"}}},
+		5: {Prev: 4, State: map[string]string{"member": "$latest"}, Removed: []StateRemoval{{Key: "member", EventID: "$new"}}},
+		6: {Prev: 5, State: map[string]string{"member": "$latest"}, Removed: []StateRemoval{{Key: "member", EventID: "$latest"}}},
+	}
+	for i, want := range []string{"$old", "", "$new", "$new", "$latest", ""} {
+		gid := int64(i + 1)
+		state, err := ResolveState(groups, gid)
+		if err != nil || state["member"] != want || state["topic"] != "$topic" {
+			t.Fatalf("group %d: state=%v err=%v", gid, state, err)
+		}
+		if _, present := state["member"]; want == "" && present {
+			t.Fatalf("group %d retained deleted member", gid)
+		}
+	}
+	if groups[1].State["member"] != "$old" {
+		t.Fatal("state resolution changed the parent group")
+	}
+}
+
 func TestBackfilledEventsWithoutHistoricalState(t *testing.T) {
 	data := RoomData{
 		Timeline:         []string{"$old", "$new"},

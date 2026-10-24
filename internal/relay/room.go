@@ -36,8 +36,15 @@ type RoomData struct {
 
 // Group stores changes from its previous state group.
 type Group struct {
-	Prev  int64             `json:"prev,omitempty"`
-	State map[string]string `json:"state"`
+	Prev    int64             `json:"prev,omitempty"`
+	State   map[string]string `json:"state"`
+	Removed []StateRemoval    `json:"removed,omitempty"`
+}
+
+// StateRemoval deletes a key only if it still points to EventID.
+type StateRemoval struct {
+	Key     string `json:"key"`
+	EventID string `json:"event_id"`
 }
 
 type EventJSON struct {
@@ -190,6 +197,16 @@ func ResolveStateContext(ctx context.Context, groups map[int64]Group, gid int64)
 			}
 			state[key] = value
 			entries++
+		}
+		for i, removed := range group.Removed {
+			if i%1024 == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+			}
+			if state[removed.Key] == removed.EventID {
+				delete(state, removed.Key)
+			}
 		}
 	}
 	return state, nil
