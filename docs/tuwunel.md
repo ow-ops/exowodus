@@ -167,6 +167,30 @@ Pause writes for cutover and keep the original backup. `server.json` records
 `history_at_checkpoint`, and import reports it as a note. Resume with the same
 flag, archive and unchanged dump.
 
+When an auth event is missing from the dump, export tries other servers in the
+room using the source signing key. It verifies the event's ID, room, signatures
+and content hash. Content with a failed hash is redacted under the room version's
+rules. Verified events and signing keys are cached in the archive and reused on
+retry. Recovery adds auth dependencies; it does not add newer timeline messages
+or change the dump. Each server attempt has a 15-second timeout.
+
+If no server supplies the event, export fails. To omit an affected room entirely,
+repeat the export command with `--skip-room`:
+
+```sh
+exodus export --from https://example.org --from-type tuwunel \
+  --from-admin-token "$ADMIN" --all-users --tuwunel-dump ./tuwunel-dump \
+  --history-at-checkpoint --archive ./exodus-checkpoint \
+  --skip-room '!broken:example.org'
+```
+
+Repeat `--skip-room` for each excluded room. Keep the same dump, archive and
+other flags to reuse completed exports. Skipped room IDs are recorded in
+`manifest.json`, `export-report.json` and the import report. Import omits their
+history, membership, receipts, room account data and aliases. Removing a
+`--skip-room` option on a later export includes that room again. Use the updated
+binary for import as well; these archives use format version 5.
+
 Whole-server migration requires these scans, even for empty tables. Export
 checks the database timeline against the API unless `--history-at-checkpoint` is
 set. Import checks original event IDs, content, senders and timestamps, and

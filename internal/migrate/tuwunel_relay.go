@@ -98,6 +98,7 @@ type tuwunelEventRef struct {
 type tuwunelRoomIndex struct {
 	diskEvents  map[string]tuwunelEventRef
 	events      map[string]json.RawMessage
+	recovered   map[string]string
 	timeline    map[string]bool // true for forward events, false for backfill
 	extremities []string
 }
@@ -209,6 +210,12 @@ const (
 )
 
 func (d *TuwunelDump) roomRelayMetadata(ctx context.Context, roomID string) (*tuwunelRoomMetadata, error) {
+	return d.roomRelayMetadataWithRecovery(ctx, roomID, nil)
+}
+
+type authEventResolver func(context.Context, *tuwunelRoomMetadata, string, json.RawMessage) error
+
+func (d *TuwunelDump) roomRelayMetadataWithRecovery(ctx context.Context, roomID string, resolve authEventResolver) (*tuwunelRoomMetadata, error) {
 	if err := d.CheckRelayMaps(); err != nil {
 		return nil, err
 	}
@@ -290,7 +297,12 @@ func (d *TuwunelDump) roomRelayMetadata(ctx context.Context, roomID string) (*tu
 		}
 		for _, dependency := range p.AuthEvents {
 			if !room.hasEvent(dependency) {
-				return nil, fmt.Errorf("auth event %s required by timeline event %s is missing from dump", dependency, id)
+				if resolve == nil {
+					return nil, fmt.Errorf("auth event %s required by timeline event %s is missing from dump", dependency, id)
+				}
+				if err := resolve(ctx, data, dependency, raw); err != nil {
+					return nil, fmt.Errorf("auth event %s required by timeline event %s: %w", dependency, id, err)
+				}
 			}
 			data.required[dependency] |= authEvent
 		}
@@ -321,13 +333,13 @@ func (d *TuwunelDump) roomRelayMetadata(ctx context.Context, roomID string) (*tu
 	slices.Sort(data.Extremities)
 	slices.Sort(data.Timeline)
 	slices.Sort(data.StateUnavailable)
-	if err := d.addRoomAuth(ctx, roomID, data, stateFile); err != nil {
+	if err := d.addRoomAuth(ctx, roomID, data, stateFile, resolve); err != nil {
 		return nil, err
 	}
 	return data, nil
 }
 
-func (d *TuwunelDump) addRoomAuth(ctx context.Context, roomID string, data *tuwunelRoomMetadata, stateFile *os.File) error {
+func (d *TuwunelDump) addRoomAuth(ctx context.Context, roomID string, data *tuwunelRoomMetadata, stateFile *os.File, resolve authEventResolver) error {
 	room := d.relayRooms[roomID]
 	required := data.required
 	var pending []string
@@ -414,7 +426,12 @@ func (d *TuwunelDump) addRoomAuth(ctx context.Context, roomID string, data *tuwu
 			}
 			for _, dependency := range event.AuthEvents {
 				if !room.hasEvent(dependency) {
-					return fmt.Errorf("auth event %s required by outlier %s is missing from dump", dependency, id)
+					if resolve == nil {
+						return fmt.Errorf("auth event %s required by outlier %s is missing from dump", dependency, id)
+					}
+					if err := resolve(ctx, data, dependency, raw); err != nil {
+						return fmt.Errorf("auth event %s required by outlier %s: %w", dependency, id, err)
+					}
 				}
 				add(dependency, authEvent)
 			}

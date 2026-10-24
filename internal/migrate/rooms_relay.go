@@ -34,6 +34,9 @@ func (im *Importer) RelayRooms(ctx context.Context, rooms []*archive.ArchivedRoo
 	var reports []*RoomReport
 	var rest []*archive.ArchivedRoom
 	for _, room := range rooms {
+		if im.Archive.IsRoomSkipped(room.RoomID) {
+			continue
+		}
 		if room.ArchiveOnly {
 			rep := &RoomReport{RoomID: room.RoomID, ArchiveOnly: true}
 			if im.RequireLossless {

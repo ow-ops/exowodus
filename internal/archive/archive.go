@@ -17,13 +17,14 @@ import (
 	"time"
 )
 
-const version = 4
+const version = 5
 
 type Manifest struct {
-	RequireLossless bool      `json:"require_lossless,omitempty"`
-	Version         int       `json:"version"`
-	ServerName      string    `json:"server_name"`
-	CreatedAt       time.Time `json:"created_at"`
+	SkippedRooms    map[string]string `json:"skipped_rooms,omitempty"`
+	RequireLossless bool              `json:"require_lossless,omitempty"`
+	Version         int               `json:"version"`
+	ServerName      string            `json:"server_name"`
+	CreatedAt       time.Time         `json:"created_at"`
 }
 
 // RequireLossless saves the import policy in the manifest.
@@ -389,6 +390,9 @@ func (a *Archive) Rooms() ([]*ArchivedRoom, error) {
 		if err != nil {
 			return nil, err
 		}
+		if a.IsRoomSkipped(r.RoomID) {
+			continue
+		}
 		rooms = append(rooms, r)
 	}
 	return rooms, nil
@@ -508,7 +512,16 @@ func (a *Archive) WriteServerKeys(keys map[string][]json.RawMessage) error {
 
 func (a *Archive) ServerKeys() (map[string][]json.RawMessage, error) {
 	keys := map[string][]json.RawMessage{}
-	return keys, readOptionalJSON(filepath.Join(a.Dir, "server_keys.json"), &keys)
+	if err := readOptionalJSON(filepath.Join(a.Dir, "server_keys.json"), &keys); err != nil {
+		return nil, err
+	}
+	if keys == nil {
+		keys = map[string][]json.RawMessage{}
+	}
+	if err := a.addRecoveryKeys(keys); err != nil {
+		return nil, err
+	}
+	return keys, nil
 }
 
 func (a *Archive) ReadRoomState(roomID string) (*RoomImportState, error) {
@@ -735,8 +748,9 @@ func writeJSON(path string, v any) error {
 
 // ExportReport records whether the last export finished successfully.
 type ExportReport struct {
-	Complete bool   `json:"complete"`
-	Error    string `json:"error,omitempty"`
+	Complete     bool              `json:"complete"`
+	Error        string            `json:"error,omitempty"`
+	SkippedRooms map[string]string `json:"skipped_rooms,omitempty"`
 }
 
 func (a *Archive) BeginExport() error {
@@ -744,7 +758,7 @@ func (a *Archive) BeginExport() error {
 }
 
 func (a *Archive) FinishExport(err error) error {
-	r := ExportReport{Complete: err == nil}
+	r := ExportReport{Complete: err == nil, SkippedRooms: a.Manifest.SkippedRooms}
 	if err != nil {
 		r.Error = err.Error()
 	}

@@ -32,11 +32,12 @@ type exportResumeHeader struct {
 }
 
 type ExportCheckpoint struct {
-	ID          string            `json:"id"`
-	Tip         string            `json:"tip,omitempty"`
-	Files       map[string]string `json:"files"`
-	Media       *Media            `json:"media,omitempty"`
-	Quarantined []string          `json:"quarantined,omitempty"`
+	SkippedRooms map[string]string `json:"skipped_rooms,omitempty"`
+	ID           string            `json:"id"`
+	Tip          string            `json:"tip,omitempty"`
+	Files        map[string]string `json:"files"`
+	Media        *Media            `json:"media,omitempty"`
+	Quarantined  []string          `json:"quarantined,omitempty"`
 }
 
 type ExportResume struct {

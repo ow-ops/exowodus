@@ -42,6 +42,10 @@ func LocalOnlyRooms(users []*archive.User) []string {
 // ExportRoom uses the Synapse admin API when available, else the client API
 // as member, limited by history visibility. known lists media already exported.
 func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[string]bool, member *mautrix.Client) error {
+	if e.Archive.IsRoomSkipped(roomID) {
+		slog.Warn("skipping room", "room", roomID)
+		return nil
+	}
 	c := e.Admin
 	if c == nil {
 		c = member
@@ -59,7 +63,7 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 			return errors.New("checkpoint history requires a whole-server Tuwunel dump and admin API access")
 		}
 		var err error
-		checkpoint, err = e.TuwunelDump.roomRelayMetadata(ctx, roomID)
+		checkpoint, err = e.tuwunelRoomMetadata(ctx, roomID)
 		if err != nil {
 			return err
 		}
@@ -258,7 +262,14 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 			return err
 		}
 	} else if e.TuwunelDump != nil && e.TuwunelDump.HasRelayData() {
-		if err := e.TuwunelDump.exportRoomPDUs(ctx, e.Archive, roomID, room.Version); err != nil {
+		data, err := e.tuwunelRoomMetadata(ctx, roomID)
+		if err != nil {
+			return err
+		}
+		if err := e.TuwunelDump.compareTimeline(ctx, roomID, e.Archive.RoomEventsIter(roomID)); err != nil {
+			return fmt.Errorf("room %s: source snapshot/API mismatch: %w", roomID, err)
+		}
+		if err := e.TuwunelDump.writeRoomPDUs(ctx, e.Archive, roomID, room.Version, data); err != nil {
 			return err
 		}
 	}

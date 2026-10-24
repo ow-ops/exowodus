@@ -8,8 +8,10 @@ import (
 	jsonv2 "encoding/json/v2"
 	"fmt"
 	"maps"
+	"net/http"
 	"os"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -152,12 +154,40 @@ func TestTuwunelDummyGapLive(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			oldPowerPDU := index.events[oldPower]
+			delete(index.events, oldPower)
+			keyCache := federation.NewInMemoryCache()
+			var originKeys federation.ServerKeyResponse
+			if err := json.Unmarshal(keyJSON(t, key, "example.org"), &originKeys); err != nil {
+				t.Fatal(err)
+			}
+			keyCache.StoreKeys(&originKeys)
+			remoteAuth := federation.NewServerAuth(nil, keyCache, func(federation.XMatrixAuth) string { return "remote.example" })
+			var fetches atomic.Int32
+			remote := recoveryClient(t, remoteAuth.AuthenticateMiddleware(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				fetches.Add(1)
+				_ = json.NewEncoder(w).Encode(map[string]any{"pdus": []json.RawMessage{oldPowerPDU}})
+			})).ServeHTTP)
+			remote.Key = key
+			exp := &Exporter{Archive: a, TuwunelDump: dump, authRecovery: &authRecovery{
+				client: remote, keys: map[string][]*federation.ServerKeyResponse{},
+				baseKeys: map[string][]json.RawMessage{"example.org": {keyJSON(t, key, "example.org")}},
+			}}
+			if err := exp.recoverAuth(ctx, roomID, data, oldPower, json.RawMessage(`{"sender":"@bob:remote.example"}`)); err != nil {
+				t.Fatal(err)
+			}
+			if fetches.Load() != 1 {
+				t.Fatalf("auth recovery requests = %d", fetches.Load())
+			}
 			room := &archive.ArchivedRoom{RoomID: roomID, Version: version, OmittedEvents: omitted}
 			for _, eid := range []string{create, member, power} {
 				room.State = append(room.State, index.events[eid])
 			}
-			for _, eid := range slices.Sorted(maps.Keys(data.required)) {
-				data.Events = append(data.Events, relay.EventJSON{EventID: eid, PDU: index.events[eid]})
+			for entry, err := range dump.roomEventsByID(ctx, roomID, slices.Collect(maps.Keys(data.required))) {
+				if err != nil {
+					t.Fatal(err)
+				}
+				data.Events = append(data.Events, entry)
 			}
 			if err := a.WriteRoom(room); err != nil {
 				t.Fatal(err)

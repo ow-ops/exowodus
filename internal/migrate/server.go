@@ -31,7 +31,7 @@ func (e *Exporter) ExportServer(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if checkpoint != nil {
+		if checkpoint != nil && maps.Equal(checkpoint.SkippedRooms, e.Archive.Manifest.SkippedRooms) {
 			slog.Info("reusing exported server data")
 			return nil
 		}
@@ -68,7 +68,7 @@ func (e *Exporter) ExportServer(ctx context.Context) error {
 		}
 	}
 	if e.TuwunelDump != nil {
-		if err := e.TuwunelDump.AddServer(srv, e.Archive.Manifest.ServerName); err != nil {
+		if err := e.TuwunelDump.addServer(srv, e.Archive.Manifest.ServerName, e.Archive.IsRoomSkipped); err != nil {
 			return err
 		}
 		if e.AllUsers {
@@ -92,7 +92,7 @@ func (e *Exporter) ExportServer(ctx context.Context) error {
 		for _, media := range srv.Media {
 			paths = append(paths, filepath.Join(e.Archive.Dir, media.File))
 		}
-		return e.Resume.Save(ctx, "server", "server", paths, archive.ExportCheckpoint{})
+		return e.Resume.Save(ctx, "server", "server", paths, archive.ExportCheckpoint{SkippedRooms: e.Archive.Manifest.SkippedRooms})
 	}
 	return nil
 }
@@ -122,6 +122,9 @@ func (im *Importer) ImportServer(ctx context.Context) ([]string, []Failure) {
 		archiveOnly[room.RoomID] = room.ArchiveOnly
 	}
 	var notes []string
+	for _, roomID := range slices.Sorted(maps.Keys(im.Archive.Manifest.SkippedRooms)) {
+		notes = append(notes, fmt.Sprintf("Skipped room %s: %s", roomID, im.Archive.Manifest.SkippedRooms[roomID]))
+	}
 	for _, room := range rooms {
 		for _, eventID := range slices.Sorted(maps.Keys(room.OmittedEvents)) {
 			notes = append(notes, fmt.Sprintf("Room %s omitted event %s: %s", room.RoomID, eventID, room.OmittedEvents[eventID]))
@@ -143,7 +146,7 @@ func (im *Importer) ImportServer(ctx context.Context) ([]string, []Failure) {
 	server := im.Admin.ServerName()
 	sameServer := server == im.Archive.Manifest.ServerName
 	for _, alias := range slices.Sorted(maps.Keys(srv.Aliases)) {
-		if archiveOnly[srv.Aliases[alias]] {
+		if archiveOnly[srv.Aliases[alias]] || im.Archive.IsRoomSkipped(srv.Aliases[alias]) {
 			continue
 		}
 		target := alias
@@ -202,6 +205,9 @@ func (im *Importer) ImportServer(ctx context.Context) ([]string, []Failure) {
 		notes = append(notes, fmt.Sprintf("registration token %s is now %s", t.Token, newToken))
 	}
 	for _, r := range srv.Reports {
+		if im.Archive.IsRoomSkipped(r.RoomID) {
+			continue
+		}
 		if state.Reports[r.Key()] {
 			continue
 		}

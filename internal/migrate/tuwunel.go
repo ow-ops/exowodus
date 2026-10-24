@@ -358,12 +358,23 @@ func putTuwunelKey(keys map[string]map[string]json.RawMessage, device, id string
 }
 
 func (d *TuwunelDump) AddServer(s *archive.Server, serverName string) error {
+	return d.addServer(s, serverName, nil)
+}
+
+func (d *TuwunelDump) addServer(s *archive.Server, serverName string, skip func(string) bool) error {
+	skipped := func(key string) bool {
+		roomID, _, ok := strings.Cut(key, "\xff")
+		return ok && skip != nil && skip(roomID)
+	}
 	for _, table := range []string{"servercurrentevent_data", "servernameevent_data"} {
 		if len(d.maps[table]) != 0 {
 			s.Limitations = append(s.Limitations, fmt.Sprintf("%s has %d pending deliveries; source queues must drain before lossless cutover", table, len(d.maps[table])))
 		}
 	}
-	for _, raw := range d.maps["readreceiptid_readreceipt"] {
+	for key, raw := range d.maps["readreceiptid_readreceipt"] {
+		if skipped(key) {
+			continue
+		}
 		var receipt map[string]any
 		if err := json.Unmarshal(raw, &receipt); err != nil {
 			return errors.New("invalid Tuwunel receipt record")
@@ -373,8 +384,11 @@ func (d *TuwunelDump) AddServer(s *archive.Server, serverName string) error {
 			break
 		}
 	}
-	if len(d.maps["roomuserid_privateread"]) != 0 {
-		s.Limitations = append(s.Limitations, "private read receipts on backfilled events cannot currently be restored")
+	for key := range d.maps["roomuserid_privateread"] {
+		if !skipped(key) {
+			s.Limitations = append(s.Limitations, "private read receipts on backfilled events cannot currently be restored")
+			break
+		}
 	}
 	for key := range d.maps["bannedroomids"] {
 		if !validTuwunelRoomID(key) {

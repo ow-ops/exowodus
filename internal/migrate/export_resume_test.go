@@ -395,4 +395,54 @@ func TestResumeServerData(t *testing.T) {
 	if requests.Load() != 2 {
 		t.Fatal("missing server data was reused")
 	}
+	if err := a.SetSkippedRooms([]string{"!broken:example.org"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.ExportServer(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 3 {
+		t.Fatal("server data reused after changing room exclusions")
+	}
+	if err := e.ExportServer(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 3 {
+		t.Fatal("unchanged exclusion policy prevented resume")
+	}
+}
+
+func TestResumeUserAfterRemovingRoomExclusion(t *testing.T) {
+	a, err := archive.Create(t.TempDir(), "example.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resume, err := a.OpenExportResume(t.Context(), archive.ExportSource{Fingerprint: "same-source"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resume.Close()
+	if err := a.SetSkippedRooms([]string{"!broken:example.org"}); err != nil {
+		t.Fatal(err)
+	}
+	u := &archive.User{UserID: "@alice:example.org", Rooms: []archive.Room{{RoomID: "!broken:example.org"}}}
+	if err := a.WriteUser(u); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.WriteSecrets(u.UserID, &archive.Secrets{}); err != nil {
+		t.Fatal(err)
+	}
+	e := &Exporter{Archive: a, Resume: resume}
+	if err := e.saveUserExport(t.Context(), u); err != nil {
+		t.Fatal(err)
+	}
+	if cached, err := e.ResumeUser(t.Context(), u.UserID); err != nil || cached == nil {
+		t.Fatalf("skipped account cannot resume: %v", err)
+	}
+	if err := a.SetSkippedRooms(nil); err != nil {
+		t.Fatal(err)
+	}
+	if cached, err := e.ResumeUser(t.Context(), u.UserID); err != nil || cached != nil {
+		t.Fatalf("omitted room metadata was reused after removing exclusion: %v", err)
+	}
 }

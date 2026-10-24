@@ -712,6 +712,9 @@ func (im *Importer) ReplayRooms(ctx context.Context, rooms []*archive.ArchivedRo
 	var reports []*RoomReport
 	var replays []*replay
 	for _, room := range rooms {
+		if im.Archive.IsRoomSkipped(room.RoomID) {
+			continue
+		}
 		if room.ArchiveOnly {
 			reports = append(reports, &RoomReport{RoomID: room.RoomID, ArchiveOnly: true})
 			continue

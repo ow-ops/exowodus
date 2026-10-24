@@ -33,6 +33,11 @@ func (e *Exporter) ResumeUser(ctx context.Context, id string) (*archive.User, er
 	if user.UserID != id {
 		return nil, errors.New("export checkpoint contains the wrong user")
 	}
+	for _, room := range user.Rooms {
+		if _, omitted := checkpoint.SkippedRooms[room.RoomID]; omitted && !e.Archive.IsRoomSkipped(room.RoomID) {
+			return nil, nil
+		}
+	}
 	if e.quarantined == nil {
 		e.quarantined = map[string]bool{}
 	}
@@ -58,7 +63,7 @@ func (e *Exporter) saveUserExport(ctx context.Context, user *archive.User) error
 	for _, media := range user.Media {
 		paths = append(paths, filepath.Join(dir, media.File))
 	}
-	return e.Resume.Save(ctx, "users", user.UserID, paths, archive.ExportCheckpoint{Quarantined: slices.Sorted(maps.Keys(e.quarantined))})
+	return e.Resume.Save(ctx, "users", user.UserID, paths, archive.ExportCheckpoint{Quarantined: slices.Sorted(maps.Keys(e.quarantined)), SkippedRooms: e.Archive.Manifest.SkippedRooms})
 }
 
 func (e *Exporter) resumeRoom(ctx context.Context, id string, client *mautrix.Client) (bool, error) {

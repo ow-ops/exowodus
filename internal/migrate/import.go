@@ -67,6 +67,7 @@ type destAccount struct {
 }
 
 type Report struct {
+	SkippedRooms []string  `json:"skipped_rooms,omitempty"`
 	SourceUserID string    `json:"source_user_id"`
 	DestUserID   string    `json:"dest_user_id"`
 	RoomsJoined  int       `json:"rooms_joined"`
@@ -385,6 +386,10 @@ func (im *Importer) FinishUser(ctx context.Context, job *UserJob, src *Session) 
 		im.members = map[string][]destAccount{}
 	}
 	for _, r := range u.Rooms {
+		if im.Archive.IsRoomSkipped(r.RoomID) {
+			rep.SkippedRooms = append(rep.SkippedRooms, r.RoomID)
+			continue
+		}
 		if im.roomFailures[r.RoomID] {
 			rep.fail("room", r.RoomID, errors.New("room history or state restoration is incomplete"))
 			continue
@@ -628,6 +633,9 @@ func (im *Importer) RestoreInvites(ctx context.Context, users []*archive.User) [
 			continue
 		}
 		for _, inv := range u.Invites {
+			if im.Archive.IsRoomSkipped(inv.RoomID) {
+				continue
+			}
 			if _, replayed := im.rooms[inv.RoomID]; replayed {
 				continue
 			}
@@ -663,6 +671,9 @@ func (im *Importer) RestoreKnocks(ctx context.Context, users []*archive.User) []
 			state.Knocks = map[string]bool{}
 		}
 		for _, k := range u.Knocks {
+			if im.Archive.IsRoomSkipped(k.RoomID) {
+				continue
+			}
 			if _, replayed := im.rooms[k.RoomID]; replayed || state.Knocks[k.RoomID] {
 				continue
 			}

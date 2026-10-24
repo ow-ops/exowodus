@@ -36,6 +36,7 @@ const syncFilter = `{
 }`
 
 type Exporter struct {
+	authRecovery        *authRecovery
 	Resume              *archive.ExportResume
 	completedRooms      map[string]bool
 	quarantined         map[string]bool
@@ -168,6 +169,10 @@ func (e *Exporter) ExportUser(ctx context.Context, s *Session) (*archive.User, e
 	log.Info("collecting rooms", "count", len(roomIDs))
 	for _, roomID := range roomIDs {
 		room := archive.Room{RoomID: roomID}
+		if e.Archive.IsRoomSkipped(roomID) {
+			u.Rooms = append(u.Rooms, room)
+			continue
+		}
 		if e.HistoryAtCheckpoint {
 			include, err := e.TuwunelDump.checkpointUserRoom(ctx, s.UserID, &room)
 			if err != nil {

@@ -24,7 +24,8 @@ import (
 func (r *tuwunelRoomIndex) hasEvent(id string) bool {
 	_, memory := r.events[id]
 	_, disk := r.diskEvents[id]
-	return memory || disk
+	_, recovered := r.recovered[id]
+	return memory || disk || recovered
 }
 
 type tuwunelRoomReader struct {
@@ -39,6 +40,16 @@ func (r *tuwunelRoomReader) read(ctx context.Context, id string) (json.RawMessag
 	}
 	if raw, ok := r.room.events[id]; ok {
 		return raw, nil
+	}
+	if path, ok := r.room.recovered[id]; ok {
+		event, err := archive.ReadRecoveredAuth(path)
+		if err != nil {
+			return nil, err
+		}
+		if event == nil || event.EventID != id {
+			return nil, fmt.Errorf("recovered auth event %s is missing or changed", id)
+		}
+		return event.PDU, nil
 	}
 	ref, ok := r.room.diskEvents[id]
 	if !ok {
@@ -73,6 +84,9 @@ func (d *TuwunelDump) roomEvents(ctx context.Context, roomID string) iter.Seq2[r
 			if _, ok := room.events[id]; !ok {
 				ids = append(ids, id)
 			}
+		}
+		for id := range room.recovered {
+			ids = append(ids, id)
 		}
 	}
 	return d.roomEventsByID(ctx, roomID, ids)

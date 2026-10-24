@@ -66,6 +66,9 @@ func (d *TuwunelDump) CheckLosslessMaps() error {
 func (im *Importer) CheckLosslessImport(users []*archive.User, rooms []*archive.ArchivedRoom, server *archive.Server, hasRelay bool) error {
 	var failures []error
 	for _, room := range rooms {
+		if im.Archive.IsRoomSkipped(room.RoomID) {
+			continue
+		}
 		if len(room.OmittedEvents) > 0 && (server == nil || !server.HistoryAtCheckpoint) {
 			failures = append(failures, fmt.Errorf("%s: omitted events require checkpoint history", room.RoomID))
 		}
@@ -96,6 +99,9 @@ func (im *Importer) CheckLosslessImport(users []*archive.User, rooms []*archive.
 			}
 		}
 		for _, r := range u.Rooms {
+			if im.Archive.IsRoomSkipped(r.RoomID) {
+				continue
+			}
 			if _, omitted := im.omittedEvents[r.RoomID][r.PrivateReceipt]; r.PrivateReceipt != "" && !omitted {
 				failures = append(failures, fmt.Errorf("%s: private receipt in %s cannot be preserved on backfilled events", u.UserID, r.RoomID))
 			}
@@ -105,6 +111,9 @@ func (im *Importer) CheckLosslessImport(users []*archive.User, rooms []*archive.
 		}
 	}
 	for _, room := range rooms {
+		if im.Archive.IsRoomSkipped(room.RoomID) {
+			continue
+		}
 		if room.ArchiveOnly {
 			failures = append(failures, fmt.Errorf("%s: rooms without joined local users cannot currently be restored", room.RoomID))
 			continue

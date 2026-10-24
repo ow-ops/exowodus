@@ -420,6 +420,7 @@ func (f *destFlags) importer(ctx context.Context, a *archive.Archive, migrated m
 func newExportCmd() *cobra.Command {
 	var src sourceFlags
 	var dir string
+	var skipRooms []string
 	cmd := &cobra.Command{
 		Use:   "export",
 		Short: "Export accounts from the source homeserver into an archive",
@@ -447,6 +448,9 @@ func newExportCmd() *cobra.Command {
 			}
 			if resume != nil {
 				defer resume.Close()
+			}
+			if err := a.SetSkippedRooms(skipRooms); err != nil {
+				return err
 			}
 			if err := a.BeginExport(); err != nil {
 				return err
@@ -519,6 +523,7 @@ func newExportCmd() *cobra.Command {
 	src.register(cmd)
 	cmd.Flags().StringVar(&src.signingKey, "synapse-signing-key", "", "Synapse signing key file: with --synapse-db, rooms only your server was in move with their original events")
 	cmd.Flags().StringVar(&dir, "archive", "exodus-archive", "archive directory")
+	cmd.Flags().StringArrayVar(&skipRooms, "skip-room", nil, "omit a whole room from export and import (repeatable)")
 	return cmd
 }
 
@@ -998,6 +1003,9 @@ func printSummary(out io.Writer, a *archive.Archive, users []*archive.User, repo
 	for _, r := range reports {
 		fmt.Fprintf(out, "%s -> %s: %d/%d rooms joined, %d failures\n",
 			r.SourceUserID, r.DestUserID, r.RoomsJoined, rooms[r.SourceUserID], len(r.Failures))
+		for _, roomID := range r.SkippedRooms {
+			fmt.Fprintf(out, "  skipped room %s\n", roomID)
+		}
 		for _, f := range r.Failures {
 			fmt.Fprintf(out, "  - %s %s: %s\n", f.Step, f.Target, f.Error)
 		}
