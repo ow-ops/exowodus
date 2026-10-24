@@ -248,6 +248,33 @@ func TestLosslessReadMarkerRemainsPending(t *testing.T) {
 	}
 }
 
+func TestReadMarkersForOmittedEvents(t *testing.T) {
+	var bodies []map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		bodies = append(bodies, body)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	im := &Importer{RequireLossless: true}
+	im.recordOmittedEvents(&archive.ArchivedRoom{RoomID: "!room:example.org", OmittedEvents: map[string]string{"$invalid": "hash mismatch"}})
+	acct := destAccount{client: mx.MustNew(srv.URL, "token")}
+	r := archive.Room{RoomID: "!room:example.org", Receipt: "$kept", PrivateReceipt: "$invalid", AccountData: map[string]json.RawMessage{"m.fully_read": json.RawMessage(`{"event_id":"$invalid"}`)}}
+	rep := &Report{}
+	im.restoreReadMarker(t.Context(), acct, r, r.RoomID, rep)
+	if len(rep.Failures) != 0 || !reflect.DeepEqual(bodies, []map[string]string{{"m.read": "$kept"}}) {
+		t.Fatalf("read markers=%v failures=%v", bodies, rep.Failures)
+	}
+	r.Receipt = "$invalid"
+	im.restoreReadMarker(t.Context(), acct, r, r.RoomID, rep)
+	if len(bodies) != 1 {
+		t.Fatal("sent marker for omitted event")
+	}
+}
+
 func TestVerifySessions(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

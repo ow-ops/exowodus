@@ -122,6 +122,11 @@ func (im *Importer) ImportServer(ctx context.Context) ([]string, []Failure) {
 		archiveOnly[room.RoomID] = room.ArchiveOnly
 	}
 	var notes []string
+	for _, room := range rooms {
+		for _, eventID := range slices.Sorted(maps.Keys(room.OmittedEvents)) {
+			notes = append(notes, fmt.Sprintf("Room %s omitted event %s: %s", room.RoomID, eventID, room.OmittedEvents[eventID]))
+		}
+	}
 	if srv.HistoryAtCheckpoint {
 		notes = append(notes, "Room history and state were exported from the database checkpoint; later changes were omitted.")
 	}

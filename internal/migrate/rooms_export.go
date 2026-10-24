@@ -165,7 +165,14 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 		count++
 		return nil
 	}
-	historyReady, err := e.resumeHistory(ctx, roomID)
+	if checkpoint != nil {
+		var err error
+		room.OmittedEvents, err = e.TuwunelDump.omitInvalidDummies(ctx, roomID, room.Version, checkpoint)
+		if err != nil {
+			return err
+		}
+	}
+	historyReady, err := e.resumeHistory(ctx, roomID, room.OmittedEvents)
 	if err != nil {
 		return err
 	}
@@ -184,7 +191,7 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 		}
 	} else if e.HistoryAtCheckpoint {
 		events := func(yield func(json.RawMessage, error) bool) {
-			for raw, err := range e.TuwunelDump.checkpointTimeline(ctx, roomID) {
+			for raw, err := range e.TuwunelDump.checkpointTimeline(ctx, roomID, room.OmittedEvents) {
 				if err == nil {
 					err = inspect(raw)
 				}
@@ -227,7 +234,7 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 			return err
 		}
 	}
-	if err := e.saveHistoryExport(ctx, roomID, tip); err != nil {
+	if err := e.saveHistoryExport(ctx, roomID, tip, room.OmittedEvents); err != nil {
 		return err
 	}
 	log.Info("exported room history", "events", count)

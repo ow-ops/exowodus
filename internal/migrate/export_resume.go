@@ -106,7 +106,7 @@ func (e *Exporter) saveRoomExport(ctx context.Context, room *archive.ArchivedRoo
 	return nil
 }
 
-func (e *Exporter) resumeHistory(ctx context.Context, id string) (bool, error) {
+func (e *Exporter) resumeHistory(ctx context.Context, id string, omitted map[string]string) (bool, error) {
 	if e.Resume == nil {
 		return false, nil
 	}
@@ -114,10 +114,10 @@ func (e *Exporter) resumeHistory(ctx context.Context, id string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if checkpoint != nil {
+	if checkpoint != nil && len(omitted) == 0 {
 		return true, nil
 	}
-	if !e.Resume.CanReuseLegacyHistory() {
+	if checkpoint == nil && !e.Resume.CanReuseLegacyHistory() {
 		return false, nil
 	}
 	path := filepath.Join(e.Archive.RoomDir(id), "events.jsonl")
@@ -126,7 +126,7 @@ func (e *Exporter) resumeHistory(ctx context.Context, id string) (bool, error) {
 	} else if err != nil {
 		return false, err
 	}
-	if err := e.TuwunelDump.compareTimeline(ctx, id, e.Archive.RoomEventsIter(id)); err != nil {
+	if err := e.TuwunelDump.compareTimelineExcept(ctx, id, e.Archive.RoomEventsIter(id), omitted); err != nil {
 		if ctx.Err() != nil {
 			return false, ctx.Err()
 		}
@@ -136,12 +136,12 @@ func (e *Exporter) resumeHistory(ctx context.Context, id string) (bool, error) {
 	return true, nil
 }
 
-func (e *Exporter) saveHistoryExport(ctx context.Context, id, tip string) error {
+func (e *Exporter) saveHistoryExport(ctx context.Context, id, tip string, omitted map[string]string) error {
 	if e.Resume == nil {
 		return nil
 	}
 	if e.TuwunelDump != nil && e.TuwunelDump.HasRelayData() {
-		if err := e.TuwunelDump.compareTimeline(ctx, id, e.Archive.RoomEventsIter(id)); err != nil {
+		if err := e.TuwunelDump.compareTimelineExcept(ctx, id, e.Archive.RoomEventsIter(id), omitted); err != nil {
 			return fmt.Errorf("room %s: source snapshot/API mismatch: %w", id, err)
 		}
 	}

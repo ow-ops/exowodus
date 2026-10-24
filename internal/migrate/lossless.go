@@ -65,6 +65,12 @@ func (d *TuwunelDump) CheckLosslessMaps() error {
 // CheckLosslessImport runs before creating accounts or changing the target.
 func (im *Importer) CheckLosslessImport(users []*archive.User, rooms []*archive.ArchivedRoom, server *archive.Server, hasRelay bool) error {
 	var failures []error
+	for _, room := range rooms {
+		if len(room.OmittedEvents) > 0 && (server == nil || !server.HistoryAtCheckpoint) {
+			failures = append(failures, fmt.Errorf("%s: omitted events require checkpoint history", room.RoomID))
+		}
+		im.recordOmittedEvents(room)
+	}
 	if !im.Archive.Manifest.RequireLossless {
 		failures = append(failures, errors.New("archive lacks preservation checks; re-export with --require-lossless"))
 	}
@@ -90,7 +96,7 @@ func (im *Importer) CheckLosslessImport(users []*archive.User, rooms []*archive.
 			}
 		}
 		for _, r := range u.Rooms {
-			if r.PrivateReceipt != "" {
+			if _, omitted := im.omittedEvents[r.RoomID][r.PrivateReceipt]; r.PrivateReceipt != "" && !omitted {
 				failures = append(failures, fmt.Errorf("%s: private receipt in %s cannot be preserved on backfilled events", u.UserID, r.RoomID))
 			}
 		}
@@ -127,6 +133,16 @@ func (im *Importer) CheckLosslessImport(users []*archive.User, rooms []*archive.
 		return fmt.Errorf("lossless import blocked: %w", errors.Join(failures...))
 	}
 	return nil
+}
+
+func (im *Importer) recordOmittedEvents(room *archive.ArchivedRoom) {
+	if len(room.OmittedEvents) == 0 {
+		return
+	}
+	if im.omittedEvents == nil {
+		im.omittedEvents = map[string]map[string]string{}
+	}
+	im.omittedEvents[room.RoomID] = room.OmittedEvents
 }
 
 func hasThreadReceipt(v any) bool {

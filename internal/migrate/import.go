@@ -47,7 +47,8 @@ type Importer struct {
 	oldSessions map[string]archive.Session
 	pending     map[string]archive.PendingPassword
 	// eventMaps maps old event IDs to new ones, per room.
-	eventMaps map[string]map[string]string
+	eventMaps     map[string]map[string]string
+	omittedEvents map[string]map[string]string
 	// ghosts are deactivated once rooms are replayed.
 	ghosts    map[string]bool
 	aliases   map[string]bool
@@ -450,6 +451,9 @@ func (im *Importer) FinishUser(ctx context.Context, job *UserJob, src *Session) 
 // Continuwuity rejects private receipts on backfilled events, so they may be lost.
 func (im *Importer) restoreReadMarker(ctx context.Context, acct destAccount, r archive.Room, roomID string, rep *Report) {
 	mapEvent := func(eventID string) string {
+		if _, omitted := im.omittedEvents[r.RoomID][eventID]; omitted {
+			return ""
+		}
 		if events, ok := im.eventMaps[r.RoomID]; ok {
 			return events[eventID]
 		}

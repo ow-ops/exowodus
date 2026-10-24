@@ -134,11 +134,18 @@ type tuwunelRoomExport struct {
 }
 
 func (d *TuwunelDump) compareTimeline(ctx context.Context, roomID string, events iter.Seq2[json.RawMessage, error]) error {
+	return d.compareTimelineExcept(ctx, roomID, events, nil)
+}
+
+func (d *TuwunelDump) compareTimelineExcept(ctx context.Context, roomID string, events iter.Seq2[json.RawMessage, error], omitted map[string]string) error {
 	room := d.relayRooms[roomID]
 	if room == nil {
 		return fmt.Errorf("Tuwunel room %s missing from dump", roomID)
 	}
 	remaining := maps.Clone(room.timeline)
+	for id := range omitted {
+		delete(remaining, id)
+	}
 	reader := tuwunelRoomReader{dump: d, room: room, files: map[string]*os.File{}}
 	defer reader.Close()
 	for raw, err := range events {
@@ -188,6 +195,45 @@ func (d *TuwunelDump) compareTimeline(ctx context.Context, roomID string, events
 		return fmt.Errorf("%d database timeline events missing from API export", len(remaining))
 	}
 	return nil
+}
+
+func (d *TuwunelDump) omitInvalidDummies(ctx context.Context, roomID, version string, data *tuwunelRoomMetadata) (map[string]string, error) {
+	var omitted map[string]string
+	for event, err := range d.roomEventsByID(ctx, roomID, data.dummies) {
+		if err != nil {
+			return nil, err
+		}
+		if data.required[event.EventID] != timelineEvent {
+			continue
+		}
+		if err := checkEventID(event, version); err != nil {
+			var mismatch *eventIDMismatchError
+			if !errors.As(err, &mismatch) {
+				return nil, err
+			}
+			var p struct {
+				PrevEvents []string `json:"prev_events"`
+			}
+			if decodeErr := json.Unmarshal(event.PDU, &p); decodeErr != nil {
+				return nil, decodeErr
+			}
+			if omitted == nil {
+				omitted = map[string]string{}
+				data.OmittedParents = map[string][]string{}
+			}
+			omitted[event.EventID] = err.Error()
+			data.OmittedParents[event.EventID] = p.PrevEvents
+			delete(data.required, event.EventID)
+			delete(data.BeforeEventGroups, event.EventID)
+			slog.Warn("omitting invalid dummy event", "room", roomID, "event", event.EventID, "err", err)
+		}
+	}
+	if len(omitted) > 0 {
+		remove := func(id string) bool { _, ok := omitted[id]; return ok }
+		data.Timeline = slices.DeleteFunc(data.Timeline, remove)
+		data.StateUnavailable = slices.DeleteFunc(data.StateUnavailable, remove)
+	}
+	return omitted, nil
 }
 
 func (d *TuwunelDump) exportRoomPDUs(ctx context.Context, a *archive.Archive, roomID, version string) error {

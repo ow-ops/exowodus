@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const version = 3
+const version = 4
 
 type Manifest struct {
 	RequireLossless bool      `json:"require_lossless,omitempty"`
@@ -146,7 +146,8 @@ type ArchivedRoom struct {
 	// Set when other servers were ever in the room: they may reject the recreated one.
 	RemoteParticipants bool `json:"remote_participants"`
 	// Unmigrated local senders, recreated for the replay then deactivated.
-	Ghosts []string `json:"ghosts,omitempty"`
+	Ghosts        []string          `json:"ghosts,omitempty"`
+	OmittedEvents map[string]string `json:"omitted_events,omitempty"`
 }
 
 type RoomImportState struct {

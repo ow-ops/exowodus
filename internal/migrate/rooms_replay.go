@@ -59,6 +59,7 @@ type replay struct {
 }
 
 func (im *Importer) newReplay(ctx context.Context, room *archive.ArchivedRoom, rep *RoomReport) (*replay, error) {
+	im.recordOmittedEvents(room)
 	if im.Appservice == nil {
 		return nil, errors.New("recreating local-only rooms requires --to-admin-token")
 	}

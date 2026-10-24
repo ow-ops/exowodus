@@ -117,7 +117,7 @@ func TestResumeCorruptHistory(t *testing.T) {
 	if err := e.Archive.WriteRoomEvents(room, []json.RawMessage{json.RawMessage(`{"event_id":"$message"}`)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.saveHistoryExport(t.Context(), room, "$message"); err != nil {
+	if err := e.saveHistoryExport(t.Context(), room, "$message", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(a.RoomDir(room), "events.jsonl"), []byte("corrupt\n"), 0600); err != nil {
@@ -322,7 +322,7 @@ func TestResumeLegacyHistoryIsVerified(t *testing.T) {
 			}
 			defer resume.Close()
 			e := Exporter{Archive: a, TuwunelDump: d, Resume: resume}
-			ready, err := e.resumeHistory(t.Context(), "!room0:example.org")
+			ready, err := e.resumeHistory(t.Context(), "!room0:example.org", nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -353,7 +353,7 @@ func TestMismatchedHistoryIsNotCheckpointed(t *testing.T) {
 	if err := a.WriteRoomEvents(room, []json.RawMessage{raw}); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.saveHistoryExport(t.Context(), room, "$create0"); err == nil {
+	if err := e.saveHistoryExport(t.Context(), room, "$create0", nil); err == nil {
 		t.Fatal("mismatched history accepted")
 	}
 	if checkpoint, err := resume.Load(t.Context(), "history", room); err != nil || checkpoint != nil {

@@ -156,7 +156,13 @@ exodus export --from https://example.org --from-type tuwunel \
 This omits later messages, redactions, membership changes and rooms absent from
 the checkpoint. Read markers pointing outside its timeline are also omitted.
 Account data and directory visibility still come from the API. Account, device,
-event-ID and auth checks remain enabled; missing auth events still block export.
+event-ID and auth checks remain enabled; missing required auth events block export.
+
+Invalid `org.matrix.dummy_event` events are omitted only when they have no state
+key and are unused by room state, auth checks or room heads. Their IDs and failure reasons
+are recorded in `room.json` and the import report. Other events keep their
+original IDs and contents; backfill can traverse the omitted events' predecessors.
+
 Pause writes for cutover and keep the original backup. `server.json` records
 `history_at_checkpoint`, and import reports it as a note. Resume with the same
 flag, archive and unchanged dump.

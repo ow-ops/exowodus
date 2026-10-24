@@ -6,9 +6,40 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
+
+func TestBackfillAcrossOmittedEvents(t *testing.T) {
+	r, err := newRoom("!room:example.org", "12", RoomData{
+		Events: []EventJSON{
+			{EventID: "$old", PDU: json.RawMessage(`{"type":"m.room.message","content":{"body":"before"},"prev_events":[]}`)},
+			{EventID: "$new", PDU: json.RawMessage(`{"type":"m.room.message","content":{"body":"after"},"prev_events":["$gap"]}`)},
+		},
+		OmittedParents: map[string][]string{"$gap": {"$gap2", "$old"}, "$gap2": {"$gap", "$old"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.before([]string{"$new"}, 10, nil); !slices.Equal(got, []string{"$new", "$old"}) {
+		t.Fatalf("history across gap: %v", got)
+	}
+	if got := r.before([]string{"$gap"}, 1, nil); !slices.Equal(got, []string{"$old"}) {
+		t.Fatalf("omitted event consumed backfill limit: %v", got)
+	}
+	if got := r.before([]string{"$gap"}, 10, map[string]bool{"$gap": true}); len(got) != 0 {
+		t.Fatalf("crossed stop event: %v", got)
+	}
+	rl := &Relay{Name: "relay.example.org", rooms: map[string]*room{"!room:example.org": r}}
+	request := httptest.NewRequest(http.MethodGet, "/?v=$new&limit=10", nil)
+	request.SetPathValue("roomID", "!room:example.org")
+	response := httptest.NewRecorder()
+	rl.backfill(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "before") || strings.Contains(response.Body.String(), "$gap2") {
+		t.Fatalf("backfill response: %s", response.Body.String())
+	}
+}
 
 func TestTuwunelBeforeEventState(t *testing.T) {
 	data := RoomData{

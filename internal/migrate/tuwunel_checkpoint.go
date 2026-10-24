@@ -28,10 +28,16 @@ func (d *TuwunelDump) roomStateEvents(ctx context.Context, roomID string, state 
 	}
 }
 
-func (d *TuwunelDump) checkpointTimeline(ctx context.Context, roomID string) iter.Seq2[json.RawMessage, error] {
+func (d *TuwunelDump) checkpointTimeline(ctx context.Context, roomID string, omitted map[string]string) iter.Seq2[json.RawMessage, error] {
 	// ldb scans store timeline PDUs in stream order, with backfill first.
 	return func(yield func(json.RawMessage, error) bool) {
-		for event, err := range d.roomEventsByID(ctx, roomID, slices.Collect(maps.Keys(d.relayRooms[roomID].timeline))) {
+		ids := make([]string, 0, len(d.relayRooms[roomID].timeline))
+		for id := range d.relayRooms[roomID].timeline {
+			if _, skip := omitted[id]; !skip {
+				ids = append(ids, id)
+			}
+		}
+		for event, err := range d.roomEventsByID(ctx, roomID, ids) {
 			if err != nil {
 				yield(nil, err)
 				return

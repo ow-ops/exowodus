@@ -26,7 +26,7 @@ func collectTuwunelRoom(ctx context.Context, d *TuwunelDump, roomID string) (*re
 		if err != nil {
 			return nil, err
 		}
-		if data.required[event.EventID] {
+		if data.required[event.EventID] != 0 {
 			data.Events = append(data.Events, event)
 		}
 	}
@@ -143,6 +143,26 @@ func TestTuwunelRequiredAuthClosure(t *testing.T) {
 				t.Fatalf("missing transitive auth event accepted: %v", err)
 			}
 		})
+	}
+}
+
+func TestTuwunelRemovedAncestorStateDoesNotRequireAuth(t *testing.T) {
+	d := tuwunelRoomsFixture(1, 1)
+	const room = "!room0:example.org"
+	u64 := func(n uint64) string { return string(binary.BigEndian.AppendUint64(nil, n)) }
+	d.maps["eventid_outlierpdu"]["$obsolete"] = []byte(`{"room_id":"!room0:example.org","type":"m.room.join_rules","state_key":"","content":{},"auth_events":["$missing"]}`)
+	d.maps["shortstatekey_statekey"][u64(2)] = []byte("m.room.join_rules\xff")
+	d.maps["shorteventid_eventid"][u64(3)] = []byte("$obsolete")
+	d.maps["shortstatehash_statediff"][u64(1)] = append(d.maps["shortstatehash_statediff"][u64(1)], []byte(u64(2)+u64(3))...)
+	d.maps["shortstatehash_statediff"][u64(2)] = []byte(u64(1) + u64(0) + u64(2) + u64(3))
+	d.maps["roomid_shortstatehash"][room] = []byte(u64(2))
+	d.maps["shorteventid_shortstatehash"][u64(2)] = []byte(u64(2))
+	data, err := collectTuwunelRoom(t.Context(), d, room)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Events) != 2 {
+		t.Fatalf("exported %d events, want accepted history only", len(data.Events))
 	}
 }
 

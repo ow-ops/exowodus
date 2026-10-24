@@ -195,8 +195,18 @@ func (d *TuwunelDump) RoomIDs(ctx context.Context) ([]string, error) {
 
 type tuwunelRoomMetadata struct {
 	*relay.RoomData
-	required map[string]bool
+	required map[string]eventUse
+	dummies  []string
 }
+
+type eventUse uint8
+
+const (
+	timelineEvent eventUse = 1 << iota
+	stateEvent
+	authEvent
+	roomHead
+)
 
 func (d *TuwunelDump) roomRelayMetadata(ctx context.Context, roomID string) (*tuwunelRoomMetadata, error) {
 	if err := d.CheckRelayMaps(); err != nil {
@@ -211,7 +221,7 @@ func (d *TuwunelDump) roomRelayMetadata(ctx context.Context, roomID string) (*tu
 	}
 	data := &tuwunelRoomMetadata{
 		RoomData: &relay.RoomData{BeforeEventGroups: map[string]int64{}, Groups: map[int64]relay.Group{}},
-		required: map[string]bool{},
+		required: map[string]eventUse{},
 	}
 
 	var stateFile *os.File
@@ -251,10 +261,14 @@ func (d *TuwunelDump) roomRelayMetadata(ctx context.Context, roomID string) (*tu
 		data.Timeline = append(data.Timeline, id)
 		var p struct {
 			Type       string   `json:"type"`
+			StateKey   *string  `json:"state_key"`
 			AuthEvents []string `json:"auth_events"`
 		}
 		if err := json.Unmarshal(raw, &p); err != nil {
 			return nil, err
+		}
+		if p.Type == "org.matrix.dummy_event" && p.StateKey == nil {
+			data.dummies = append(data.dummies, id)
 		}
 		group := d.maps["shorteventid_shortstatehash"][d.shortEvents[id]]
 		if len(group) == 8 {
@@ -278,7 +292,7 @@ func (d *TuwunelDump) roomRelayMetadata(ctx context.Context, roomID string) (*tu
 			if !room.hasEvent(dependency) {
 				return nil, fmt.Errorf("auth event %s required by timeline event %s is missing from dump", dependency, id)
 			}
-			data.required[dependency] = true
+			data.required[dependency] |= authEvent
 		}
 		processed++
 		if time.Since(progress) >= 5*time.Second {
@@ -322,39 +336,46 @@ func (d *TuwunelDump) addRoomAuth(ctx context.Context, roomID string, data *tuwu
 			pending = append(pending, id)
 		}
 	}
-	add := func(id string) {
-		if !required[id] {
-			required[id] = true
+	add := func(id string, use eventUse) {
+		if required[id] == 0 {
 			if _, accepted := room.timeline[id]; !accepted {
 				pending = append(pending, id)
 			}
 		}
+		required[id] |= use
 	}
 	for _, id := range data.Timeline {
-		add(id)
+		add(id, timelineEvent)
 	}
 	for _, id := range data.Extremities {
-		add(id)
+		add(id, roomHead)
 	}
 	for _, id := range data.CurrentState {
-		add(id)
+		add(id, stateEvent)
 	}
 	stateGroups := map[int64]bool{}
+	stateTargets := map[int64]bool{}
 	addState := func(gid int64) {
-		for !stateGroups[gid] {
+		if !stateGroups[gid] {
 			stateGroups[gid] = true
-			group := data.Groups[gid]
-			for _, id := range group.State {
-				add(id)
-			}
-			if group.Prev == 0 {
-				break
-			}
-			gid = group.Prev
+			stateTargets[gid] = true
 		}
 	}
-	for gid := range data.Groups {
+	addStates := func() error {
+		for id, err := range stateEventIDs(ctx, data.Groups, stateTargets) {
+			if err != nil {
+				return err
+			}
+			add(id, stateEvent)
+		}
+		clear(stateTargets)
+		return nil
+	}
+	for _, gid := range data.BeforeEventGroups {
 		addState(gid)
+	}
+	if err := addStates(); err != nil {
+		return err
 	}
 	reader := tuwunelRoomReader{dump: d, room: room, files: map[string]*os.File{}}
 	defer reader.Close()
@@ -395,13 +416,16 @@ func (d *TuwunelDump) addRoomAuth(ctx context.Context, roomID string, data *tuwu
 				if !room.hasEvent(dependency) {
 					return fmt.Errorf("auth event %s required by outlier %s is missing from dump", dependency, id)
 				}
-				add(dependency)
+				add(dependency, authEvent)
 			}
 			processed++
 			if time.Since(progress) >= 5*time.Second {
 				slog.Info("checking room auth dependencies", "room", roomID, "processed", processed, "events", len(required))
 				progress = time.Now()
 			}
+		}
+		if err := addStates(); err != nil {
+			return err
 		}
 	}
 	return nil

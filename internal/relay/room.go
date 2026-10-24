@@ -22,6 +22,8 @@ type RoomData struct {
 	Timeline []string `json:"timeline,omitempty"`
 	// Backfilled events for which the source has no state snapshot.
 	StateUnavailable []string `json:"state_unavailable,omitempty"`
+	// Discovery links across omitted PDUs; these are never served as events.
+	OmittedParents map[string][]string `json:"omitted_parents,omitempty"`
 	// Timeline events and auth dependencies.
 	Events []EventJSON `json:"events"`
 	// EventGroups and Groups hold Synapse's resolved state after each event.
@@ -86,6 +88,7 @@ type room struct {
 	extra            map[string]map[string]string // state after events without a group
 	current          map[string]string
 	extremities      []string
+	omittedParents   map[string][]string
 }
 
 func newRoom(roomID, version string, data RoomData) (*room, error) {
@@ -97,7 +100,7 @@ func newRoom(roomID, version string, data RoomData) (*room, error) {
 		beforeGroupOf:    data.BeforeEventGroups,
 		stateUnavailable: map[string]bool{},
 		extra:            map[string]map[string]string{}, current: maps.Clone(data.CurrentState),
-		extremities: slices.Clone(data.Extremities)}
+		extremities: slices.Clone(data.Extremities), omittedParents: data.OmittedParents}
 	for _, e := range data.Events {
 		wire, err := federationPDU(e.PDU, version)
 		if err != nil {
@@ -399,6 +402,7 @@ func (r *room) before(from []string, limit int, stop map[string]bool) []string {
 		seen[cur] = true
 		ev, ok := r.events[cur]
 		if !ok {
+			queue = append(queue, r.omittedParents[cur]...)
 			continue
 		}
 		out = append(out, cur)

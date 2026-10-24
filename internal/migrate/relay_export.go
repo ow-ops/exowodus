@@ -25,6 +25,14 @@ func checkEventIDs(pdus []relay.EventJSON, roomVersion string) int {
 	return mismatched
 }
 
+type eventIDMismatchError struct {
+	calculated, stored, eventType, version string
+}
+
+func (e *eventIDMismatchError) Error() string {
+	return fmt.Sprintf("calculated event ID %s does not match %s (type %s, room version %s)", e.calculated, e.stored, e.eventType, e.version)
+}
+
 func checkEventID(p relay.EventJSON, roomVersion string) error {
 	if !relay.SupportsVersion(roomVersion) {
 		return fmt.Errorf("unsupported room version %q", roomVersion)
@@ -53,7 +61,7 @@ func checkEventID(p relay.EventJSON, roomVersion string) error {
 		return err
 	}
 	if string(eventID) != p.EventID {
-		return fmt.Errorf("calculated event ID %s does not match %s (type %s, room version %s)", eventID, p.EventID, ev.Type, roomVersion)
+		return &eventIDMismatchError{string(eventID), p.EventID, ev.Type, roomVersion}
 	}
 	return nil
 }
