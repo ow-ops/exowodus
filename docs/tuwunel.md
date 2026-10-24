@@ -122,6 +122,10 @@ Backfilled events without historical state are retained. State queries for
 those events return an error. Archive format 3 stores state deletions as deltas.
 Update Exodus for export, import and proxy; formats 1 and 2 remain readable.
 
+Room exports include accepted events, referenced state and their auth chains.
+Unused outliers remain in the retained database scans. Missing auth dependencies
+and invalid IDs of required events still block export.
+
 To resume a whole-server Tuwunel export, rerun the same command with the same
 archive and unchanged dump. Keep source writes paused between attempts. Exodus
 verifies completed accounts, rooms and media against `export-progress/` before

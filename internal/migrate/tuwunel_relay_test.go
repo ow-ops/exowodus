@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"testing"
 
 	"exodus/internal/relay"
@@ -25,9 +26,11 @@ func collectTuwunelRoom(ctx context.Context, d *TuwunelDump, roomID string) (*re
 		if err != nil {
 			return nil, err
 		}
-		data.Events = append(data.Events, event)
+		if data.required[event.EventID] {
+			data.Events = append(data.Events, event)
+		}
 	}
-	return data, nil
+	return data.RoomData, nil
 }
 
 func tuwunelRoomsFixture(rooms, messages int) *TuwunelDump {
@@ -63,6 +66,7 @@ func tuwunelRoomsFixture(rooms, messages int) *TuwunelDump {
 func TestTuwunelRelayIndexSeparatesRooms(t *testing.T) {
 	d := tuwunelRoomsFixture(2, 3)
 	d.maps["eventid_outlierpdu"]["$auth"] = []byte(`{"room_id":"!room0:example.org","type":"m.room.join_rules","state_key":"","content":{}}`)
+	d.maps["pduid_pdu"]["$message0-0"] = []byte(`{"event_id":"$message0-0","room_id":"!room0:example.org","type":"m.room.message","content":{"body":"hello"},"auth_events":["$create0","$auth"]}`)
 	d.maps["eventid_outlierpdu"]["$outlier"] = []byte(`{"room_id":"!outlier:example.org","type":"m.room.create","content":{}}`)
 	ids, err := d.RoomIDs(t.Context())
 	if err != nil || len(ids) != 2 {
@@ -88,6 +92,57 @@ func TestTuwunelRelayIndexSeparatesRooms(t *testing.T) {
 				t.Fatal("events leaked between rooms")
 			}
 		}
+	}
+}
+
+func TestTuwunelRequiredAuthClosure(t *testing.T) {
+	for _, root := range []string{"timeline", "current state", "historical state"} {
+		t.Run(root, func(t *testing.T) {
+			d := tuwunelRoomsFixture(1, 1)
+			const room = "!room0:example.org"
+			u64 := func(n uint64) string { return string(binary.BigEndian.AppendUint64(nil, n)) }
+			d.maps["eventid_outlierpdu"]["$auth1"] = []byte(`{"room_id":"!room0:example.org","type":"m.room.join_rules","state_key":"","content":{},"auth_events":["$auth2"]}`)
+			d.maps["eventid_outlierpdu"]["$auth2"] = []byte(`{"room_id":"!room0:example.org","type":"m.room.member","state_key":"@alice:example.org","content":{"membership":"join"},"auth_events":["$create0"]}`)
+			d.maps["eventid_outlierpdu"]["$unused"] = []byte(`{"room_id":"!room0:example.org","type":"m.room.message","content":{},"auth_events":["$missing"]}`)
+			if root == "timeline" {
+				d.maps["pduid_pdu"]["$message0-0"] = []byte(`{"event_id":"$message0-0","room_id":"!room0:example.org","type":"m.room.message","content":{},"auth_events":["$auth1"]}`)
+			} else {
+				d.maps["shortstatekey_statekey"][u64(2)] = []byte("m.room.join_rules\xff")
+				d.maps["shorteventid_eventid"][u64(3)] = []byte("$auth1")
+				d.maps["shortstatehash_statediff"][u64(1)] = append(d.maps["shortstatehash_statediff"][u64(1)], []byte(u64(2)+u64(3))...)
+				if root == "historical state" {
+					d.maps["shortstatehash_statediff"][u64(2)] = []byte(u64(0) + u64(1) + u64(1))
+					d.maps["roomid_shortstatehash"][room] = []byte(u64(2))
+					d.maps["shortstatekey_statekey"][u64(3)] = []byte("m.room.server_acl\xff")
+					d.maps["shorteventid_eventid"][u64(4)] = []byte("$auth3")
+					d.maps["shortstatehash_statediff"][u64(3)] = []byte(u64(2) + u64(3) + u64(4))
+					d.maps["shorteventid_shortstatehash"][u64(3)] = []byte(u64(3))
+					d.maps["eventid_outlierpdu"]["$auth3"] = []byte(`{"room_id":"!room0:example.org","type":"m.room.server_acl","state_key":"","content":{},"auth_events":["$create0"]}`)
+				}
+			}
+			data, err := collectTuwunelRoom(t.Context(), d, room)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ids := map[string]bool{}
+			for _, event := range data.Events {
+				ids[event.EventID] = true
+			}
+			want := 4
+			if root == "historical state" {
+				want++
+				if !ids["$auth3"] || data.BeforeEventGroups["$auth1"] != 3 {
+					t.Fatal("required outlier lost its historical state")
+				}
+			}
+			if len(ids) != want || !ids["$auth1"] || !ids["$auth2"] || ids["$unused"] {
+				t.Fatalf("exported events = %v", ids)
+			}
+			delete(d.relayRooms[room].events, "$auth2")
+			if _, err := d.roomRelayMetadata(t.Context(), room); err == nil || !strings.Contains(err.Error(), "$auth2 required by outlier $auth1") {
+				t.Fatalf("missing transitive auth event accepted: %v", err)
+			}
+		})
 	}
 }
 

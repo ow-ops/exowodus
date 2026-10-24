@@ -65,6 +65,20 @@ func (r *tuwunelRoomReader) Close() error {
 }
 
 func (d *TuwunelDump) roomEvents(ctx context.Context, roomID string) iter.Seq2[relay.EventJSON, error] {
+	room := d.relayRooms[roomID]
+	var ids []string
+	if room != nil {
+		ids = slices.Collect(maps.Keys(room.events))
+		for id := range room.diskEvents {
+			if _, ok := room.events[id]; !ok {
+				ids = append(ids, id)
+			}
+		}
+	}
+	return d.roomEventsByID(ctx, roomID, ids)
+}
+
+func (d *TuwunelDump) roomEventsByID(ctx context.Context, roomID string, ids []string) iter.Seq2[relay.EventJSON, error] {
 	return func(yield func(relay.EventJSON, error) bool) {
 		room := d.relayRooms[roomID]
 		if room == nil {
@@ -73,24 +87,7 @@ func (d *TuwunelDump) roomEvents(ctx context.Context, roomID string) iter.Seq2[r
 		}
 		reader := tuwunelRoomReader{dump: d, room: room, files: map[string]*os.File{}}
 		defer reader.Close()
-		ids := slices.Collect(maps.Keys(room.events))
-		for id := range room.diskEvents {
-			if _, ok := room.events[id]; !ok {
-				ids = append(ids, id)
-			}
-		}
-		// Event array order has no timeline meaning. Read each table in file
-		// order to avoid seeking by event ID through large dumps.
-		slices.SortFunc(ids, func(a, b string) int {
-			left, right := room.diskEvents[a], room.diskEvents[b]
-			if order := cmp.Compare(left.table, right.table); order != 0 {
-				return order
-			}
-			if order := cmp.Compare(left.value.offset, right.value.offset); order != 0 {
-				return order
-			}
-			return cmp.Compare(a, b)
-		})
+		room.sortEventIDs(ids)
 		for _, id := range ids {
 			raw, err := reader.read(ctx, id)
 			if !yield(relay.EventJSON{EventID: id, PDU: raw}, err) || err != nil {
@@ -98,6 +95,20 @@ func (d *TuwunelDump) roomEvents(ctx context.Context, roomID string) iter.Seq2[r
 			}
 		}
 	}
+}
+
+// Read each table in file order to avoid seeking by event ID through large dumps.
+func (r *tuwunelRoomIndex) sortEventIDs(ids []string) {
+	slices.SortFunc(ids, func(a, b string) int {
+		left, right := r.diskEvents[a], r.diskEvents[b]
+		if order := cmp.Compare(left.table, right.table); order != 0 {
+			return order
+		}
+		if order := cmp.Compare(left.value.offset, right.value.offset); order != 0 {
+			return order
+		}
+		return cmp.Compare(a, b)
+	})
 }
 
 type tuwunelEventStream iter.Seq2[relay.EventJSON, error]
@@ -192,11 +203,11 @@ func (d *TuwunelDump) exportRoomPDUs(ctx context.Context, a *archive.Archive, ro
 	return d.writeRoomPDUs(ctx, a, roomID, version, data)
 }
 
-func (d *TuwunelDump) writeRoomPDUs(ctx context.Context, a *archive.Archive, roomID, version string, data *relay.RoomData) error {
+func (d *TuwunelDump) writeRoomPDUs(ctx context.Context, a *archive.Archive, roomID, version string, data *tuwunelRoomMetadata) error {
 	events := func(yield func(relay.EventJSON, error) bool) {
 		count := 0
 		progress := time.Now()
-		for event, err := range d.roomEvents(ctx, roomID) {
+		for event, err := range d.roomEventsByID(ctx, roomID, slices.Collect(maps.Keys(data.required))) {
 			if err != nil {
 				yield(relay.EventJSON{}, err)
 				return
@@ -216,5 +227,5 @@ func (d *TuwunelDump) writeRoomPDUs(ctx context.Context, a *archive.Archive, roo
 		}
 	}
 	slog.Info("exporting original room events", "room", roomID)
-	return a.WriteRoomPDUs(roomID, tuwunelRoomExport{RoomData: data, Events: tuwunelEventStream(events)})
+	return a.WriteRoomPDUs(roomID, tuwunelRoomExport{RoomData: data.RoomData, Events: tuwunelEventStream(events)})
 }

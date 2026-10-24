@@ -53,7 +53,7 @@ func checkEventID(p relay.EventJSON, roomVersion string) error {
 		return err
 	}
 	if string(eventID) != p.EventID {
-		return fmt.Errorf("calculated event ID %s does not match %s", eventID, p.EventID)
+		return fmt.Errorf("calculated event ID %s does not match %s (type %s, room version %s)", eventID, p.EventID, ev.Type, roomVersion)
 	}
 	return nil
 }

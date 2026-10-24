@@ -32,7 +32,7 @@ func TestTuwunelStreamArchive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	value := tuwunelRoomExport{RoomData: data, Events: tuwunelEventStream(d.roomEvents(t.Context(), "!room0:example.org"))}
+	value := tuwunelRoomExport{RoomData: data.RoomData, Events: tuwunelEventStream(d.roomEvents(t.Context(), "!room0:example.org"))}
 	if err := a.WriteRoomPDUs("!room0:example.org", value); err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestTuwunelStreamArchive(t *testing.T) {
 		t.Fatalf("streamed archive differs: got=%+v want=%+v", got, buffered)
 	}
 	failure := errors.New("event read failed")
-	failed := tuwunelRoomExport{RoomData: data, Events: func(yield func(relay.EventJSON, error) bool) { yield(relay.EventJSON{}, failure) }}
+	failed := tuwunelRoomExport{RoomData: data.RoomData, Events: func(yield func(relay.EventJSON, error) bool) { yield(relay.EventJSON{}, failure) }}
 	if err := a.WriteRoomPDUs("!room0:example.org", failed); !errors.Is(err, failure) {
 		t.Fatalf("write error=%v", err)
 	}
@@ -264,7 +264,7 @@ func BenchmarkTuwunelRoomMemory(b *testing.B) {
 				var before runtime.MemStats
 				runtime.ReadMemStats(&before)
 				b.StartTimer()
-				var data *relay.RoomData
+				var data any
 				var err error
 				if buffered {
 					data, err = collectTuwunelRoom(b.Context(), d, "!room0:example.org")
@@ -318,7 +318,7 @@ func TestTuwunelStreamWritesBeforeExhaustingEvents(t *testing.T) {
 			count++
 		}
 	}
-	if err := a.WriteRoomPDUs(room, tuwunelRoomExport{RoomData: data, Events: events}); err != nil {
+	if err := a.WriteRoomPDUs(room, tuwunelRoomExport{RoomData: data.RoomData, Events: events}); err != nil {
 		t.Fatal(err)
 	}
 	if !wroteEarly {
@@ -353,7 +353,7 @@ func TestTuwunelLargeRoomStream(t *testing.T) {
 	if err := d.compareTimeline(t.Context(), room, a.RoomEventsIter(room)); err != nil {
 		t.Fatal(err)
 	}
-	value := tuwunelRoomExport{RoomData: data, Events: tuwunelEventStream(d.roomEvents(t.Context(), room))}
+	value := tuwunelRoomExport{RoomData: data.RoomData, Events: tuwunelEventStream(d.roomEvents(t.Context(), room))}
 	if err := a.WriteRoomPDUs(room, value); err != nil {
 		t.Fatal(err)
 	}

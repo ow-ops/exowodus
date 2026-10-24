@@ -20,7 +20,6 @@ import (
 
 	"exodus/internal/archive"
 	"exodus/internal/mx"
-	"exodus/internal/relay"
 )
 
 const messagesPageSize = "100"
@@ -53,7 +52,7 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 	roomURL := func(query url.Values, path ...any) string { return e.roomURL(c, roomID, query, path...) }
 	log := slog.With("room", roomID)
 	room := &archive.ArchivedRoom{RoomID: roomID}
-	var checkpoint *relay.RoomData
+	var checkpoint *tuwunelRoomMetadata
 	var stateEvents iter.Seq2[json.RawMessage, error]
 	if e.HistoryAtCheckpoint {
 		if e.TuwunelDump == nil || !e.TuwunelDump.HasRelayData() || !e.AllUsers || e.Admin == nil {

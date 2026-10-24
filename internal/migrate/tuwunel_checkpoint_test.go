@@ -233,6 +233,36 @@ func TestCheckpointKeepsIntegrityChecks(t *testing.T) {
 	}
 }
 
+func TestCheckpointOmitsUnusedOutliers(t *testing.T) {
+	dump, _ := checkpointFixture(t)
+	const room = "!room:example.org"
+	dump.relayRooms[room].events["$unused"] = json.RawMessage(`{"event_id":"$unused","room_id":"!room:example.org","type":"m.room.message","content":{},"auth_events":["$missing"]}`)
+	homeserver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer homeserver.Close()
+	a, err := archive.Create(t.TempDir(), "example.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exp := &Exporter{Archive: a, TuwunelDump: dump, AllUsers: true, HistoryAtCheckpoint: true, Admin: mx.MustNew(homeserver.URL, "admin")}
+	if err := exp.ExportRoom(t.Context(), room, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	var stored relay.RoomData
+	if ok, err := a.ReadRoomPDUs(room, &stored); err != nil || !ok {
+		t.Fatalf("read PDUs: %v", err)
+	}
+	if len(stored.Events) != 3 || len(stored.Timeline) != 3 {
+		t.Fatalf("events=%d timeline=%d", len(stored.Events), len(stored.Timeline))
+	}
+	for _, event := range stored.Events {
+		if event.EventID == "$unused" {
+			t.Fatal("exported an unused outlier")
+		}
+	}
+}
+
 func TestCheckpointMembershipAndReceipts(t *testing.T) {
 	dump, timeline := checkpointFixture(t)
 	r := &archive.Room{RoomID: "!new:example.org"}
