@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix"
@@ -183,21 +185,22 @@ flows:
 	return "", fmt.Errorf("no supported registration flow (offered: %s); pass --registration-token", strings.Join(offered, ", "))
 }
 
+const mediaDownloadTimeout = 3 * time.Minute
+
 func Download(ctx context.Context, c *mautrix.Client, mxc, path string) (contentType, filename string, err error) {
+	// Use one deadline for all download attempts.
+	ctx, cancel := context.WithTimeout(ctx, mediaDownloadTimeout)
+	defer cancel()
 	uri, err := id.ParseContentURI(mxc)
 	if err != nil {
 		return "", "", err
-	}
-	if c.SpecVersions == nil {
-		if _, err := c.Versions(ctx); err != nil {
-			return "", "", err
-		}
 	}
 	resp, err := c.Download(ctx, uri)
 	if err != nil {
 		return "", "", err
 	}
 	defer resp.Body.Close()
+	slog.Info("receiving source media", "mxc", mxc, "size", resp.ContentLength)
 	tmp := path + ".part"
 	f, err := os.Create(tmp)
 	if err != nil {

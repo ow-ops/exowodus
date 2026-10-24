@@ -3,10 +3,95 @@ package mx
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 )
+
+func TestDownloadDeadline(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/_matrix/client/v1/media/download/example.org/file" {
+			t.Errorf("unexpected media request: %s", r.URL)
+		}
+		_, _ = w.Write([]byte("media"))
+	}))
+	defer srv.Close()
+	client := MustNew(srv.URL, "token")
+	client.RequestHook = func(r *http.Request) {
+		deadline, ok := r.Context().Deadline()
+		if !ok || time.Until(deadline) > 3*time.Minute {
+			t.Errorf("download deadline missing or exceeds three minutes: %v", deadline)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "file")
+	if _, _, err := Download(t.Context(), client, "mxc://example.org/file", path); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Fatalf("download made %d requests", requests)
+	}
+}
+
+func TestDownloadCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		headers bool
+	}{{"before headers", false}, {"during body", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			started := make(chan struct{})
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.headers {
+					_, _ = w.Write([]byte("partial"))
+					w.(http.Flusher).Flush()
+				}
+				close(started)
+				<-r.Context().Done()
+			}))
+			defer srv.Close()
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			path := filepath.Join(t.TempDir(), "file")
+			done := make(chan error, 1)
+			go func() {
+				_, _, err := Download(ctx, MustNew(srv.URL, "token"), "mxc://example.org/file", path)
+				done <- err
+			}()
+			<-started
+			if tc.headers {
+				deadline := time.Now().Add(time.Second)
+				for {
+					if info, err := os.Stat(path + ".part"); err == nil && info.Size() > 0 {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatal("response body was not written")
+					}
+					time.Sleep(time.Millisecond)
+				}
+			}
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("canceled download: %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("download kept retrying after cancellation")
+			}
+			for _, file := range []string{path, path + ".part"} {
+				if _, err := os.Stat(file); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("canceled download left %s: %v", file, err)
+				}
+			}
+		})
+	}
+}
 
 func TestRetriesRateLimit(t *testing.T) {
 	var calls int
