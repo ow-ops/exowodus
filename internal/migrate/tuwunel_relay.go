@@ -398,7 +398,7 @@ func (d *TuwunelDump) addRoomAuth(ctx context.Context, roomID string, data *tuwu
 			if err := json.Unmarshal(raw, &event); err != nil {
 				return err
 			}
-			if _, known := data.BeforeEventGroups[id]; !known {
+			if _, known := data.BeforeEventGroups[id]; !known && required[id]&roomHead != 0 {
 				group := d.maps["shorteventid_shortstatehash"][d.shortEvents[id]]
 				if len(group) == 8 {
 					gid := binary.BigEndian.Uint64(group)

@@ -123,8 +123,15 @@ func TestTuwunelDummyGapLive(t *testing.T) {
 			if version != "12" {
 				levels[alice] = 100
 			}
+			oldPower := add("m.room.power_levels", &empty, map[string]any{"users": levels})
+			auth = append(auth, id.EventID(oldPower))
 			power := add("m.room.power_levels", &empty, map[string]any{"users": levels})
-			auth = append(auth, id.EventID(power))
+			auth[len(auth)-1] = id.EventID(power)
+			// An auth outlier has a PDU and auth chain but no exported state snapshot.
+			delete(index.timeline, oldPower)
+			delete(data.BeforeEventGroups, oldPower)
+			data.Timeline = slices.DeleteFunc(data.Timeline, func(eid string) bool { return eid == oldPower })
+			data.required[oldPower] &^= timelineEvent
 			add("m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "before gap"})
 			dummy := add("org.matrix.dummy_event", nil, map[string]any{})
 			// Change a hashed field while retaining the stored event ID.
@@ -149,7 +156,7 @@ func TestTuwunelDummyGapLive(t *testing.T) {
 			for _, eid := range []string{create, member, power} {
 				room.State = append(room.State, index.events[eid])
 			}
-			for _, eid := range data.Timeline {
+			for _, eid := range slices.Sorted(maps.Keys(data.required)) {
 				data.Events = append(data.Events, relay.EventJSON{EventID: eid, PDU: index.events[eid]})
 			}
 			if err := a.WriteRoom(room); err != nil {

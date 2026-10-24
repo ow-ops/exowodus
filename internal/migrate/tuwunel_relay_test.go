@@ -128,14 +128,10 @@ func TestTuwunelRequiredAuthClosure(t *testing.T) {
 			for _, event := range data.Events {
 				ids[event.EventID] = true
 			}
-			want := 4
-			if root == "historical state" {
-				want++
-				if !ids["$auth3"] || data.BeforeEventGroups["$auth1"] != 3 {
-					t.Fatal("required outlier lost its historical state")
-				}
+			if root == "historical state" && (ids["$auth3"] || data.BeforeEventGroups["$auth1"] != 0) {
+				t.Fatal("exported unrelated state before a required outlier")
 			}
-			if len(ids) != want || !ids["$auth1"] || !ids["$auth2"] || ids["$unused"] {
+			if len(ids) != 4 || !ids["$auth1"] || !ids["$auth2"] || ids["$unused"] {
 				t.Fatalf("exported events = %v", ids)
 			}
 			delete(d.relayRooms[room].events, "$auth2")
@@ -163,6 +159,104 @@ func TestTuwunelRemovedAncestorStateDoesNotRequireAuth(t *testing.T) {
 	}
 	if len(data.Events) != 2 {
 		t.Fatalf("exported %d events, want accepted history only", len(data.Events))
+	}
+}
+
+func TestTuwunelOutlierDoesNotRequireHistoricalState(t *testing.T) {
+	for _, snapshot := range []string{"missing", "unrelated auth"} {
+		t.Run(snapshot, func(t *testing.T) {
+			d := tuwunelRoomsFixture(1, 1)
+			u64 := func(n uint64) string { return string(binary.BigEndian.AppendUint64(nil, n)) }
+			d.maps["pduid_pdu"]["$message0-0"] = []byte(`{"event_id":"$message0-0","room_id":"!room0:example.org","type":"m.room.message","content":{},"auth_events":["$auth"]}`)
+			d.maps["eventid_outlierpdu"]["$auth"] = []byte(`{"room_id":"!room0:example.org","type":"m.room.join_rules","state_key":"","content":{},"auth_events":["$create0"]}`)
+			d.maps["shorteventid_eventid"][u64(3)] = []byte("$auth")
+			d.maps["shorteventid_shortstatehash"][u64(3)] = []byte(u64(99))
+			if snapshot == "unrelated auth" {
+				d.maps["shortstatekey_statekey"][u64(2)] = []byte("m.room.name\xff")
+				d.maps["shorteventid_eventid"][u64(4)] = []byte("$unrelated")
+				d.maps["shortstatehash_statediff"][u64(99)] = []byte(u64(1) + u64(2) + u64(4))
+				d.maps["eventid_outlierpdu"]["$unrelated"] = []byte(`{"room_id":"!room0:example.org","type":"m.room.name","state_key":"","content":{},"auth_events":["$missing"]}`)
+			}
+			data, err := collectTuwunelRoom(t.Context(), d, "!room0:example.org")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(data.Events) != 3 {
+				t.Fatalf("exported %d events, want timeline and its auth chain", len(data.Events))
+			}
+			if _, ok := data.BeforeEventGroups["$auth"]; ok {
+				t.Fatal("exported unrelated state before auth-only outlier")
+			}
+		})
+	}
+}
+
+func TestTuwunelAuthClosureMatchesReachability(t *testing.T) {
+	for seed := range 8 {
+		for _, outlierHead := range []bool{false, true} {
+			t.Run(fmt.Sprintf("seed=%d/head=%t", seed, outlierHead), func(t *testing.T) {
+				d := tuwunelRoomsFixture(1, 1)
+				const room = "!room0:example.org"
+				u64 := func(n int) string { return string(binary.BigEndian.AppendUint64(nil, uint64(n))) }
+				node := func(n int) string { return fmt.Sprintf("$auth%d", n%24) }
+				graph := map[string][]string{}
+				for i := range 24 {
+					deps := []string{"$create0"}
+					if i > 0 {
+						deps = append(deps, node(i/2), node((i*7+seed)%i))
+					}
+					graph[node(i)] = deps
+					auth, err := json.Marshal(deps)
+					if err != nil {
+						t.Fatal(err)
+					}
+					d.maps["eventid_outlierpdu"][node(i)] = []byte(fmt.Sprintf(`{"room_id":%q,"type":"m.room.name","state_key":"","content":{},"auth_events":%s}`, room, auth))
+					d.maps["shorteventid_eventid"][u64(10+i)] = []byte(node(i))
+					d.maps["shorteventid_shortstatehash"][u64(10+i)] = []byte(u64(99))
+				}
+				timeline, historical, current := (seed*7)%24, (seed*11)%24, (seed*13)%24
+				graph["$message0-0"] = []string{node(timeline)}
+				d.maps["pduid_pdu"]["$message0-0"] = []byte(fmt.Sprintf(`{"event_id":"$message0-0","room_id":%q,"type":"m.room.message","content":{},"auth_events":[%q]}`, room, node(timeline)))
+				d.maps["shortstatekey_statekey"][u64(2)] = []byte("m.room.name\xff")
+				d.maps["shortstatehash_statediff"][u64(1)] = []byte(u64(0) + u64(1) + u64(1) + u64(2) + u64(10+historical))
+				d.maps["shortstatehash_statediff"][u64(2)] = []byte(u64(1) + u64(2) + u64(10+current))
+				d.maps["roomid_shortstatehash"][room] = []byte(u64(2))
+				roots := []string{"$create0", "$message0-0", node(historical), node(current)}
+				if outlierHead {
+					head, headState := (seed*17)%24, (seed*19)%24
+					clear(d.maps["roomid_pduleaves"])
+					d.maps["roomid_pduleaves"][room+"\xff"+node(head)] = nil
+					d.maps["shorteventid_shortstatehash"][u64(10+head)] = []byte(u64(3))
+					d.maps["shortstatehash_statediff"][u64(3)] = []byte(u64(2) + u64(2) + u64(10+headState))
+					roots = append(roots, node(head), node(headState))
+				}
+				want := map[string]bool{}
+				var visit func(string)
+				visit = func(id string) {
+					if want[id] {
+						return
+					}
+					want[id] = true
+					for _, dependency := range graph[id] {
+						visit(dependency)
+					}
+				}
+				for _, id := range roots {
+					visit(id)
+				}
+				data, err := d.roomRelayMetadata(t.Context(), room)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := map[string]bool{}
+				for id := range data.required {
+					got[id] = true
+				}
+				if !maps.Equal(got, want) {
+					t.Fatalf("required events=%v, want %v", got, want)
+				}
+			})
+		}
 	}
 }
 

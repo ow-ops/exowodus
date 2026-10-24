@@ -235,6 +235,9 @@ func (r *room) stateAfter(eventID string) (map[string]string, error) {
 	if gid, ok := r.groupOf[eventID]; ok {
 		return ResolveState(r.groups, gid)
 	}
+	if r.beforeGroupOf != nil {
+		return nil, fmt.Errorf("historical state unavailable for event %s", eventID)
+	}
 	return map[string]string{}, nil
 }
 

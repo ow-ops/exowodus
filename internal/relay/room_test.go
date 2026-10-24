@@ -83,6 +83,29 @@ func TestTuwunelBeforeEventState(t *testing.T) {
 	}
 }
 
+func TestAuthOutlierWithoutHistoricalState(t *testing.T) {
+	r, err := newRoom("!room:example.org", "12", RoomData{
+		Events: []EventJSON{
+			{EventID: "$create", PDU: json.RawMessage(`{"type":"m.room.create","state_key":"","content":{"room_version":"12"},"auth_events":[]}`)},
+			{EventID: "$auth", PDU: json.RawMessage(`{"type":"m.room.member","state_key":"@alice:example.org","content":{"membership":"join"},"auth_events":["$create"]}`)},
+		},
+		BeforeEventGroups: map[string]int64{"$create": 0},
+		Groups:            map[int64]Group{0: {}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chain := r.authChain([]string{"$auth"}); !slices.Equal(chain, []string{"$create"}) {
+		t.Fatal(chain)
+	}
+	if _, err := r.stateBefore("$auth"); err == nil {
+		t.Fatal("returned state for auth-only outlier without a snapshot")
+	}
+	if _, err := r.stateAfter("$auth"); err == nil {
+		t.Fatal("returned state after auth-only outlier without a snapshot")
+	}
+}
+
 func TestStoredPDUConvertedToFederationWireShape(t *testing.T) {
 	for _, version := range []string{"10", "12"} {
 		wire, err := federationPDU(json.RawMessage(`{"event_id":"$original","room_id":"!room:example.org","type":"m.room.create","content":{"room_version":"10"},"signatures":{"example.org":{"ed25519:original":"original-signature"}},"unsigned":{"transaction_id":"private","age":123}}`), version)
