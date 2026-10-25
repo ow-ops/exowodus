@@ -55,10 +55,12 @@ type mediaFile struct {
 }
 
 type Proxy struct {
-	archive  *archive.Archive
-	upstream *mautrix.Client
-	rp       *httputil.ReverseProxy
-	pepper   string
+	inboxes   map[string]*deviceInbox
+	inboxLock io.Closer
+	archive   *archive.Archive
+	upstream  *mautrix.Client
+	rp        *httputil.ReverseProxy
+	pepper    string
 	// serverName owns the archived media; destServer is the accounts' server.
 	serverName, destServer string
 
@@ -134,12 +136,18 @@ func New(a *archive.Archive, upstream *url.URL, pepper string, macaroonKey []byt
 	}
 	if serverData != nil {
 		p.addMedia(a.Dir, serverData.Media)
+		if upstream != nil && p.destServer == p.serverName {
+			if err := p.loadInboxes(serverData.ToDevice); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if upstream != nil {
 		if p.upstream, err = mx.New(upstream.String(), ""); err != nil {
+			p.Close()
 			return nil, err
 		}
-		p.rp = &httputil.ReverseProxy{Rewrite: func(pr *httputil.ProxyRequest) {
+		p.rp = &httputil.ReverseProxy{ModifyResponse: p.inboxResponse, Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(upstream)
 			pr.SetXForwarded()
 			pr.Out.Host = pr.In.Host
@@ -203,6 +211,16 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost && loginPath.MatchString(path) {
 		p.interceptLogin(r)
 	}
+	var err error
+	if r, err = p.inboxRequest(r); err != nil {
+		if errors.Is(err, errInboxStorage) {
+			slog.Error("could not save device inbox", "err", err)
+			writeError(w, http.StatusInternalServerError, "M_UNKNOWN", "Could not save device message acknowledgements")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "M_UNKNOWN_POS", err.Error())
+		return
+	}
 	p.rp.ServeHTTP(w, r)
 }
 
@@ -255,31 +273,44 @@ func (p *Proxy) refresh(w http.ResponseWriter, r *http.Request) bool {
 }
 
 type cachedUser struct {
-	userID  string
-	expires time.Time
+	userID   string
+	deviceID string
+	expires  time.Time
 }
 
 // userOf returns the user of the request's access token, or "".
 func (p *Proxy) userOf(r *http.Request) string {
+	return p.identityOf(r).userID
+}
+
+func (p *Proxy) identityOf(r *http.Request) cachedUser {
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok || token == "" {
 		token = r.URL.Query().Get("access_token")
 	}
 	if token == "" || p.upstream == nil {
-		return ""
+		return cachedUser{}
 	}
 	if c, ok := p.auth.Load(token); ok {
 		if time.Now().Before(c.(cachedUser).expires) {
-			return c.(cachedUser).userID
+			return c.(cachedUser)
 		}
 		p.auth.Delete(token)
 	}
 	who, err := mx.WithToken(p.upstream, token).Whoami(r.Context())
 	if err != nil {
-		return ""
+		return cachedUser{}
 	}
-	p.auth.Store(token, cachedUser{userID: string(who.UserID), expires: time.Now().Add(authCacheTTL)})
-	return string(who.UserID)
+	identity := cachedUser{userID: string(who.UserID), deviceID: string(who.DeviceID), expires: time.Now().Add(authCacheTTL)}
+	p.auth.Store(token, identity)
+	return identity
+}
+
+func (p *Proxy) Close() error {
+	if p.inboxLock != nil {
+		return p.inboxLock.Close()
+	}
+	return nil
 }
 
 func (p *Proxy) authenticated(r *http.Request) bool {

@@ -106,7 +106,7 @@ func TestLosslessRejectsKnownLoss(t *testing.T) {
 		server      *archive.Server
 		destination string
 	}{
-		{name: "remote inbox", server: &archive.Server{ToDevice: []archive.ToDevice{{Key: "remote", Sender: "@remote:other.org"}}}},
+		{name: "invalid remote inbox", server: &archive.Server{ToDevice: []archive.ToDevice{{Key: "remote", Sender: "@remote:other.org"}}}},
 		{name: "pending queue", server: &archive.Server{Limitations: []string{"pending deliveries"}}},
 		{name: "archive only", rooms: []*archive.ArchivedRoom{{RoomID: "!room:example.org", ArchiveOnly: true}}},
 		{name: "new identity", destination: "new.example.org"},

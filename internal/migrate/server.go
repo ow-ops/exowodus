@@ -224,8 +224,7 @@ func (im *Importer) ImportServer(ctx context.Context) ([]string, []Failure) {
 	return notes, failures
 }
 
-// deliverToDevice resends as the original senders. Messages are encrypted
-// for device keys, which only survive an unchanged server name.
+// Local senders use the appservice; the proxy delivers remote senders' messages.
 func (im *Importer) deliverToDevice(ctx context.Context, msgs []archive.ToDevice, state *archive.ServerImportState, failures *[]Failure) []string {
 	if len(msgs) == 0 {
 		return nil
@@ -234,10 +233,6 @@ func (im *Importer) deliverToDevice(ctx context.Context, msgs []archive.ToDevice
 	if mx.ServerName(im.Admin.bot) != server {
 		return []string{fmt.Sprintf("%d undelivered to-device messages dropped: devices do not carry over to a new server name", len(msgs))}
 	}
-	if im.Appservice == nil {
-		*failures = append(*failures, Failure{Step: "to_device", Error: "the exodus appservice is not registered"})
-		return nil
-	}
 	local := func(userID string) bool { return mx.ServerName(userID) == server }
 	var remote int
 	for _, m := range msgs {
@@ -245,7 +240,15 @@ func (im *Importer) deliverToDevice(ctx context.Context, msgs []archive.ToDevice
 			continue
 		}
 		if !local(m.Sender) {
+			if err := archive.ValidateProxyInboxMessage(m, server); err != nil {
+				*failures = append(*failures, Failure{Step: "to_device", Target: m.Key, Error: err.Error()})
+				continue
+			}
 			remote++
+			continue
+		}
+		if im.Appservice == nil {
+			*failures = append(*failures, Failure{Step: "to_device", Target: m.Key, Error: "the exodus appservice is not registered"})
 			continue
 		}
 		if !im.Migrated[m.Sender] || local(m.Recipient) && !im.Migrated[m.Recipient] {
@@ -263,7 +266,11 @@ func (im *Importer) deliverToDevice(ctx context.Context, msgs []archive.ToDevice
 		}
 	}
 	if remote > 0 {
-		return []string{fmt.Sprintf("%d undelivered to-device messages from other servers dropped; clients request the keys again", remote)}
+		if err := im.Archive.EnableProxyInbox(); err != nil {
+			*failures = append(*failures, Failure{Step: "to_device", Error: err.Error()})
+			return nil
+		}
+		return []string{fmt.Sprintf("%d queued to-device messages from remote senders retained for delivery by exodus proxy", remote)}
 	}
 	return nil
 }

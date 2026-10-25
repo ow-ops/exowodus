@@ -189,7 +189,7 @@ other flags to reuse completed exports. Skipped room IDs are recorded in
 `manifest.json`, `export-report.json` and the import report. Import omits their
 history, membership, receipts, room account data and aliases. Removing a
 `--skip-room` option on a later export includes that room again. Use the updated
-binary for import as well; these archives use format version 5.
+binary for import as well; new archives use format version 6.
 
 Whole-server migration requires these scans, even for empty tables. Export
 checks the database timeline against the API unless `--history-at-checkpoint` is
@@ -199,7 +199,7 @@ verifies destination sessions. It does not fall back to replaying messages.
 Import blocks these known unsupported cases:
 
 - Private receipts on backfilled events and per-thread receipts.
-- Undelivered messages from remote senders and pending outbound deliveries.
+- Pending outbound deliveries.
 - Rooms without joined local users.
 - Deactivated accounts and accounts with multiple email addresses.
 
@@ -210,3 +210,10 @@ All supplied scans are kept under `source/tuwunel/` in the archive.
 Failed backfill, knock and read-marker steps appear in `import-report.json`.
 Rerun import with the same archive and relay settings to retry. Keep the archive
 and proxy running to serve existing logins and original media URLs.
+
+Queued to-device messages from remote senders stay in the archive. The proxy
+delivers them to the original recipient and device through sync, up to 100 per
+response. It saves acknowledgements under `proxy-inbox/` and retries unacknowledged
+messages after a restart. Run one proxy process per archive and keep that directory
+with the archive. Both classic sync and sliding sync are supported. Use the updated
+binary for import and proxy; existing archives do not need a new export.

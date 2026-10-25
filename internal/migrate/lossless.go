@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"exodus/internal/archive"
@@ -64,6 +65,7 @@ func (d *TuwunelDump) CheckLosslessMaps() error {
 
 // CheckLosslessImport runs before creating accounts or changing the target.
 func (im *Importer) CheckLosslessImport(users []*archive.User, rooms []*archive.ArchivedRoom, server *archive.Server, hasRelay bool) error {
+	slog.Info("checking import preservation", "users", len(users), "rooms", len(rooms))
 	var failures []error
 	for _, room := range rooms {
 		if im.Archive.IsRoomSkipped(room.RoomID) {
@@ -110,7 +112,7 @@ func (im *Importer) CheckLosslessImport(users []*archive.User, rooms []*archive.
 			failures = append(failures, fmt.Errorf("%s: destination supports only one email", u.UserID))
 		}
 	}
-	for _, room := range rooms {
+	for i, room := range rooms {
 		if im.Archive.IsRoomSkipped(room.RoomID) {
 			continue
 		}
@@ -118,6 +120,7 @@ func (im *Importer) CheckLosslessImport(users []*archive.User, rooms []*archive.
 			failures = append(failures, fmt.Errorf("%s: rooms without joined local users cannot currently be restored", room.RoomID))
 			continue
 		}
+		slog.Info("checking original room events", "room", room.RoomID, "position", i+1, "rooms", len(rooms))
 		var data relay.RoomData
 		ok, err := im.Archive.ReadRoomPDUs(room.RoomID, &data)
 		if err != nil || !ok {
@@ -134,13 +137,16 @@ func (im *Importer) CheckLosslessImport(users []*archive.User, rooms []*archive.
 		}
 		for _, message := range server.ToDevice {
 			if !strings.HasSuffix(message.Sender, ":"+im.Archive.Manifest.ServerName) {
-				failures = append(failures, fmt.Errorf("queued message %s: remote sender cannot be restored through the client API", message.Key))
+				if err := archive.ValidateProxyInboxMessage(message, im.Archive.Manifest.ServerName); err != nil {
+					failures = append(failures, err)
+				}
 			}
 		}
 	}
 	if len(failures) != 0 {
 		return fmt.Errorf("lossless import blocked: %w", errors.Join(failures...))
 	}
+	slog.Info("import preservation checks passed")
 	return nil
 }
 

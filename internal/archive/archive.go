@@ -14,10 +14,11 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 )
 
-const version = 5
+const version = 6
 
 type Manifest struct {
 	SkippedRooms    map[string]string `json:"skipped_rooms,omitempty"`
@@ -729,6 +730,10 @@ func readJSON(path string, v any) error {
 }
 
 func writeJSON(path string, v any) error {
+	return writeJSONFile(path, v, false)
+}
+
+func writeJSONFile(path string, v any, durable bool) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -738,12 +743,30 @@ func writeJSON(path string, v any) error {
 		return err
 	}
 	err = jsonv2.MarshalWrite(f, v, json.DefaultOptionsV1(), jsontext.WithIndent("  "))
+	if err == nil && durable {
+		err = f.Sync()
+	}
 	closeErr := f.Close()
 	if err = errors.Join(err, closeErr); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	if durable && runtime.GOOS != "windows" {
+		// Persist both the state file and a newly created inbox directory.
+		for _, dir := range []string{filepath.Dir(path), filepath.Dir(filepath.Dir(path))} {
+			f, err := os.Open(dir)
+			if err != nil {
+				return err
+			}
+			if err := errors.Join(f.Sync(), f.Close()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // ExportReport records whether the last export finished successfully.

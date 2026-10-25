@@ -804,6 +804,7 @@ Without --upstream it only serves archived media, for a retired server name.`,
 			if err != nil {
 				return err
 			}
+			defer p.Close()
 			srv := &http.Server{Addr: listen, Handler: p, ReadHeaderTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute}
 			stopped := make(chan struct{})
 			go func() {

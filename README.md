@@ -197,6 +197,9 @@ links working:
 | Registration tokens | Old tokens are swapped for the ones issued on import.                                                                                                                                                                  |
 | Shadow bans         | Continuwuity has none, so the proxy answers shadow-banned users' messages, state changes and invites as if they succeeded, without sending them.                                                                       |
 
+Archived to-device messages from remote senders are delivered to their original
+devices and retained until the client acknowledges receipt.
+
 ## Rooms only your server was in
 
 These rooms are recreated under their **original room ID**, so links, key
