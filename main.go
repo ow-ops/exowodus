@@ -65,7 +65,7 @@ Replacing Synapse on the same server name:
 		},
 	}
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable debug logging")
-	root.AddCommand(newExportCmd(), newImportCmd(), newMigrateCmd(), newProxyCmd(), newLinkSSOCmd(), newRestoreSigningKeyCmd(), newRepairTuwunelAccountsCmd())
+	root.AddCommand(newExportCmd(), newImportCmd(), newMigrateCmd(), newProxyCmd(), newLinkSSOCmd(), newRestoreSigningKeyCmd(), newRepairTuwunelAccountsCmd(), newRecoverLoginCmd())
 	return root
 }
 
@@ -648,6 +648,9 @@ after replacing Synapse with Continuwuity on the same server name.`,
 				for _, job := range jobs {
 					reports = append(reports, job.Report)
 				}
+				for _, report := range reports {
+					report.PreparationOnly = true
+				}
 				notes := []string{"Room import, queued deliveries and account status changes were deferred because account preparation failed. Fix the reported errors and rerun with the same archive."}
 				printSummary(cmd.OutOrStdout(), a, users, reports, nil, notes)
 				reportErr := a.WriteImportReport(struct {
@@ -1092,8 +1095,16 @@ func printSummary(out io.Writer, a *archive.Archive, users []*archive.User, repo
 	}
 	fmt.Fprintln(out)
 	for _, r := range reports {
-		fmt.Fprintf(out, "%s -> %s: %d/%d rooms joined, %d failures\n",
-			r.SourceUserID, r.DestUserID, r.RoomsJoined, rooms[r.SourceUserID], len(r.Failures))
+		if r.PreparationOnly {
+			if len(r.Failures) > 0 {
+				fmt.Fprintf(out, "%s: account preparation failed (%d failures); room import deferred\n", r.SourceUserID, len(r.Failures))
+			} else {
+				fmt.Fprintf(out, "%s -> %s: account prepared; room import deferred\n", r.SourceUserID, r.DestUserID)
+			}
+		} else {
+			fmt.Fprintf(out, "%s -> %s: %d/%d rooms joined, %d failures\n",
+				r.SourceUserID, r.DestUserID, r.RoomsJoined, rooms[r.SourceUserID], len(r.Failures))
+		}
 		for _, roomID := range r.SkippedRooms {
 			fmt.Fprintf(out, "  skipped room %s\n", roomID)
 		}
@@ -1109,7 +1120,7 @@ func printSummary(out io.Writer, a *archive.Archive, users []*archive.User, repo
 	}
 	var hinted bool
 	for _, r := range reports {
-		if !admins[r.SourceUserID] || r.AdminGranted {
+		if !admins[r.SourceUserID] || r.AdminGranted || r.DestUserID == "" {
 			continue
 		}
 		if !hinted {
@@ -1128,5 +1139,9 @@ func printSummary(out io.Writer, a *archive.Archive, users []*archive.User, repo
 	if _, err := os.Stat(creds); err == nil {
 		fmt.Fprintf(out, "\nGenerated passwords are in %s\n", creds)
 	}
-	fmt.Fprintf(out, "Per-user details: %s/users/*/import-report.json\n", a.Dir)
+	if slices.ContainsFunc(reports, func(r *migrate.Report) bool { return r.PreparationOnly }) {
+		fmt.Fprintf(out, "Account preparation details: %s/import-report.json\n", a.Dir)
+	} else {
+		fmt.Fprintf(out, "Per-user details: %s/users/*/import-report.json\n", a.Dir)
+	}
 }

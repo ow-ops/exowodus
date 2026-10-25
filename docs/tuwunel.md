@@ -133,6 +133,19 @@ This restores the account's data from the archive and may overwrite changes made
 on the destination. It requires the original server name and applies only to
 passwordless, guest or ID-only accounts. Existing accounts are refused by default.
 
+For an existing account with a password, verify its destination login before
+retrying import:
+
+```sh
+exodus recover-login --archive ./exodus-archive \
+  --to https://matrix.example.org --user '@alice:example.org'
+```
+
+Stop import first. The command prompts without echoing the password and saves
+the verified login in the private archive. It does not recreate the account or
+change its password, profile or rooms. The proxy can restore the source
+password on first login. Rerun import with the same archive afterward.
+
 Keep dump files unchanged during export. Original event bodies stream from
 these files. Room state and event indexes still use RAM.
 

@@ -79,12 +79,13 @@ type destAccount struct {
 }
 
 type Report struct {
-	SkippedRooms []string  `json:"skipped_rooms,omitempty"`
-	SourceUserID string    `json:"source_user_id"`
-	DestUserID   string    `json:"dest_user_id"`
-	RoomsJoined  int       `json:"rooms_joined"`
-	AdminGranted bool      `json:"admin_granted,omitempty"`
-	Failures     []Failure `json:"failures,omitempty"`
+	PreparationOnly bool      `json:"preparation_only,omitempty"`
+	SkippedRooms    []string  `json:"skipped_rooms,omitempty"`
+	SourceUserID    string    `json:"source_user_id"`
+	DestUserID      string    `json:"dest_user_id"`
+	RoomsJoined     int       `json:"rooms_joined"`
+	AdminGranted    bool      `json:"admin_granted,omitempty"`
+	Failures        []Failure `json:"failures,omitempty"`
 }
 
 type Failure struct {
