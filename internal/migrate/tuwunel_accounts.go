@@ -36,7 +36,8 @@ var accountRecoveryTables = []string{
 
 // RepairTuwunelAccounts recovers users misclassified as deactivated by the
 // source API's empty-password test. Real deactivation deletes device metadata.
-func RepairTuwunelAccounts(ctx context.Context, a *archive.Archive, database, ldb string) ([]string, error) {
+// Empty-password appservice senders without devices require explicit opt-in.
+func RepairTuwunelAccounts(ctx context.Context, a *archive.Archive, database, ldb string, includeAppserviceSenders bool) ([]string, error) {
 	if err := a.CheckExport(); err != nil {
 		return nil, err
 	}
@@ -58,6 +59,25 @@ func RepairTuwunelAccounts(ctx context.Context, a *archive.Archive, database, ld
 			candidates[u.UserID] = true
 		}
 	}
+	senders := map[string]bool{}
+	server, err := a.ReadServer()
+	if err != nil {
+		return nil, err
+	}
+	if server != nil {
+		seen := map[string]bool{}
+		for _, raw := range server.AppserviceRegistrations {
+			b, err := parseBridge([]byte(raw), nil)
+			if err != nil {
+				return nil, err
+			}
+			if seen[b.ID] || b.sender == "" {
+				return nil, fmt.Errorf("invalid or duplicate archived appservice %s", b.ID)
+			}
+			seen[b.ID] = true
+			senders["@"+b.sender+":"+a.Manifest.ServerName] = true
+		}
+	}
 	selected := map[string]bool{}
 	source := filepath.Join(a.Dir, "source", "tuwunel")
 	err = walkTuwunelScan(ctx, filepath.Join(source, "userdeviceid_metadata.txt"), func(key string, _ []byte, _ tuwunelValueRef) error {
@@ -66,6 +86,24 @@ func RepairTuwunelAccounts(ctx context.Context, a *archive.Archive, database, ld
 			selected[user] = true
 		}
 		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	err = walkTuwunelScan(ctx, filepath.Join(source, "userid_password.txt"), func(user string, password []byte, _ tuwunelValueRef) error {
+		if !candidates[user] {
+			return nil
+		}
+		if string(password) == "*" {
+			selected[user] = true
+		} else if len(password) == 0 && senders[user] && !selected[user] {
+			if includeAppserviceSenders {
+				selected[user] = true
+			} else {
+				slog.Warn("appservice sender has no devices and an ambiguous deactivation marker; left unchanged", "user", user, "option", "--include-appservice-senders")
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -123,8 +161,8 @@ func RepairTuwunelAccounts(ctx context.Context, a *archive.Archive, database, ld
 						_, pushkey, _ := strings.Cut(key, "\xff")
 						pushkeys[pushkey] = true
 					}
-				case "keyid_key":
-					// Other users' master keys may carry this user's verification.
+				case "keyid_key", "userid_masterkeyid":
+					// Verification uses other users' current master keys.
 					keep = true
 				}
 				if keep {
@@ -149,7 +187,7 @@ func RepairTuwunelAccounts(ctx context.Context, a *archive.Archive, database, ld
 	}
 	for _, user := range recovered {
 		slog.Info("recovering passwordless account", "user", user)
-		u, secrets, backup, err := recoverTuwunelAccount(ctx, a, stage, user)
+		u, secrets, backup, err := recoverTuwunelAccount(ctx, a, stage, user, includeAppserviceSenders && senders[user])
 		if err != nil {
 			return nil, fmt.Errorf("recover %s: %w", user, err)
 		}

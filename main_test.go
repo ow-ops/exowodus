@@ -355,6 +355,9 @@ func TestImportCommandFailsOnReportedStepFailure(t *testing.T) {
 	if err := a.WriteUser(&archive.User{UserID: "@alice:example.org", DisplayName: "Alice"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := a.FinishExport(nil); err != nil {
+		t.Fatal(err)
+	}
 	cmd := newRootCmd()
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)

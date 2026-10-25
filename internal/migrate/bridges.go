@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"regexp"
 	"slices"
 
@@ -86,7 +87,17 @@ func (im *Importer) RestoreBridges(ctx context.Context, server *archive.Server) 
 		if err != nil {
 			return fmt.Errorf("archived appservice registration: %w", err)
 		}
-		if slices.ContainsFunc(im.Bridges, func(existing *Bridge) bool { return existing.ID == b.ID }) {
+		if i := slices.IndexFunc(im.Bridges, func(existing *Bridge) bool { return existing.ID == b.ID }); i >= 0 {
+			var existing, archived any
+			if err := yaml.Unmarshal([]byte(im.Bridges[i].registration), &existing); err != nil {
+				return fmt.Errorf("appservice %s registration: %w", b.ID, err)
+			}
+			if err := yaml.Unmarshal([]byte(b.registration), &archived); err != nil {
+				return fmt.Errorf("archived appservice %s registration: %w", b.ID, err)
+			}
+			if !reflect.DeepEqual(existing, archived) {
+				return fmt.Errorf("appservice %s differs from the archived registration", b.ID)
+			}
 			continue
 		}
 		if slices.ContainsFunc(bridges, func(existing *Bridge) bool { return existing.ID == b.ID }) {
@@ -117,6 +128,23 @@ func (b *Bridge) owns(userID string) bool {
 }
 
 func (im *Importer) bridgeFor(userID string) *Bridge {
+	server := im.Archive.Manifest.ServerName
+	if mx.ServerName(userID) != server {
+		return nil
+	}
+	for _, b := range im.Bridges {
+		if userID == "@"+b.sender+":"+server {
+			return b
+		}
+	}
+	// Exclusive namespaces take precedence over other services' subscriptions.
+	for _, b := range im.Bridges {
+		for _, re := range b.exclusive {
+			if re.MatchString(userID) {
+				return b
+			}
+		}
+	}
 	for _, b := range im.Bridges {
 		if b.owns(userID) {
 			return b

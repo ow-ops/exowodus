@@ -60,11 +60,16 @@ func (im *Importer) FilterBridgeAccounts(ctx context.Context, users []*archive.U
 		return nil, err
 	}
 	devices := map[string]bool{}
+	deviceUsers := map[string]bool{}
+	senderPasswords := map[string]string{}
 	for _, name := range []string{"userid_password", "token_userdeviceid", "userdeviceid_refresh", "userdeviceid_metadata", "onetimekeyid4225_otk", "onetimekeyid_onetimekeys", "userdeviceidalgorithm_fallback", "senderkey_pusher"} {
 		err := walkTuwunelScan(ctx, filepath.Join(dir, name+".txt"), func(key string, value []byte, _ tuwunelValueRef) error {
 			user, _, ok := strings.Cut(key, "\xff")
 			switch name {
 			case "userid_password":
+				if candidates[key] && senders[key] {
+					senderPasswords[key] = string(value)
+				}
 				if candidates[key] && len(value) > 0 && string(value) != "*" {
 					protected[key] = true
 				}
@@ -80,6 +85,7 @@ func (im *Importer) FilterBridgeAccounts(ctx context.Context, users []*archive.U
 				switch name {
 				case "userdeviceid_metadata":
 					devices[key] = true
+					deviceUsers[user] = true
 				case "onetimekeyid4225_otk", "onetimekeyid_onetimekeys":
 					_, device, _, err := tuwunelDeviceKey(key)
 					if err != nil {
@@ -99,6 +105,23 @@ func (im *Importer) FilterBridgeAccounts(ctx context.Context, users []*archive.U
 			return nil, fmt.Errorf("classify archived appservice accounts: %w", err)
 		}
 	}
+	var invalidStatus []error
+	for user := range senders {
+		if !candidates[user] {
+			continue
+		}
+		if password, found := senderPasswords[user]; found && !deviceUsers[user] {
+			switch password {
+			case "":
+				im.deactivatedAppserviceSenders = append(im.deactivatedAppserviceSenders, user)
+			case "*":
+				invalidStatus = append(invalidStatus, fmt.Errorf("%s: registered appservice sender is active in the checkpoint but archived as deactivated; run repair-tuwunel-accounts with the original backup", user))
+			}
+		}
+	}
+	if len(invalidStatus) > 0 {
+		return nil, errors.Join(invalidStatus...)
+	}
 	im.protectedDeactivated = protected
 	ghostProtected := map[string]bool{}
 	for user := range protected {
@@ -109,7 +132,7 @@ func (im *Importer) FilterBridgeAccounts(ctx context.Context, users []*archive.U
 	}
 	var selected []*archive.User
 	for _, user := range users {
-		if !user.Deactivated || !isBridgeGhost(user.UserID, bridges, ghostProtected, im.Archive.Manifest.ServerName) || user.Admin || len(user.ExternalIDs) > 0 || len(user.Devices) > 0 || user.CrossSigning != nil || user.Dehydrated != nil || len(user.Verified) > 0 || len(user.Rooms) > 0 {
+		if !user.Deactivated || !isBridgeGhost(user.UserID, bridges, ghostProtected, im.Archive.Manifest.ServerName) || user.Admin || len(user.ExternalIDs) > 0 || len(user.Devices) > 0 || user.CrossSigning != nil || user.Dehydrated != nil || len(user.Verified) > 0 || len(user.Rooms) > 0 || len(user.AccountData) > 0 || len(user.PushRules) > 0 {
 			selected = append(selected, user)
 			continue
 		}

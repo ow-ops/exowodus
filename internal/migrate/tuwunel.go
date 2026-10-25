@@ -215,7 +215,8 @@ func (d *TuwunelDump) Secrets(userID string) (*archive.Secrets, error) {
 		if refresh && string(d.refresh[string(parts[0])+"\xff"+string(parts[1])]) != token {
 			continue
 		}
-		s.Tokens = append(s.Tokens, archive.Token{Token: token, DeviceID: string(parts[1]), Refresh: refresh})
+		// Native OIDC and client /refresh share Tuwunel's refresh-token store.
+		s.Tokens = append(s.Tokens, archive.Token{Token: token, DeviceID: string(parts[1]), Refresh: refresh, OAuth: refresh})
 	}
 	slices.SortFunc(s.Tokens, func(a, b archive.Token) int { return strings.Compare(a.Token, b.Token) })
 	if err := d.addDeviceData(userID, s); err != nil {

@@ -124,3 +124,34 @@ func TestTuwunelDumpBridgeRegistrationRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+func TestTuwunelBridgeUsersKeepCredentialsAndDevices(t *testing.T) {
+	const user = "@puppet_123:example.org"
+	for _, table := range []string{"userdeviceid_metadata", "onetimekeyid4225_otk", "onetimekeyid_onetimekeys", "userdeviceidalgorithm_fallback", "senderkey_pusher", "userdeviceid_refresh", "token_userdeviceid"} {
+		t.Run(table, func(t *testing.T) {
+			d := &TuwunelDump{
+				passwords: map[string][]byte{user: nil},
+				tokens:    map[string][]byte{}, refresh: map[string][]byte{},
+				maps: map[string]map[string][]byte{"id_appserviceregistrations": {"example-bridge": []byte(testBridgeRegistration)}},
+			}
+			switch table {
+			case "token_userdeviceid":
+				d.tokens["token"] = []byte(user + "\xffDEVICE")
+			case "userdeviceid_refresh":
+				d.refresh[user+"\xffDEVICE"] = []byte("refresh")
+			default:
+				d.maps[table] = map[string][]byte{user + "\xffDEVICE": []byte(`{}`)}
+			}
+			skipped, err := d.BridgeUsers(map[string]bool{user: true}, "example.org")
+			if err != nil || skipped[user] {
+				t.Fatalf("account with %s was filtered: skipped=%v err=%v", table, skipped, err)
+			}
+		})
+	}
+	registration := strings.ReplaceAll(testBridgeRegistration, "sender_localpart: puppet_bot", "sender_localpart: unrelated_bot")
+	d := &TuwunelDump{passwords: map[string][]byte{"@unrelated_bot:example.org": nil}, maps: map[string]map[string][]byte{"id_appserviceregistrations": {"example-bridge": []byte(registration)}}}
+	skipped, err := d.BridgeUsers(map[string]bool{"@unrelated_bot:example.org": true}, "example.org")
+	if err != nil || skipped["@unrelated_bot:example.org"] {
+		t.Fatalf("bridge sender was filtered: skipped=%v err=%v", skipped, err)
+	}
+}

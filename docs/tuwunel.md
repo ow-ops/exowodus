@@ -69,6 +69,8 @@ Whole-server export skips bridge ghosts identified by exclusive namespaces in
 data, bridge bots and admins are kept. Import restores the registrations on the
 same server name. Back up each bridge's database and configuration separately.
 Registrations loaded only from Tuwunel's configuration are absent from this scan.
+Queued device messages from local bridge users are sent through their owning
+appservice; remote senders' messages are delivered by the proxy.
 
 For an existing dump, extract this table from the same database backup:
 
@@ -221,6 +223,10 @@ database backup used for the dump**:
 exodus repair-tuwunel-accounts --archive ./exodus-archive \
   --database /backup/tuwunel --ldb /path/to/ldb
 ```
+
+For a registered bridge bot with no devices, add `--include-appservice-senders`
+only if it should be active. Tuwunel uses empty passwords for both bridge bots
+and deactivated accounts.
 
 Stop export and import commands first. Recovery reads the backup without
 changing it and checks passwords, tokens, devices and signing data against

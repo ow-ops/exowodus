@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,6 +16,9 @@ func TestIncompleteExportCannotImport(t *testing.T) {
 	a, err := Create(t.TempDir(), "example.org")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if err := a.CheckExport(); err == nil {
+		t.Fatal("export without a completion report accepted")
 	}
 	if err := a.BeginExport(); err != nil {
 		t.Fatal(err)
@@ -33,6 +37,25 @@ func TestIncompleteExportCannotImport(t *testing.T) {
 	}
 	if err := a.CheckExport(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLegacyExportWithoutReport(t *testing.T) {
+	for v := 1; v <= version; v++ {
+		t.Run(fmt.Sprint(v), func(t *testing.T) {
+			dir := t.TempDir()
+			if err := writeJSON(filepath.Join(dir, "manifest.json"), Manifest{Version: v, ServerName: "example.org"}); err != nil {
+				t.Fatal(err)
+			}
+			a, err := Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = a.CheckExport()
+			if (err == nil) != (v == 1) {
+				t.Fatalf("version %d missing report: %v", v, err)
+			}
+		})
 	}
 }
 
@@ -132,11 +155,62 @@ func TestArchiveVersionCompatibility(t *testing.T) {
 		if upgraded.Manifest.Version != version || !upgraded.Manifest.RequireLossless {
 			t.Fatalf("manifest=%+v", upgraded.Manifest)
 		}
+		if old == 1 {
+			if err := upgraded.CheckExport(); err != nil {
+				t.Fatalf("legacy PDU upgrade lost export status: %v", err)
+			}
+		}
 	}
 	if err := writeJSON(path, Manifest{Version: version + 1, ServerName: "example.org"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Open(dir); err == nil {
 		t.Fatal("future archive version accepted")
+	}
+}
+
+func TestLegacyExportUpgradePreservesCompletion(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		report *ExportReport
+	}{
+		{name: "missing legacy report"},
+		{name: "complete", report: &ExportReport{Complete: true}},
+		{name: "interrupted", report: &ExportReport{}},
+		{name: "failed", report: &ExportReport{Error: "media failed"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, err := Create(t.TempDir(), "example.org")
+			if err != nil {
+				t.Fatal(err)
+			}
+			a.Manifest.Version = 1
+			if err := writeJSON(filepath.Join(a.Dir, "manifest.json"), a.Manifest); err != nil {
+				t.Fatal(err)
+			}
+			if tc.report != nil {
+				if err := writeJSON(filepath.Join(a.Dir, "export-report.json"), tc.report); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := a.UpgradeFormat(); err != nil {
+				t.Fatal(err)
+			}
+			a, err = Open(a.Dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := ExportReport{Complete: true}
+			if tc.report != nil {
+				want = *tc.report
+			}
+			var got ExportReport
+			if err := readJSON(filepath.Join(a.Dir, "export-report.json"), &got); err != nil || !reflect.DeepEqual(got, want) {
+				t.Fatalf("report=%+v want=%+v err=%v", got, want, err)
+			}
+			if err := a.CheckExport(); (err == nil) != want.Complete {
+				t.Fatalf("export status changed: %v", err)
+			}
+		})
 	}
 }

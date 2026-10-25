@@ -3,6 +3,7 @@ package migrate
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -148,6 +149,19 @@ func registerAppserviceUser(ctx context.Context, c *mautrix.Client, userID strin
 	})
 	if err != nil && !mx.IsCode(err, "M_USER_IN_USE") {
 		return fmt.Errorf("register %s: %w", userID, err)
+	}
+	return nil
+}
+
+func registerNewAppserviceUser(ctx context.Context, c *mautrix.Client, userID string) error {
+	response, _, err := c.Register(ctx, &mautrix.ReqRegister[any]{
+		Type: mautrix.AuthTypeAppservice, Username: mx.Localpart(userID), InhibitLogin: true,
+	})
+	if err != nil {
+		return fmt.Errorf("register %s: %w", userID, err)
+	}
+	if response == nil || string(response.UserID) != userID {
+		return errors.New("appservice registration returned a different user")
 	}
 	return nil
 }

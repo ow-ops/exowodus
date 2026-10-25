@@ -43,7 +43,7 @@ var (
 	refreshPath     = regexp.MustCompile(`^/_matrix/client/(?:v1|v3)/refresh$`)
 	registerPath    = regexp.MustCompile(`^/_matrix/client/(?:r0|v3)/register$`)
 	tokenValidity   = regexp.MustCompile(`^/_matrix/client/v1/register/m\.login\.registration_token/validity$`)
-	oauthTokenPath  = regexp.MustCompile(`/oauth2/token$`)
+	oauthTokenPath  = regexp.MustCompile(`(?:/oauth2/token|^/_tuwunel/oidc/token)$`)
 	// Shadow-banned users' events and invites are silently dropped.
 	shadowSend   = regexp.MustCompile(`^/_matrix/client/(?:r0|v3)/rooms/[^/]+/(?:send|state)/`)
 	shadowIgnore = regexp.MustCompile(`^/_matrix/client/(?:r0|v3)/rooms/[^/]+/(?:invite|typing/[^/]+)$`)
@@ -386,8 +386,7 @@ func (p *Proxy) translateRegistrationToken(r *http.Request) {
 	}
 }
 
-// oauthRefresh answers refreshes sent to MAS's token endpoint. The refresh
-// token is returned unchanged so later refreshes keep working.
+// oauthRefresh handles MAS and native Tuwunel refreshes, keeping the refresh token.
 func (p *Proxy) oauthRefresh(w http.ResponseWriter, r *http.Request) bool {
 	body, err := readBody(r)
 	if err != nil {
@@ -398,7 +397,7 @@ func (p *Proxy) oauthRefresh(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	s, ok := p.sessions[form.Get("refresh_token")]
-	if !ok || !s.OAuth || !s.Refresh {
+	if !ok || !s.Refresh || !s.OAuth && r.URL.Path != "/_tuwunel/oidc/token" {
 		return false
 	}
 	writeJSON(w, map[string]any{
@@ -529,6 +528,10 @@ func (p *Proxy) interceptLogin(r *http.Request) {
 		slog.Error("password migration failed", "user", user, "err", err)
 		return
 	}
+	if err := p.archive.MarkPasswordRestored(pending.SourceUserID); err != nil {
+		slog.Error("could not save restored password", "user", user, "err", err)
+		return
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	delete(p.pending, user)
@@ -546,6 +549,13 @@ func (p *Proxy) setPassword(ctx context.Context, userID, password string) error 
 	}
 	c, err := mx.Login(ctx, p.upstream, mx.Localpart(userID), cred.Password)
 	if err != nil {
+		// A lost password-change response may leave the new password installed.
+		if mx.IsCode(err, "M_FORBIDDEN") {
+			if resumed, loginErr := mx.Login(ctx, p.upstream, mx.Localpart(userID), password); loginErr == nil {
+				_, logoutErr := resumed.Logout(context.WithoutCancel(ctx))
+				return logoutErr
+			}
+		}
 		return fmt.Errorf("log in with the generated password: %w", err)
 	}
 	defer func() { _, _ = c.Logout(context.WithoutCancel(ctx)) }()

@@ -164,6 +164,10 @@ func TestDepartedRoomInventory(t *testing.T) {
 func TestPusherFailureRetries(t *testing.T) {
 	attempts := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/whoami") {
+			_, _ = w.Write([]byte(`{"user_id":"@alice:example.org","device_id":"DEVICE"}`))
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/pushers/set") {
 			attempts++
 			if attempts == 1 {

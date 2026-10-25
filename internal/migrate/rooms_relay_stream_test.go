@@ -69,6 +69,56 @@ func TestRelayTimelineReadErrorsStopBeforeRequests(t *testing.T) {
 	}
 }
 
+func TestRelayBackfillRequiresCreateAndAllExportedEvents(t *testing.T) {
+	create := json.RawMessage(`{"event_id":"$create","type":"m.room.create","content":{}}`)
+	message := json.RawMessage(`{"event_id":"$message","type":"m.room.message","content":{"body":"original"}}`)
+	for _, tc := range []struct {
+		name    string
+		pages   [][]json.RawMessage
+		wantErr bool
+	}{
+		{"create before message", [][]json.RawMessage{{create}, {message}}, false},
+		{"message before create", [][]json.RawMessage{{message}, {create}}, false},
+		{"same page", [][]json.RawMessage{{create, message}}, false},
+		{"missing message", [][]json.RawMessage{{create}}, true},
+		{"missing create", [][]json.RawMessage{{message}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requests := 0
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				page := requests
+				requests++
+				if page >= len(tc.pages) {
+					t.Error("requested a page after pagination ended")
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				from := ""
+				if page > 0 {
+					from = fmt.Sprintf("page%d", page)
+				}
+				if r.URL.Query().Get("from") != from {
+					t.Error("pagination did not advance to the supplied token")
+				}
+				end := ""
+				if page+1 < len(tc.pages) {
+					end = fmt.Sprintf("page%d", page+1)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{"chunk": tc.pages[page], "end": end})
+			}))
+			defer api.Close()
+			_, err := backfillRoom(t.Context(), mx.MustNew(api.URL, "token"), "!room:example.org", []json.RawMessage{create, message})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("backfill error=%v", err)
+			}
+			if requests != len(tc.pages) {
+				t.Fatalf("stopped after %d of %d available pages", requests, len(tc.pages))
+			}
+		})
+	}
+}
+
 func TestRelayMalformedTimelineReleasesRoom(t *testing.T) {
 	a, rooms := relayFailureFixture(t)
 	room := rooms[0]

@@ -94,7 +94,7 @@ func TestBridgePuppetUsesItsOwnRegistration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &replay{im: &Importer{Bridges: []*Bridge{b}}, room: &archive.ArchivedRoom{Ghosts: []string{"@puppet_123:example.org"}}, puppets: map[string]bool{"@puppet_123:example.org": true}}
+	r := &replay{im: &Importer{Archive: &archive.Archive{Manifest: archive.Manifest{ServerName: "example.org"}}, Bridges: []*Bridge{b}}, room: &archive.ArchivedRoom{Ghosts: []string{"@puppet_123:example.org"}}, puppets: map[string]bool{"@puppet_123:example.org": true}}
 	if err := r.registerGhosts(t.Context()); err != nil {
 		t.Fatal(err)
 	}

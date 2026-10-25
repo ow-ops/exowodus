@@ -26,7 +26,12 @@ func (rl *Relay) keyResponse(server string) (*keyResponse, error) {
 	case rl.Name:
 		source, signer = rl.key.GenerateKeyResponse(server, nil), rl.key
 	case rl.origin:
-		source, signer = rl.originKey.GenerateKeyResponse(server, nil), rl.originKey
+		var err error
+		source, err = rl.sourceKeys()
+		if err != nil {
+			return nil, err
+		}
+		signer = rl.originKey
 	default:
 		var err error
 		source, err = (notaryKeys{rl}).LoadKeys(server)

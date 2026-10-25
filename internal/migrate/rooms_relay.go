@@ -9,6 +9,7 @@ import (
 	"iter"
 	"log/slog"
 	"maps"
+	"math"
 
 	"exodus/internal/archive"
 	"exodus/internal/relay"
@@ -102,6 +103,14 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 	owner, members := r.relayMembers()
 	if owner == "" {
 		return errors.New("no migrated member is in the room")
+	}
+	if !r.st.Done {
+		if err := rl.CheckEnter(room.RoomID, owner); err != nil {
+			return fmt.Errorf("cannot invite the relay as %s: %w", owner, err)
+		}
+		if _, err := r.relayHandOverContent(rl, owner, members); err != nil {
+			return err
+		}
 	}
 	if err := r.registerGhosts(ctx); err != nil {
 		return err
@@ -261,40 +270,80 @@ func originalEventFingerprint(raw json.RawMessage) ([sha256.Size]byte, error) {
 // Continuwuity backfills from it. On a new server name, the new accounts get
 // the old ones' levels.
 func (r *replay) relayHandOver(rl *relay.Relay, owner string, members []string) error {
+	content, err := r.relayHandOverContent(rl, owner, members)
+	if err != nil {
+		return err
+	}
 	roomID := r.room.RoomID
 	for _, m := range members {
 		if r.mapUser(m) == m {
 			continue
 		}
-		if err := rl.Author(roomID, m, "m.room.member", r.mapUser(m), map[string]any{"membership": "invite"}); err != nil {
+		if err := rl.Author(roomID, owner, "m.room.member", r.mapUser(m), map[string]any{"membership": "invite"}); err != nil {
 			return err
 		}
 	}
-	pl := rl.Content(roomID, "m.room.power_levels", "")
-	if pl == nil {
-		return nil
+	return rl.Author(roomID, owner, "m.room.power_levels", "", content)
+}
+
+func (r *replay) relayHandOverContent(rl *relay.Relay, owner string, members []string) (map[string]any, error) {
+	roomID := r.room.RoomID
+	for _, member := range members {
+		if r.mapUser(member) == member {
+			continue
+		}
+		if err := rl.CheckAuthor(roomID, owner, "m.room.member", r.mapUser(member), map[string]string{"membership": "invite"}); err != nil {
+			return nil, fmt.Errorf("cannot invite migrated member %s: %w", member, err)
+		}
 	}
+	pl := rl.Content(roomID, "m.room.power_levels", "")
 	content := maps.Clone(pl)
+	if content == nil {
+		content = map[string]any{}
+	}
 	users := map[string]any{}
 	if orig, ok := pl["users"].(map[string]any); ok {
 		maps.Copy(users, orig)
+	}
+	if pl == nil && !id.RoomVersion(r.room.Version).PrivilegedRoomCreators() {
+		users[r.final[relay.StateKey("m.room.create", "")].Sender] = 100
 	}
 	for _, m := range members {
 		if level, ok := users[m]; ok {
 			users[r.mapUser(m)] = level
 		}
 	}
-	users[rl.UserID()] = powerValue(pl["users_default"]) + 1
+	defaultLevel := powerValue(pl["users_default"])
+	if defaultLevel >= 1<<53-1 {
+		return nil, errors.New("cannot raise the relay above the room's default power level")
+	}
+	users[rl.UserID()] = defaultLevel + 1
 	content["users"] = users
-	return rl.Author(roomID, owner, "m.room.power_levels", "", content)
+	if err := rl.CheckAuthor(roomID, owner, "m.room.power_levels", "", content); err != nil {
+		return nil, fmt.Errorf("no migrated member can authorize relay backfill: %w", err)
+	}
+	return content, nil
 }
 
 // relayMembers returns the most powerful joined local member, and all of them.
 func (r *replay) relayMembers() (string, []string) {
-	pl, _ := decodeContent(r.final[relay.StateKey("m.room.power_levels", "")].Content)
+	powerEvent, hasPowerLevels := r.final[relay.StateKey("m.room.power_levels", "")]
+	pl, _ := decodeContent(powerEvent.Content)
 	users, _ := pl["users"].(map[string]any)
+	creators := map[string]bool{}
+	create := r.final[relay.StateKey("m.room.create", "")]
+	if r.room != nil && id.RoomVersion(r.room.Version).PrivilegedRoomCreators() {
+		creators[create.Sender] = true
+		content, _ := decodeContent(create.Content)
+		additional, _ := content["additional_creators"].([]any)
+		for _, user := range additional {
+			if userID, ok := user.(string); ok {
+				creators[userID] = true
+			}
+		}
+	}
 	var owner string
-	var ownerLevel int64 = -1
+	var ownerLevel int64 = math.MinInt64
 	var members []string
 	for _, ev := range r.final {
 		if ev.Type != "m.room.member" || membership(ev) != "join" || (!r.im.Migrated[*ev.StateKey] && !r.puppets[*ev.StateKey]) {
@@ -306,7 +355,12 @@ func (r *replay) relayMembers() (string, []string) {
 		if v, ok := users[userID]; ok {
 			level = powerValue(v)
 		}
-		if level > ownerLevel || level == ownerLevel && userID < owner {
+		if creators[userID] {
+			level = math.MaxInt64
+		} else if !hasPowerLevels && userID == create.Sender {
+			level = 100
+		}
+		if owner == "" || level > ownerLevel || level == ownerLevel && userID < owner {
 			owner, ownerLevel = userID, level
 		}
 	}
@@ -365,15 +419,17 @@ func backfillRoomEvents(ctx context.Context, c *mautrix.Client, roomID string, e
 	if len(missing) == 0 {
 		return 0, errors.New("room has no exported events")
 	}
-	count, complete, err := paginateBack(ctx, c, roomID, func(ev *event.Event) bool {
+	reachedCreate := false
+	count, _, err := paginateBack(ctx, c, roomID, func(ev *event.Event) bool {
 		delete(missing, string(ev.ID))
-		return ev.Type == event.StateCreate
+		reachedCreate = reachedCreate || ev.Type == event.StateCreate
+		return reachedCreate && len(missing) == 0
 	})
 	if err != nil {
 		return count, err
 	}
-	if !complete || len(missing) > 0 {
-		return count, fmt.Errorf("incomplete backfill: reached create event: %t, %d exported events missing", complete, len(missing))
+	if !reachedCreate || len(missing) > 0 {
+		return count, fmt.Errorf("incomplete backfill: reached create event: %t, %d exported events missing", reachedCreate, len(missing))
 	}
 	return count, nil
 }

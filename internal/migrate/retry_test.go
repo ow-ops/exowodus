@@ -16,6 +16,10 @@ func TestDeviceUploadFailureRetries(t *testing.T) {
 	uploads := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/whoami") {
+			_, _ = w.Write([]byte(`{"user_id":"@alice:example.org","device_id":"DEVICE"}`))
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/login") {
 			_, _ = w.Write([]byte(`{"access_token":"dest-token","user_id":"@alice:example.org","device_id":"DEVICE"}`))
 			return

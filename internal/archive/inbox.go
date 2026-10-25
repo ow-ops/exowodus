@@ -59,9 +59,19 @@ func (a *Archive) UpgradeFormat() error {
 	if a.Manifest.Version >= version {
 		return nil
 	}
+	if a.Manifest.Version == 1 {
+		path := filepath.Join(a.Dir, "export-report.json")
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			if err := writeJSONFile(path, ExportReport{Complete: true}, true); err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		}
+	}
 	manifest := a.Manifest
 	manifest.Version = version
-	if err := writeJSON(filepath.Join(a.Dir, "manifest.json"), manifest); err != nil {
+	if err := writeJSONFile(filepath.Join(a.Dir, "manifest.json"), manifest, true); err != nil {
 		return err
 	}
 	a.Manifest = manifest

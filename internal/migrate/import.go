@@ -44,14 +44,15 @@ type Importer struct {
 	Appservice *Appservice
 	Bridges    []*Bridge
 
-	sessions             map[string]destAccount
-	media                map[string]string
-	rooms                map[string]string
-	roomFailures         map[string]bool
-	archiveOnlyRooms     map[string]bool
-	bridgeAccounts       []string
-	protectedDeactivated map[string]bool
-	outboxSummary        *outbox.Summary
+	sessions                     map[string]destAccount
+	media                        map[string]string
+	rooms                        map[string]string
+	roomFailures                 map[string]bool
+	archiveOnlyRooms             map[string]bool
+	bridgeAccounts               []string
+	deactivatedAppserviceSenders []string
+	protectedDeactivated         map[string]bool
+	outboxSummary                *outbox.Summary
 	// oldSessions and pending are loaded lazily.
 	oldSessions map[string]archive.Session
 	pending     map[string]archive.PendingPassword
@@ -120,11 +121,18 @@ func (j *UserJob) sameServer() bool {
 
 // PrepareUser imports what does not depend on rooms.
 func (im *Importer) PrepareUser(ctx context.Context, u *archive.User) (*UserJob, error) {
-	acct, err := im.destSession(ctx, u)
+	state, err := im.Archive.ReadImportState(u.UserID)
 	if err != nil {
 		return nil, err
 	}
-	state, err := im.Archive.ReadImportState(u.UserID)
+	if state.Status && (u.Deactivated || u.Locked || u.Suspended) {
+		if state.DestUserID == "" {
+			return nil, errors.New("completed account status has no destination user")
+		}
+		im.addMedia(state.Media)
+		return &UserJob{User: u, Report: &Report{SourceUserID: u.UserID, DestUserID: state.DestUserID, AdminGranted: state.Admin}, acct: destAccount{id: state.DestUserID}, state: state}, nil
+	}
+	acct, err := im.destSession(ctx, u)
 	if err != nil {
 		return nil, err
 	}
@@ -226,8 +234,14 @@ func (im *Importer) PrepareUser(ctx context.Context, u *archive.User) (*UserJob,
 		}
 	}
 	if secrets != nil && secrets.PasswordHash != "" && acct.generated {
-		if err := im.addPendingPassword(acct.id, archive.PendingPassword{SourceUserID: u.UserID, Hash: secrets.PasswordHash, Scheme: secrets.PasswordScheme, Version: secrets.PasswordVersion}); err != nil {
+		restored, err := im.Archive.PasswordRestored(u.UserID)
+		if err != nil {
 			return nil, err
+		}
+		if !restored {
+			if err := im.addPendingPassword(acct.id, archive.PendingPassword{SourceUserID: u.UserID, Hash: secrets.PasswordHash, Scheme: secrets.PasswordScheme, Version: secrets.PasswordVersion}); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return job, save()
@@ -242,7 +256,9 @@ func (im *Importer) importDevices(ctx context.Context, job *UserJob, secrets *ar
 			return err
 		}
 	}
-	devices := slices.Clone(job.User.Devices)
+	devices := slices.DeleteFunc(slices.Clone(job.User.Devices), func(d archive.Device) bool {
+		return job.User.Dehydrated != nil && job.User.Dehydrated.DeviceID == d.ID
+	})
 	if secrets != nil {
 		// Devices hidden from the device list (guests') are known from their tokens.
 		ids := slices.Clone(secrets.Devices)
@@ -259,10 +275,23 @@ func (im *Importer) importDevices(ctx context.Context, job *UserJob, secrets *ar
 		}
 	}
 	for _, d := range devices {
-		if job.state.Devices[d.ID] {
-			continue
-		}
 		token := job.state.DeviceTokens[d.ID]
+		if job.state.Devices[d.ID] && token == "" {
+			return fmt.Errorf("completed device %s/%s has no destination token", job.User.UserID, d.ID)
+		}
+		if token != "" {
+			who, err := mx.WithToken(im.Dest, token).Whoami(ctx)
+			if err == nil && (string(who.UserID) != job.acct.id || string(who.DeviceID) != d.ID) {
+				return errors.New("saved device session belongs to a different user or device")
+			}
+			if err != nil {
+				if !mx.IsCode(err, "M_UNKNOWN_TOKEN") {
+					return err
+				}
+				token = ""
+				job.state.Devices[d.ID] = false
+			}
+		}
 		if token == "" {
 			var err error
 			token, err = im.Appservice.Login(ctx, job.acct.id, d.ID, d.DisplayName)
@@ -288,7 +317,7 @@ func (im *Importer) importDevices(ctx context.Context, job *UserJob, secrets *ar
 				body["fallback_keys"] = fallback
 			}
 		}
-		if len(body) > 0 {
+		if len(body) > 0 && !job.state.Devices[d.ID] {
 			c := mx.WithToken(im.Dest, token)
 			if _, err := c.MakeRequest(ctx, http.MethodPost, c.BuildClientURL("v3", "keys", "upload"), body, nil); err != nil {
 				job.Report.fail("device_keys", d.ID, err)
@@ -328,8 +357,12 @@ func (im *Importer) addPendingPassword(destID string, p archive.PendingPassword)
 }
 
 func (im *Importer) Close(ctx context.Context) {
-	for _, a := range im.sessions {
+	for sourceUser, a := range im.sessions {
 		if !a.ephemeral {
+			continue
+		}
+		migration, err := im.Archive.ReadMigrationSession(sourceUser)
+		if err != nil || migration.DeviceID == "" || migration.DeviceID != string(a.client.DeviceID) || migration.Token != a.client.AccessToken {
 			continue
 		}
 		if _, err := a.client.Logout(ctx); err != nil {
@@ -342,6 +375,9 @@ func (im *Importer) Close(ctx context.Context) {
 func (im *Importer) FinishUser(ctx context.Context, job *UserJob, src *Session) (*Report, error) {
 	u, acct, state, rep := job.User, job.acct, job.state, job.Report
 	save := func() error { return job.save(im.Archive) }
+	if state.Status && (u.Deactivated || u.Locked || u.Suspended) {
+		return rep, nil
+	}
 	if u.Deactivated {
 		return rep, writeReport(im.Archive.UserDir(u.UserID), rep)
 	}
@@ -810,9 +846,6 @@ func (im *Importer) destSession(ctx context.Context, u *archive.User) (destAccou
 
 // login also returns the account's password, when known.
 func (im *Importer) login(ctx context.Context, u *archive.User) (*mautrix.Client, string, error) {
-	if u.Guest || u.Passwordless || u.Deactivated && im.DeactivatedIDOnly {
-		return im.guestLogin(ctx, u)
-	}
 	if im.DestToken != "" {
 		c := mx.WithToken(im.Dest, im.DestToken)
 		who, err := c.Whoami(ctx)
@@ -821,6 +854,41 @@ func (im *Importer) login(ctx context.Context, u *archive.User) (*mautrix.Client
 		}
 		c.UserID, c.DeviceID = who.UserID, who.DeviceID
 		return c, "", nil
+	}
+	migration, err := im.migrationSession(u)
+	if err != nil {
+		return nil, "", err
+	}
+	if migration.Legacy {
+		c, password, err := im.resumeLegacyPassword(ctx, u, migration)
+		if err != nil || c != nil {
+			return c, password, err
+		}
+	}
+	if migration.Token != "" {
+		c := mx.WithToken(im.Dest, migration.Token)
+		who, err := c.Whoami(ctx)
+		if err == nil {
+			if string(who.UserID) != migration.UserID || string(who.DeviceID) != migration.DeviceID {
+				return nil, "", errors.New("migration session belongs to a different user or device")
+			}
+			c.UserID, c.DeviceID = who.UserID, who.DeviceID
+			password := im.DestPassword
+			if password == "" && !u.Passwordless && !u.Guest {
+				credentials, err := im.Archive.Credentials()
+				if err != nil {
+					return nil, "", err
+				}
+				password = credentials[u.UserID].Password
+			}
+			return c, password, nil
+		}
+		if !mx.IsCode(err, "M_UNKNOWN_TOKEN") {
+			return nil, "", err
+		}
+	}
+	if u.Guest || u.Passwordless || u.Deactivated && im.DeactivatedIDOnly || migration.Owned && im.Appservice != nil {
+		return im.guestLoginSession(ctx, u, migration)
 	}
 
 	localpart := mx.Localpart(u.UserID)
@@ -833,9 +901,9 @@ func (im *Importer) login(ctx context.Context, u *archive.User) (*mautrix.Client
 		password = creds[u.UserID].Password
 	}
 	if password != "" {
-		c, err := mx.Login(ctx, im.Dest, localpart, password)
+		c, err := mx.LoginDevice(ctx, im.Dest, localpart, password, migration.DeviceID)
 		if err == nil {
-			return c, password, nil
+			return im.saveMigrationSession(u, migration, c, password)
 		}
 		if status := mx.Status(err); status == 0 || status >= 500 {
 			return nil, "", err
@@ -845,39 +913,47 @@ func (im *Importer) login(ctx context.Context, u *archive.User) (*mautrix.Client
 	generated := password == ""
 	if generated {
 		password = rand.Text()
+		cred := archive.Credential{SourceUserID: u.UserID, Password: password}
+		if err := im.Archive.AddCredential(cred); err != nil {
+			return nil, "", err
+		}
 	}
-	c, err := mx.Register(ctx, im.Dest, localpart, password, im.RegistrationToken)
+	c, err := mx.RegisterDevice(ctx, im.Dest, localpart, password, im.RegistrationToken, migration.DeviceID)
 	if mx.IsCode(err, "M_USER_IN_USE") {
 		return nil, "", fmt.Errorf("%s already exists on the destination; pass its password or access token", localpart)
 	}
 	if err != nil {
 		return nil, "", err
 	}
-	if generated {
-		cred := archive.Credential{SourceUserID: u.UserID, DestUserID: string(c.UserID), Password: password}
-		if err := im.Archive.AddCredential(cred); err != nil {
-			return nil, "", err
-		}
-	}
-	return c, password, nil
+	return im.saveMigrationSession(u, migration, c, password)
 }
 
-// guestLogin preserves passwordless accounts through appservice registration.
-func (im *Importer) guestLogin(ctx context.Context, u *archive.User) (*mautrix.Client, string, error) {
+func (im *Importer) guestLoginSession(ctx context.Context, u *archive.User, migration *archive.MigrationSession) (*mautrix.Client, string, error) {
 	if im.Appservice == nil {
 		return nil, "", errors.New("passwordless accounts require --to-admin-token")
 	}
 	userID := mx.WithServer(u.UserID, mx.ServerName(im.Appservice.Bot))
-	if err := im.Appservice.Register(ctx, userID); err != nil {
-		return nil, "", fmt.Errorf("recreate passwordless account %s: %w", u.UserID, err)
+	if !migration.Owned {
+		if err := registerNewAppserviceUser(ctx, im.Appservice.client, userID); err != nil {
+			if mx.IsCode(err, "M_USER_IN_USE") {
+				return nil, "", fmt.Errorf("%s already exists without an authenticated import checkpoint; refusing to take ownership", userID)
+			}
+			return nil, "", fmt.Errorf("recreate passwordless account %s: %w", u.UserID, err)
+		}
+		migration.UserID, migration.Owned = userID, true
+		if err := im.Archive.WriteMigrationSession(u.UserID, migration); err != nil {
+			return nil, "", err
+		}
+	} else if migration.UserID != userID {
+		return nil, "", errors.New("migration account belongs to a different destination")
 	}
-	token, err := im.Appservice.Login(ctx, userID, "EXODUS", "exodus")
+	token, err := im.Appservice.Login(ctx, userID, migration.DeviceID, "exodus")
 	if err != nil {
 		return nil, "", err
 	}
 	c := mx.WithToken(im.Dest, token)
-	c.UserID, c.DeviceID = id.UserID(userID), "EXODUS"
-	return c, "", nil
+	c.UserID, c.DeviceID = id.UserID(userID), id.DeviceID(migration.DeviceID)
+	return im.saveMigrationSession(u, migration, c, "")
 }
 
 func importProfile(ctx context.Context, dest *mautrix.Client, u *archive.User, state *archive.ImportState, rep *Report) {

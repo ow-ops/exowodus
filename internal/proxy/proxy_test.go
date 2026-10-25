@@ -123,6 +123,9 @@ func TestTuwunelLoginsThroughProxy(t *testing.T) {
 		if err != nil || len(pending) != 0 {
 			t.Fatal("password restoration was not saved")
 		}
+		if restored, err := a.PasswordRestored(user); err != nil || !restored {
+			t.Fatal("password restoration marker missing")
+		}
 	}
 }
 
@@ -244,5 +247,66 @@ func TestOAuthRefresh(t *testing.T) {
 	do(p, http.MethodPost, "/oauth2/token", "", "grant_type=refresh_token&refresh_token=unknown")
 	if len(up.paths) != 1 {
 		t.Fatal("unknown refresh tokens must be forwarded")
+	}
+}
+
+func TestNativeTuwunelOIDCRefresh(t *testing.T) {
+	for _, oauth := range []bool{false, true} {
+		t.Run(fmt.Sprintf("oauth=%t", oauth), func(t *testing.T) {
+			p, upstream := newTestProxy(t)
+			p.sessions["native-refresh"] = archive.Session{UserID: "@alice:example.org", DeviceID: "PHONE", Token: "destination-access", Refresh: true, OAuth: oauth}
+			response := do(p, http.MethodPost, "/_tuwunel/oidc/token", "", "grant_type=refresh_token&refresh_token=native-refresh&client_id=existing-client")
+			var body struct {
+				AccessToken  string `json:"access_token"`
+				RefreshToken string `json:"refresh_token"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || body.AccessToken != "destination-access" || body.RefreshToken != "native-refresh" || len(upstream.paths) != 0 {
+				t.Fatalf("native refresh: %s, upstream %v", response.Body, upstream.paths)
+			}
+			for _, request := range []string{"grant_type=refresh_token&refresh_token=unknown", "grant_type=authorization_code&code=code", "grant_type=refresh_token&refresh_token=access"} {
+				p.sessions["access"] = archive.Session{Token: "access", OAuth: true}
+				do(p, http.MethodPost, "/_tuwunel/oidc/token", "", request)
+			}
+			if len(upstream.paths) != 3 {
+				t.Fatal("unsupported or unknown OAuth credentials were intercepted")
+			}
+		})
+	}
+}
+
+func TestPasswordRestorationResponseLoss(t *testing.T) {
+	const user = "@alice:example.org"
+	var attempts, logouts int
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/login"):
+			attempts++
+			var body struct {
+				Password string `json:"password"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+			}
+			if body.Password != "restored" {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"errcode":"M_FORBIDDEN"}`))
+				return
+			}
+			fmt.Fprintf(w, `{"user_id":%q,"device_id":"TEMPORARY","access_token":"temporary"}`, user)
+		case strings.HasSuffix(r.URL.Path, "/logout"):
+			logouts++
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			t.Error("already restored password was changed again")
+		}
+	}))
+	defer api.Close()
+	p := &Proxy{upstream: mx.MustNew(api.URL, ""), creds: map[string]archive.Credential{user: {Password: "generated"}}}
+	if err := p.setPassword(t.Context(), user, "restored"); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 || logouts != 1 {
+		t.Fatalf("attempts=%d logouts=%d", attempts, logouts)
 	}
 }

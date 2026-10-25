@@ -27,6 +27,15 @@ func (im *Importer) VerifySessions(ctx context.Context, users []*archive.User) [
 		if user.Deactivated && im.DeactivatedIDOnly {
 			continue
 		}
+		finalized := false
+		if user.Locked || user.Suspended {
+			state, err := im.Archive.ReadImportState(user.UserID)
+			if err != nil {
+				failures = append(failures, Failure{Step: "sessions", Target: user.UserID, Error: err.Error()})
+				continue
+			}
+			finalized = state.Status && state.DestUserID == user.UserID
+		}
 		secrets, err := im.Archive.ReadSecrets(user.UserID)
 		if err != nil || secrets == nil {
 			failures = append(failures, Failure{Step: "sessions", Target: user.UserID, Error: "source login data unavailable"})
@@ -37,6 +46,11 @@ func (im *Importer) VerifySessions(ctx context.Context, users []*archive.User) [
 			target := user.UserID + "/" + token.DeviceID
 			if !ok || session.UserID != user.UserID || session.DeviceID != token.DeviceID || session.Refresh != token.Refresh || session.Token == "" {
 				failures = append(failures, Failure{Step: "sessions", Target: target, Error: "source token has no matching proxy session"})
+				continue
+			}
+			if finalized {
+				// Status is applied only after these sessions were verified. Locked
+				// and suspended accounts can no longer authenticate to whoami.
 				continue
 			}
 			key := target + "\x00" + session.Token

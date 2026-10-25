@@ -58,7 +58,7 @@ func TestTuwunelDumpSessions(t *testing.T) {
 		t.Fatalf("secrets = %+v", s)
 	}
 	for _, tok := range s.Tokens {
-		if tok.DeviceID != "PHONE" || tok.Refresh != (tok.Token == "refresh_live") {
+		if tok.DeviceID != "PHONE" || tok.Refresh != (tok.Token == "refresh_live") || tok.OAuth != tok.Refresh {
 			t.Fatalf("token = %+v", tok)
 		}
 	}
@@ -215,6 +215,9 @@ func TestTuwunelDumpDeviceAndServerData(t *testing.T) {
 	defer destination.Close()
 	im := &Importer{Archive: a, Admin: &ContinuwuityAdmin{bot: "@conduit:example.org"}, Appservice: &Appservice{client: mx.MustNew(destination.URL, "as-token")}, Migrated: map[string]bool{user: true}}
 	state := &archive.ServerImportState{ToDevice: map[string]bool{}}
+	if err := a.WriteImportState(user, &archive.ImportState{DestUserID: user, Devices: map[string]bool{device: true}}); err != nil {
+		t.Fatal(err)
+	}
 	var failures []Failure
 	im.deliverToDevice(t.Context(), server.ToDevice, state, &failures)
 	im.deliverToDevice(t.Context(), server.ToDevice, state, &failures)

@@ -297,6 +297,18 @@ func mediaFile(server, mediaID string) string {
 
 // ExportDeactivated keeps the user ID reserved on the destination.
 func (e *Exporter) ExportDeactivated(userID string) (*archive.User, error) {
+	previous, err := e.Archive.ReadUser(userID)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	if err == nil {
+		if previous.UserID != userID {
+			return nil, errors.New("archived account contains the wrong user")
+		}
+		if previous.Passwordless && !previous.Deactivated {
+			return previous, nil
+		}
+	}
 	u := &archive.User{UserID: userID, Deactivated: true, AccountData: map[string]json.RawMessage{}}
 	return u, e.Archive.WriteUser(u)
 }

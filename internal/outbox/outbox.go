@@ -12,10 +12,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"go.mau.fi/util/jsontime"
 	"maunium.net/go/mautrix/federation"
+	"maunium.net/go/mautrix/id"
 	_ "modernc.org/sqlite"
 )
 
@@ -118,6 +120,7 @@ func Enqueue(ctx context.Context, tx *sql.Tx, destination, kind, eventID string,
 type Batch struct {
 	Request federation.ReqSendTransaction
 	entries []int64
+	pduIDs  []id.EventID
 }
 
 // Next saves the transaction before sending, so a lost response reuses its ID.
@@ -140,28 +143,29 @@ func (s *Store) Next(ctx context.Context, origin string, now time.Time) (*Batch,
 			return nil, err
 		}
 		b.Request.TxnID = txnID.String
-		return b, nil
+		return b, s.loadPDUEventIDs(ctx, b)
 	}
 	b.Request = federation.ReqSendTransaction{Destination: destination, Origin: origin, OriginServerTS: jsontime.UM(now), PDUs: []federation.PDU{}}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,kind,payload FROM deliveries WHERE destination=? ORDER BY kind DESC,id LIMIT 50`, destination)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,kind,event_id,payload FROM deliveries WHERE destination=? ORDER BY kind DESC,id LIMIT 50`, destination)
 	if err != nil {
 		return nil, err
 	}
 	size := 0
 	for rows.Next() {
-		var id int64
-		var kind string
+		var entryID int64
+		var kind, eventID string
 		var payload []byte
-		if err := rows.Scan(&id, &kind, &payload); err != nil {
+		if err := rows.Scan(&entryID, &kind, &eventID, &payload); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		if size+len(payload) > 512<<10 && len(b.entries) > 0 {
 			break
 		}
-		b.entries = append(b.entries, id)
+		b.entries = append(b.entries, entryID)
 		size += len(payload)
 		if kind == "PDU" {
+			b.pduIDs = append(b.pduIDs, id.EventID(eventID))
 			b.Request.PDUs = append(b.Request.PDUs, json.RawMessage(payload))
 		} else {
 			b.Request.EDUs = append(b.Request.EDUs, json.RawMessage(payload))
@@ -185,6 +189,36 @@ func (s *Store) Next(ctx context.Context, origin string, now time.Time) (*Batch,
 	}
 	_, err = s.db.ExecContext(ctx, `UPDATE destinations SET transaction_id=?,request=?,entries=? WHERE name=?`, b.Request.TxnID, request, string(ids), destination)
 	return b, err
+}
+
+func (s *Store) loadPDUEventIDs(ctx context.Context, b *Batch) error {
+	if len(b.entries) == 0 {
+		return errors.New("pending federation transaction has no queue entries")
+	}
+	args := make([]any, len(b.entries))
+	for i, entry := range b.entries {
+		args[i] = entry
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")
+	rows, err := s.db.QueryContext(ctx, `SELECT event_id FROM deliveries WHERE kind='PDU' AND id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var eventID id.EventID
+		if err := rows.Scan(&eventID); err != nil {
+			return err
+		}
+		b.pduIDs = append(b.pduIDs, eventID)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(b.pduIDs) != len(b.Request.PDUs) {
+		return errors.New("pending federation transaction no longer matches its queued PDUs")
+	}
+	return nil
 }
 
 func (s *Store) Acknowledge(ctx context.Context, b *Batch) error {
@@ -243,6 +277,13 @@ func (s *Store) Deliver(ctx context.Context, origin string, sender Sender) (bool
 		if response == nil {
 			sendErr = errors.New("empty federation response")
 		} else {
+			for _, eventID := range b.pduIDs {
+				if _, ok := response.PDUs[eventID]; !ok {
+					sendErr = fmt.Errorf("event %s: missing federation acknowledgement", eventID)
+					rejected = true
+					break
+				}
+			}
 			for event, result := range response.PDUs {
 				if result.Error != "" {
 					sendErr = fmt.Errorf("event %s: %s", event, result.Error)

@@ -16,6 +16,7 @@ import (
 	"exodus/internal/archive"
 	"exodus/internal/mx"
 
+	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
@@ -142,6 +143,9 @@ func (im *Importer) ImportServer(ctx context.Context) ([]string, []Failure) {
 	for _, user := range im.bridgeAccounts {
 		notes = append(notes, "Appservice account "+user+" retained with its bridge registration.")
 	}
+	for _, user := range im.deactivatedAppserviceSenders {
+		notes = append(notes, "Bridge bot "+user+" remains deactivated (--deactivated-id-only). To restore it as active, run repair-tuwunel-accounts --include-appservice-senders before importing it.")
+	}
 	if im.DeactivatedIDOnly {
 		notes = append(notes, "Deactivated accounts were recreated with their IDs and deactivated status only (--deactivated-id-only).")
 	}
@@ -267,6 +271,7 @@ func (im *Importer) deliverToDevice(ctx context.Context, msgs []archive.ToDevice
 	}
 	local := func(userID string) bool { return mx.ServerName(userID) == server }
 	var remote int
+	devices := map[string]map[string]bool{}
 	for _, m := range msgs {
 		if state.ToDevice[m.Key] {
 			continue
@@ -279,14 +284,31 @@ func (im *Importer) deliverToDevice(ctx context.Context, msgs []archive.ToDevice
 			remote++
 			continue
 		}
-		if im.Appservice == nil {
-			*failures = append(*failures, Failure{Step: "to_device", Target: m.Key, Error: "the exodus appservice is not registered"})
+		if local(m.Recipient) && !im.Migrated[m.Recipient] {
+			*failures = append(*failures, Failure{Step: "to_device", Target: m.Key, Error: "recipient account was not restored"})
 			continue
 		}
-		if !im.Migrated[m.Sender] || local(m.Recipient) && !im.Migrated[m.Recipient] {
+		if local(m.Recipient) {
+			ready, ok := devices[m.Recipient]
+			if !ok {
+				var err error
+				ready, err = im.restoredRecipientDevices(m.Recipient)
+				if err != nil {
+					*failures = append(*failures, Failure{Step: "to_device", Target: m.Key, Error: err.Error()})
+					continue
+				}
+				devices[m.Recipient] = ready
+			}
+			if !ready[m.DeviceID] {
+				*failures = append(*failures, Failure{Step: "to_device", Target: m.Key, Error: "recipient device has not been restored; message retained for retry"})
+				continue
+			}
+		}
+		c, err := im.toDeviceSender(ctx, m.Sender)
+		if err != nil {
+			*failures = append(*failures, Failure{Step: "to_device", Target: m.Key, Error: err.Error()})
 			continue
 		}
-		c := im.Appservice.As(m.Sender)
 		body := map[string]any{"messages": map[string]map[string]json.RawMessage{m.Recipient: {m.DeviceID: m.Content}}}
 		if _, err := c.MakeRequest(ctx, http.MethodPut, c.BuildClientURL("v3", "sendToDevice", m.Type, txnID(m.Key)), body, nil); err != nil {
 			*failures = append(*failures, Failure{Step: "to_device", Target: m.Key, Error: err.Error()})
@@ -305,6 +327,51 @@ func (im *Importer) deliverToDevice(ctx context.Context, msgs []archive.ToDevice
 		return []string{fmt.Sprintf("%d queued to-device messages from remote senders retained for delivery by exodus proxy", remote)}
 	}
 	return nil
+}
+
+func (im *Importer) restoredRecipientDevices(userID string) (map[string]bool, error) {
+	state, err := im.Archive.ReadImportState(userID)
+	if err != nil {
+		return nil, err
+	}
+	if state.DestUserID != userID {
+		return nil, fmt.Errorf("recipient %s has no matching imported account", userID)
+	}
+	devices := maps.Clone(state.Devices)
+	if state.Dehydrated {
+		u, err := im.Archive.ReadUser(userID)
+		if err != nil {
+			return nil, err
+		}
+		if u.Dehydrated != nil {
+			if devices == nil {
+				devices = map[string]bool{}
+			}
+			devices[u.Dehydrated.DeviceID] = true
+		}
+	}
+	return devices, nil
+}
+
+func (im *Importer) toDeviceSender(ctx context.Context, userID string) (*mautrix.Client, error) {
+	if b := im.bridgeFor(userID); b != nil {
+		if b.client == nil {
+			return nil, fmt.Errorf("appservice %s is not connected to the destination", b.ID)
+		}
+		if !im.Migrated[userID] {
+			if err := registerAppserviceUser(ctx, b.client, userID); err != nil {
+				return nil, err
+			}
+		}
+		return mx.As(b.client, userID), nil
+	}
+	if !im.Migrated[userID] {
+		return nil, fmt.Errorf("sender %s was not restored and has no registered appservice", userID)
+	}
+	if im.Appservice == nil {
+		return nil, errors.New("the exodus appservice is not registered")
+	}
+	return im.Appservice.As(userID), nil
 }
 
 // Continuwuity's limit, in bytes.

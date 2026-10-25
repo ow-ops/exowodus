@@ -11,10 +11,12 @@ import (
 	"fmt"
 	"io/fs"
 	"iter"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"time"
 )
 
@@ -326,7 +328,7 @@ func (a *Archive) ReadImportState(userID string) (*ImportState, error) {
 }
 
 func (a *Archive) WriteImportState(userID string, s *ImportState) error {
-	return writeJSON(filepath.Join(a.UserDir(userID), "import.json"), s)
+	return writeJSONFile(filepath.Join(a.UserDir(userID), "import.json"), s, true)
 }
 
 func (a *Archive) WriteKeyBackup(userID string, kb *KeyBackup) error {
@@ -493,11 +495,8 @@ func (a *Archive) RoomEventsIter(roomID string) iter.Seq2[json.RawMessage, error
 }
 
 func (a *Archive) WriteRoomPDUs(roomID string, pdus any) error {
-	if a.Manifest.Version < version {
-		a.Manifest.Version = version
-		if err := writeJSON(filepath.Join(a.Dir, "manifest.json"), a.Manifest); err != nil {
-			return err
-		}
+	if err := a.UpgradeFormat(); err != nil {
+		return err
 	}
 	return writeJSON(filepath.Join(a.RoomDir(roomID), "pdus.json"), pdus)
 }
@@ -581,7 +580,7 @@ func (a *Archive) Sessions() (map[string]Session, error) {
 }
 
 func (a *Archive) WriteSessions(m map[string]Session) error {
-	return writeJSON(filepath.Join(a.Dir, "sessions.json"), m)
+	return writeJSONFile(filepath.Join(a.Dir, "sessions.json"), m, true)
 }
 
 // PendingPasswords is keyed by destination user ID.
@@ -591,7 +590,7 @@ func (a *Archive) PendingPasswords() (map[string]PendingPassword, error) {
 }
 
 func (a *Archive) WritePendingPasswords(m map[string]PendingPassword) error {
-	return writeJSON(filepath.Join(a.Dir, "passwords.json"), m)
+	return writeJSONFile(filepath.Join(a.Dir, "passwords.json"), m, true)
 }
 
 func readOptionalJSON(path string, v any) error {
@@ -718,23 +717,36 @@ func (a *Archive) Credentials() (map[string]Credential, error) {
 }
 
 func (a *Archive) AddCredential(c Credential) error {
-	path := a.CredentialsPath()
-	_, statErr := os.Stat(path)
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	lock, err := a.lockProxyFile("credentials.lock")
 	if err != nil {
 		return err
 	}
-	w := csv.NewWriter(f)
-	if errors.Is(statErr, fs.ErrNotExist) {
-		_ = w.Write([]string{"source_user_id", "dest_user_id", "password"})
-	}
-	_ = w.Write([]string{c.SourceUserID, c.DestUserID, c.Password})
-	w.Flush()
-	if err := w.Error(); err != nil {
-		f.Close()
+	defer lock.Close()
+	credentials, err := a.Credentials()
+	if err != nil {
 		return err
 	}
-	return f.Close()
+	credentials[c.SourceUserID] = c
+	path := a.CredentialsPath()
+	f, err := os.CreateTemp(a.Dir, ".credentials-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	w := csv.NewWriter(f)
+	_ = w.Write([]string{"source_user_id", "dest_user_id", "password"})
+	for _, user := range slices.Sorted(maps.Keys(credentials)) {
+		credential := credentials[user]
+		_ = w.Write([]string{credential.SourceUserID, credential.DestUserID, credential.Password})
+	}
+	w.Flush()
+	if err := errors.Join(w.Error(), f.Sync(), f.Close()); err != nil {
+		return err
+	}
+	if err := os.Rename(f.Name(), path); err != nil {
+		return err
+	}
+	return syncFileParents(path)
 }
 
 func readJSON(path string, v any) error {
@@ -771,16 +783,23 @@ func writeJSONFile(path string, v any, durable bool) error {
 	if err := os.Rename(tmp, path); err != nil {
 		return err
 	}
-	if durable && runtime.GOOS != "windows" {
-		// Persist both the state file and a newly created inbox directory.
-		for _, dir := range []string{filepath.Dir(path), filepath.Dir(filepath.Dir(path))} {
-			f, err := os.Open(dir)
-			if err != nil {
-				return err
-			}
-			if err := errors.Join(f.Sync(), f.Close()); err != nil {
-				return err
-			}
+	if durable {
+		return syncFileParents(path)
+	}
+	return nil
+}
+
+func syncFileParents(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	for _, dir := range []string{filepath.Dir(path), filepath.Dir(filepath.Dir(path))} {
+		f, err := os.Open(dir)
+		if err != nil {
+			return err
+		}
+		if err := errors.Join(f.Sync(), f.Close()); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -809,7 +828,10 @@ func (a *Archive) CheckExport() error {
 	var r ExportReport
 	err := readJSON(filepath.Join(a.Dir, "export-report.json"), &r)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil // Archives created before export reports were introduced.
+		if a.Manifest.Version == 1 {
+			return nil // Early version-1 archives predate export reports.
+		}
+		return errors.New("archive export completion report is missing; rerun export before importing")
 	}
 	if err != nil {
 		return err

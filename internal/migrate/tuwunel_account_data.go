@@ -18,7 +18,7 @@ import (
 
 const maxAccountRecoveryBytes = 32 << 20
 
-func recoverTuwunelAccount(ctx context.Context, a *archive.Archive, dir, user string) (*archive.User, *archive.Secrets, *archive.KeyBackup, error) {
+func recoverTuwunelAccount(ctx context.Context, a *archive.Archive, dir, user string, allowSenderWithoutDevices bool) (*archive.User, *archive.Secrets, *archive.KeyBackup, error) {
 	d := &TuwunelDump{maps: map[string]map[string][]byte{}}
 	used := 0
 	for _, table := range append(slices.Clone(accountCheckpointTables), accountRecoveryTables...) {
@@ -43,14 +43,15 @@ func recoverTuwunelAccount(ctx context.Context, a *archive.Archive, dir, user st
 		d.maps[table] = rows
 	}
 	d.passwords, d.tokens, d.refresh = d.maps["userid_password"], d.maps["token_userdeviceid"], d.maps["userdeviceid_refresh"]
-	if password, exists := d.passwords[user]; !exists || len(password) != 0 {
+	password, exists := d.passwords[user]
+	if !exists || len(password) != 0 && string(password) != "*" {
 		return nil, nil, nil, errors.New("account is not passwordless in the original backup")
 	}
 	secrets, err := d.Secrets(user)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	if len(secrets.Devices) == 0 {
+	if len(secrets.Devices) == 0 && string(password) != "*" && !allowSenderWithoutDevices {
 		return nil, nil, nil, errors.New("account has no live devices; ID-only restoration must remain explicit")
 	}
 	for _, token := range secrets.Tokens {
@@ -136,6 +137,7 @@ func recoverTuwunelAccount(ctx context.Context, a *archive.Archive, dir, user st
 		}
 		dehydrated.Keys = d.maps["keyid_key"][user+"\xff"+dehydrated.DeviceID]
 		u.Dehydrated = &dehydrated
+		u.Devices = slices.DeleteFunc(u.Devices, func(device archive.Device) bool { return device.ID == dehydrated.DeviceID })
 	}
 	u.ProfileFields = map[string]json.RawMessage{}
 	for key, value := range d.maps["useridprofilekey_value"] {
@@ -301,8 +303,13 @@ func recoverVerifications(ctx context.Context, dir string, u *archive.User) erro
 		return err
 	}
 	u.Verified = map[string]json.RawMessage{}
+	type verification struct {
+		user string
+		body json.RawMessage
+	}
+	verified := map[string]verification{}
 	used := 0
-	return walkTuwunelScan(ctx, filepath.Join(dir, "keyid_key.txt"), func(_ string, raw []byte, _ tuwunelValueRef) error {
+	err = walkTuwunelScan(ctx, filepath.Join(dir, "keyid_key.txt"), func(record string, raw []byte, _ tuwunelValueRef) error {
 		var key struct {
 			UserID     string                       `json:"user_id"`
 			Usage      []string                     `json:"usage"`
@@ -321,12 +328,27 @@ func recoverVerifications(ctx context.Context, dir string, u *archive.User) erro
 		}
 		body["signatures"], _ = json.Marshal(map[string]map[string]string{u.UserID: {keyID: signature}})
 		delete(body, "unsigned")
-		used += len(raw) + 128
+		used += len(record) + len(raw) + 128
 		if used > maxAccountRecoveryBytes {
 			return errors.New("account verifications exceed the 32 MiB recovery limit")
 		}
-		u.Verified[key.UserID], err = json.Marshal(body)
+		encoded, err := json.Marshal(body)
+		if err == nil {
+			verified[record] = verification{user: key.UserID, body: encoded}
+		}
 		return err
+	})
+	if err != nil {
+		return err
+	}
+	return walkTuwunelScan(ctx, filepath.Join(dir, "userid_masterkeyid.txt"), func(user string, pointer []byte, _ tuwunelValueRef) error {
+		if key, ok := verified[string(pointer)]; ok {
+			if key.user != user {
+				return errors.New("verified master key belongs to another user")
+			}
+			u.Verified[user] = key.body
+		}
+		return nil
 	})
 }
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -77,6 +78,7 @@ func accountRecoveryFixture(t *testing.T) (*archive.Archive, string, string) {
 	rows["userid_usersigningkeyid"][recoveryUser] = []byte(recoveryUser + "\xffuser-signing")
 	rows["keyid_key"][recoveryUser+"\xffuser-signing"] = []byte(`{"user_id":"` + recoveryUser + `","usage":["user_signing"],"keys":{"ed25519:signing":"user-signing"}}`)
 	rows["keyid_key"]["@alice:example.org\xffmaster"] = []byte(`{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:alice":"alice"},"signatures":{"` + recoveryUser + `":{"ed25519:signing":"signed"}}}`)
+	rows["userid_masterkeyid"]["@alice:example.org"] = []byte("@alice:example.org\xffmaster")
 	rows["useridprofilekey_value"][recoveryUser+"\xffdisplayname"] = []byte(`"Discord bot"`)
 	rows["userid_locked"][recoveryUser] = nil
 	rows["userroomid_joined"][recoveryUser+"\xff!room:example.org"] = make([]byte, 8)
@@ -135,7 +137,7 @@ exit 2
 
 func TestRepairTuwunelAccounts(t *testing.T) {
 	a, database, ldb := accountRecoveryFixture(t)
-	users, err := RepairTuwunelAccounts(t.Context(), a, database, ldb)
+	users, err := RepairTuwunelAccounts(t.Context(), a, database, ldb, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,13 +162,13 @@ func TestRepairTuwunelAccounts(t *testing.T) {
 	if err := a.CheckExport(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := RepairTuwunelAccounts(t.Context(), a, database, ldb); err != nil {
+	if _, err := RepairTuwunelAccounts(t.Context(), a, database, ldb, false); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
 	if err := a.WriteImportState(recoveryUser, &archive.ImportState{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := RepairTuwunelAccounts(t.Context(), a, database, ldb); err == nil {
+	if _, err := RepairTuwunelAccounts(t.Context(), a, database, ldb, false); err == nil {
 		t.Fatal("overwrote an account being imported")
 	}
 }
@@ -177,7 +179,7 @@ func TestAccountRepairRefusesDifferentSnapshot(t *testing.T) {
 	if err := os.WriteFile(path, nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := RepairTuwunelAccounts(t.Context(), a, database, ldb); err == nil || !strings.Contains(err.Error(), "differs from the archived checkpoint") {
+	if _, err := RepairTuwunelAccounts(t.Context(), a, database, ldb, false); err == nil || !strings.Contains(err.Error(), "differs from the archived checkpoint") {
 		t.Fatal(err)
 	}
 	u, _ := a.ReadUser(recoveryUser)
@@ -200,7 +202,7 @@ func TestAccountRepairReportsMissingTablesBeforeScanning(t *testing.T) {
 	if err := os.Remove(filepath.Join(database, "userid_password.txt")); err != nil {
 		t.Fatal(err)
 	}
-	_, err := RepairTuwunelAccounts(t.Context(), a, database, ldb)
+	_, err := RepairTuwunelAccounts(t.Context(), a, database, ldb, false)
 	if err == nil || !strings.Contains(err.Error(), "keyid_key") || !strings.Contains(err.Error(), "backupkeyid_backup") || !strings.Contains(err.Error(), "missing required tables") {
 		t.Fatalf("missing tables were not reported together before scanning: %v", err)
 	}
@@ -234,7 +236,7 @@ func TestAccountRepairKeepsArchivedAppservices(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := RepairTuwunelAccounts(t.Context(), a, database, ldb); err != nil {
+			if _, err := RepairTuwunelAccounts(t.Context(), a, database, ldb, false); err != nil {
 				t.Fatal(err)
 			}
 			server, err := a.ReadServer()
@@ -260,7 +262,7 @@ func TestAccountRepairRefusesWrongDeviceKeys(t *testing.T) {
 	if err := os.WriteFile(path, []byte(wrong), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := RepairTuwunelAccounts(t.Context(), a, database, ldb); err == nil || !strings.Contains(err.Error(), "device key identity differs") {
+	if _, err := RepairTuwunelAccounts(t.Context(), a, database, ldb, false); err == nil || !strings.Contains(err.Error(), "device key identity differs") {
 		t.Fatal(err)
 	}
 	u, _ := a.ReadUser(recoveryUser)
@@ -297,7 +299,7 @@ func TestAccountRepairRocksDB(t *testing.T) {
 		run(nil, "create_column_family", table)
 		run(rows, "--column_family="+table, "load", "--hex")
 	}
-	if _, err := RepairTuwunelAccounts(t.Context(), a, database, ldb); err != nil {
+	if _, err := RepairTuwunelAccounts(t.Context(), a, database, ldb, false); err != nil {
 		t.Fatal(err)
 	}
 	u, err := a.ReadUser(recoveryUser)
@@ -331,5 +333,210 @@ func TestRecoveredAccountUsesPasswordlessRegistration(t *testing.T) {
 	account, err := im.destSession(t.Context(), &archive.User{UserID: recoveryUser, Passwordless: true})
 	if err != nil || calls != 2 || account.generated || account.password != "" {
 		t.Fatalf("passwordless login: %v", err)
+	}
+}
+
+func TestExportDeactivatedPreservesRepairedAccount(t *testing.T) {
+	a, database, ldb := accountRecoveryFixture(t)
+	if _, err := RepairTuwunelAccounts(t.Context(), a, database, ldb, false); err != nil {
+		t.Fatal(err)
+	}
+	before, err := a.ReadUser(recoveryUser)
+	if err != nil || !before.Passwordless || before.Deactivated || len(before.Devices) == 0 || before.CrossSigning == nil {
+		t.Fatal("fixture repair failed")
+	}
+	exp := &Exporter{Archive: a}
+	if _, err := exp.ExportDeactivated(recoveryUser); err != nil {
+		t.Fatal(err)
+	}
+	after, err := a.ReadUser(recoveryUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatal("resumed export replaced repaired account")
+	}
+}
+
+func TestRecoveredVerificationsUseCurrentMaster(t *testing.T) {
+	for _, currentSigned := range []bool{false, true} {
+		t.Run(fmt.Sprintf("current_signed=%t", currentSigned), func(t *testing.T) {
+			dir := t.TempDir()
+			const peer = "@peer:example.org"
+			rows := map[string][]byte{}
+			makeKey := func(public string, signed bool) []byte {
+				signatures := map[string]map[string]string{}
+				if signed {
+					signatures[recoveryUser] = map[string]string{"ed25519:signing": "signature"}
+				}
+				raw, err := json.Marshal(map[string]any{"user_id": peer, "usage": []string{"master"}, "keys": map[string]string{"ed25519:" + public: public}, "signatures": signatures})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return raw
+			}
+			rows[peer+"\xffa-current"] = makeKey("a-current", currentSigned)
+			rows[peer+"\xffz-retired"] = makeKey("z-retired", true)
+			var scan strings.Builder
+			for _, key := range slices.Sorted(maps.Keys(rows)) {
+				fmt.Fprintf(&scan, "0x%x ==> 0x%x\n", key, rows[key])
+			}
+			if err := os.WriteFile(filepath.Join(dir, "keyid_key.txt"), []byte(scan.String()), 0600); err != nil {
+				t.Fatal(err)
+			}
+			pointer := fmt.Sprintf("0x%x ==> 0x%x\n", peer, peer+"\xffa-current")
+			if err := os.WriteFile(filepath.Join(dir, "userid_masterkeyid.txt"), []byte(pointer), 0600); err != nil {
+				t.Fatal(err)
+			}
+			user := &archive.User{UserID: recoveryUser, CrossSigning: &archive.CrossSigning{UserSigning: json.RawMessage(`{"keys":{"ed25519:signing":"signing"}}`)}}
+			if err := recoverVerifications(t.Context(), dir, user); err != nil {
+				t.Fatal(err)
+			}
+			got := string(user.Verified[peer])
+			if !currentSigned {
+				if got != "" {
+					t.Fatal("recovery restored retired-master trust although current master is unsigned")
+				}
+			} else if !strings.Contains(got, "ed25519:a-current") || strings.Contains(got, "ed25519:z-retired") {
+				t.Fatal("recovery selected retired master instead of the active master pointer")
+			}
+		})
+	}
+}
+
+func TestRepairTuwunelAccountWithoutDevices(t *testing.T) {
+	for _, tc := range []struct {
+		name, password             string
+		sender, include, recovered bool
+	}{
+		{name: "ambiguous sender", sender: true},
+		{name: "confirmed sender", sender: true, include: true, recovered: true},
+		{name: "unrelated deactivated account", include: true},
+		{name: "active sender sentinel", password: "*", sender: true, recovered: true},
+		{name: "active account sentinel", password: "*", recovered: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, database, ldb := accountRecoveryFixture(t)
+			source := filepath.Join(a.Dir, "source", "tuwunel")
+			for _, table := range []string{"userdeviceid_metadata", "token_userdeviceid", "userdeviceid_refresh", "onetimekeyid4225_otk"} {
+				for _, dir := range []string{source, database} {
+					if err := os.WriteFile(filepath.Join(dir, table+".txt"), nil, 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			password := []byte(fmt.Sprintf("0x%x ==> 0x%x\n", recoveryUser, tc.password))
+			for _, dir := range []string{source, database} {
+				if err := os.WriteFile(filepath.Join(dir, "userid_password.txt"), password, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.sender {
+				registration := strings.ReplaceAll(testBridgeRegistration, "sender_localpart: puppet_bot", "sender_localpart: discordbot")
+				if err := a.WriteServer(&archive.Server{AppserviceRegistrations: []string{registration}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			users, err := RepairTuwunelAccounts(t.Context(), a, database, ldb, tc.include)
+			if err != nil || (len(users) == 1) != tc.recovered {
+				t.Fatalf("recovered=%v err=%v", users, err)
+			}
+			u, err := a.ReadUser(recoveryUser)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !tc.recovered {
+				if !u.Deactivated || u.Passwordless {
+					t.Fatal("unconfirmed account activated")
+				}
+				return
+			}
+			if u.Deactivated || !u.Passwordless || u.DisplayName != "Discord bot" || len(u.Devices) != 0 || len(u.AccountData) != 1 || u.CrossSigning == nil {
+				t.Fatalf("recovered account=%+v", u)
+			}
+			if backup, err := a.ReadKeyBackup(recoveryUser); err != nil || backup == nil || len(backup.Rooms) != 1 {
+				t.Fatalf("recovered backup=%v err=%v", backup, err)
+			}
+		})
+	}
+}
+
+func TestRepairTuwunelActiveSentinelWithDevices(t *testing.T) {
+	a, database, ldb := accountRecoveryFixture(t)
+	row := []byte(fmt.Sprintf("0x%x ==> 0x%x\n", recoveryUser, "*"))
+	for _, dir := range []string{database, filepath.Join(a.Dir, "source", "tuwunel")} {
+		if err := os.WriteFile(filepath.Join(dir, "userid_password.txt"), row, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := RepairTuwunelAccounts(t.Context(), a, database, ldb, false); err != nil {
+		t.Fatal(err)
+	}
+	u, err := a.ReadUser(recoveryUser)
+	if err != nil || u.Deactivated || !u.Passwordless || len(u.Devices) != 1 {
+		t.Fatalf("recovered active sentinel account=%v err=%v", u, err)
+	}
+}
+
+func TestAmbiguousAppserviceSenderDoesNotBlockOtherRepairs(t *testing.T) {
+	a, database, ldb := accountRecoveryFixture(t)
+	const sender = "@puppet_bot:example.org"
+	if err := a.WriteUser(&archive.User{UserID: sender, Deactivated: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.WriteServer(&archive.Server{AppserviceRegistrations: []string{testBridgeRegistration}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{database, filepath.Join(a.Dir, "source", "tuwunel")} {
+		path := filepath.Join(dir, "userid_password.txt")
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = fmt.Fprintf(f, "0x%x ==> 0x\n", sender)
+		if closeErr := f.Close(); err != nil || closeErr != nil {
+			t.Fatalf("append sender: %v %v", err, closeErr)
+		}
+	}
+	users, err := RepairTuwunelAccounts(t.Context(), a, database, ldb, false)
+	if err != nil || !slices.Equal(users, []string{recoveryUser}) {
+		t.Fatalf("recovered=%v err=%v", users, err)
+	}
+	u, err := a.ReadUser(sender)
+	if err != nil || !u.Deactivated || u.Passwordless {
+		t.Fatalf("ambiguous sender changed: %v %v", u, err)
+	}
+}
+
+func TestRegisteredAppserviceSenderStatus(t *testing.T) {
+	for _, password := range []string{"", "*"} {
+		t.Run(fmt.Sprintf("password=%q", password), func(t *testing.T) {
+			a, _, _ := accountRecoveryFixture(t)
+			const sender = "@puppet_bot:example.org"
+			u := &archive.User{UserID: sender, Deactivated: true}
+			if err := a.WriteUser(u); err != nil {
+				t.Fatal(err)
+			}
+			source := filepath.Join(a.Dir, "source", "tuwunel")
+			path := filepath.Join(source, "userid_password.txt")
+			row := []byte(fmt.Sprintf("0x%x ==> 0x%x\n", sender, password))
+			if err := os.WriteFile(path, row, 0600); err != nil {
+				t.Fatal(err)
+			}
+			im := &Importer{Archive: a, Admin: &ContinuwuityAdmin{bot: "@conduit:example.org"}, Migrated: map[string]bool{sender: true}, DeactivatedIDOnly: true}
+			users, err := im.FilterBridgeAccounts(t.Context(), []*archive.User{u}, &archive.Server{AppserviceRegistrations: []string{testBridgeRegistration}})
+			if password == "*" {
+				if err == nil || !strings.Contains(err.Error(), "active in the checkpoint") {
+					t.Fatalf("active sender allowed ID-only deactivation: %v", err)
+				}
+				return
+			}
+			if err != nil || len(users) != 1 || !slices.Equal(im.deactivatedAppserviceSenders, []string{sender}) {
+				t.Fatalf("deactivated sender=%v notes=%v err=%v", users, im.deactivatedAppserviceSenders, err)
+			}
+			if err := im.CheckLosslessImport(users, nil, nil, false); err != nil {
+				t.Fatalf("explicit deactivated ID policy refused: %v", err)
+			}
+		})
 	}
 }

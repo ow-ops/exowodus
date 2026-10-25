@@ -28,6 +28,8 @@ import (
 	"go.mau.fi/util/jsontime"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/federation"
+	"maunium.net/go/mautrix/federation/eventauth"
+	"maunium.net/go/mautrix/federation/pdu"
 	"maunium.net/go/mautrix/id"
 )
 
@@ -117,11 +119,8 @@ func (rl *Relay) Enter(roomID, inviter string) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.current[StateKey("m.room.member", rl.UserID())]; ok {
-		return nil
-	}
-	invite, err := r.template(inviter, "m.room.member", rl.UserID(), map[string]string{"membership": "invite"}, rl.origin)
-	if err != nil {
+	invite, err := rl.checkEnter(r, inviter)
+	if err != nil || invite == nil {
 		return err
 	}
 	if err := r.sign(invite, rl.origin, rl.originKey); err != nil {
@@ -131,7 +130,62 @@ func (rl *Relay) Enter(roomID, inviter string) error {
 	if err != nil {
 		return err
 	}
+	if err := authorizeEvent(r, join); err != nil {
+		return err
+	}
 	return r.sign(join, rl.Name, rl.key)
+}
+
+// CheckEnter checks the relay's invitation without changing the room.
+func (rl *Relay) CheckEnter(roomID, inviter string) error {
+	r := rl.room(roomID)
+	if r == nil {
+		return fmt.Errorf("unknown room %s", roomID)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, err := rl.checkEnter(r, inviter)
+	return err
+}
+
+func (rl *Relay) checkEnter(r *room, inviter string) (*pdu.PDU, error) {
+	if ev, ok := r.events[r.current[StateKey("m.room.member", rl.UserID())]]; ok {
+		var member struct {
+			Content struct{ Membership string } `json:"content"`
+		}
+		if err := json.Unmarshal(ev.raw, &member); err != nil {
+			return nil, err
+		}
+		if member.Content.Membership == "join" {
+			return nil, nil
+		}
+	}
+	if ev, ok := r.events[r.current[StateKey("m.room.create", "")]]; ok {
+		var create struct {
+			Content struct {
+				Federate *bool `json:"m.federate"`
+			} `json:"content"`
+		}
+		if err := json.Unmarshal(ev.raw, &create); err != nil {
+			return nil, err
+		}
+		if create.Content.Federate != nil && !*create.Content.Federate {
+			return nil, errors.New("room disables federation; the relay cannot join")
+		}
+	}
+	return rl.checkedEvent(r, inviter, "m.room.member", rl.UserID(), map[string]string{"membership": "invite"})
+}
+
+// CheckAuthor checks a source member's state event without changing the room.
+func (rl *Relay) CheckAuthor(roomID, sender, typ, stateKey string, content any) error {
+	r := rl.room(roomID)
+	if r == nil {
+		return fmt.Errorf("unknown room %s", roomID)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, err := rl.checkedEvent(r, sender, typ, stateKey, content)
+	return err
 }
 
 // Author adds a state event from a source member, signed with the source key.
@@ -142,11 +196,47 @@ func (rl *Relay) Author(roomID, sender, typ, stateKey string, content any) error
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	p, err := r.template(sender, typ, stateKey, content, rl.origin)
+	p, err := rl.checkedEvent(r, sender, typ, stateKey, content)
 	if err != nil {
 		return err
 	}
 	return r.sign(p, rl.origin, rl.originKey)
+}
+
+func (rl *Relay) checkedEvent(r *room, sender, typ, stateKey string, content any) (*pdu.PDU, error) {
+	if id.UserID(sender).Homeserver() != rl.origin {
+		return nil, fmt.Errorf("cannot author an event as %s with the source signing key", sender)
+	}
+	p, err := r.template(sender, typ, stateKey, content, rl.origin)
+	if err != nil {
+		return nil, err
+	}
+	if err := authorizeEvent(r, p); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func authorizeEvent(r *room, p *pdu.PDU) error {
+	getEvents := func(ids []id.EventID) ([]*pdu.PDU, error) {
+		out := make([]*pdu.PDU, len(ids))
+		for i, eventID := range ids {
+			stored, ok := r.events[string(eventID)]
+			if !ok {
+				return nil, fmt.Errorf("missing auth event %s", eventID)
+			}
+			parsed, err := ParsePDU(stored.raw)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = parsed
+		}
+		return out, nil
+	}
+	if err := eventauth.Authorize(r.version, p, nil, getEvents, nil); err != nil {
+		return fmt.Errorf("%s from %s is not authorized: %w", p.Type, p.Sender, err)
+	}
+	return nil
 }
 
 func (rl *Relay) Content(roomID, typ, stateKey string) map[string]any {
@@ -292,7 +382,7 @@ type notaryKeys struct{ rl *Relay }
 
 func (n notaryKeys) LoadKeys(serverName string) (*federation.ServerKeyResponse, error) {
 	if serverName == n.rl.origin {
-		return n.rl.originKey.GenerateKeyResponse(serverName, nil), nil
+		return n.rl.sourceKeys()
 	}
 	var latest *federation.ServerKeyResponse
 	for _, raw := range n.rl.cachedKeys[serverName] {
@@ -308,6 +398,52 @@ func (n notaryKeys) LoadKeys(serverName string) (*federation.ServerKeyResponse, 
 		latest.Signatures = map[string]map[id.KeyID]string{}
 	}
 	return latest, nil
+}
+
+func (rl *Relay) sourceKeys() (*federation.ServerKeyResponse, error) {
+	old := map[id.KeyID]federation.OldVerifyKey{}
+	retired := map[id.KeyID]bool{}
+	var cached []federation.ServerKeyResponse
+	for _, raw := range rl.cachedKeys[rl.origin] {
+		var keys federation.ServerKeyResponse
+		if err := json.Unmarshal(raw, &keys); err != nil {
+			return nil, fmt.Errorf("archived source signing keys: %w", err)
+		}
+		if keys.ServerName != rl.origin {
+			return nil, fmt.Errorf("archived source signing keys belong to %s", keys.ServerName)
+		}
+		cached = append(cached, keys)
+		for keyID, key := range keys.OldVerifyKeys {
+			retired[keyID] = true
+			if previous, ok := old[keyID]; ok {
+				if previous.Key != key.Key {
+					return nil, fmt.Errorf("conflicting archived source signing key %s", keyID)
+				}
+				if !key.ExpiredTS.After(previous.ExpiredTS.Time) {
+					continue
+				}
+			}
+			old[keyID] = key
+		}
+	}
+	for _, keys := range cached {
+		for keyID, key := range keys.VerifyKeys {
+			if previous, ok := old[keyID]; ok {
+				if previous.Key != key.Key {
+					return nil, fmt.Errorf("conflicting archived source signing key %s", keyID)
+				}
+				if retired[keyID] || !keys.ValidUntilTS.After(previous.ExpiredTS.Time) {
+					continue
+				}
+			}
+			old[keyID] = federation.OldVerifyKey{Key: key.Key, ExpiredTS: keys.ValidUntilTS}
+		}
+	}
+	if key, ok := old[rl.originKey.ID]; ok && key.Key != rl.originKey.Pub {
+		return nil, fmt.Errorf("archived source signing key %s conflicts with the current key", rl.originKey.ID)
+	}
+	delete(old, rl.originKey.ID)
+	return rl.originKey.GenerateKeyResponse(rl.origin, old), nil
 }
 
 func (notaryKeys) StoreKeys(*federation.ServerKeyResponse) {}

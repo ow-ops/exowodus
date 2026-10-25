@@ -108,10 +108,15 @@ func DoWithPassword(ctx context.Context, c *mautrix.Client, method, url string, 
 }
 
 func Login(ctx context.Context, c *mautrix.Client, user, password string) (*mautrix.Client, error) {
+	return LoginDevice(ctx, c, user, password, "")
+}
+
+func LoginDevice(ctx context.Context, c *mautrix.Client, user, password, deviceID string) (*mautrix.Client, error) {
 	resp, err := c.Login(ctx, &mautrix.ReqLogin{
 		Type:                     mautrix.AuthTypePassword,
 		Identifier:               mautrix.UserIdentifier{Type: mautrix.IdentifierTypeUser, User: user},
 		Password:                 password,
+		DeviceID:                 id.DeviceID(deviceID),
 		InitialDeviceDisplayName: "exodus",
 	})
 	if err != nil {
@@ -124,7 +129,11 @@ func Login(ctx context.Context, c *mautrix.Client, user, password string) (*maut
 
 // Register completes the registration token and dummy auth stages.
 func Register(ctx context.Context, c *mautrix.Client, username, password, regToken string) (*mautrix.Client, error) {
-	req := &mautrix.ReqRegister[any]{Username: username, Password: password, InitialDeviceDisplayName: "exodus"}
+	return RegisterDevice(ctx, c, username, password, regToken, "")
+}
+
+func RegisterDevice(ctx context.Context, c *mautrix.Client, username, password, regToken, deviceID string) (*mautrix.Client, error) {
+	req := &mautrix.ReqRegister[any]{Username: username, Password: password, DeviceID: id.DeviceID(deviceID), InitialDeviceDisplayName: "exodus"}
 	for range 4 {
 		resp, state, err := c.Register(ctx, req)
 		if err == nil && resp != nil {
