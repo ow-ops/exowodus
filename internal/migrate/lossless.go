@@ -70,6 +70,13 @@ func (d *TuwunelDump) CheckLosslessMaps() error {
 
 // CheckLosslessImport runs before creating accounts or changing the target.
 func (im *Importer) CheckLosslessImport(users []*archive.User, rooms []*archive.ArchivedRoom, server *archive.Server, hasRelay bool) error {
+	return im.CheckLosslessImportContext(context.Background(), users, rooms, server, hasRelay)
+}
+
+func (im *Importer) CheckLosslessImportContext(ctx context.Context, users []*archive.User, rooms []*archive.ArchivedRoom, server *archive.Server, hasRelay bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	im.SetArchiveOnlyRooms(rooms)
 	slog.Info("checking import preservation", "users", len(users), "rooms", len(rooms))
 	var failures []error
@@ -134,6 +141,9 @@ func (im *Importer) CheckLosslessImport(users []*archive.User, rooms []*archive.
 		}
 	}
 	for i, room := range rooms {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if im.Archive.IsRoomSkipped(room.RoomID) {
 			continue
 		}
@@ -144,14 +154,11 @@ func (im *Importer) CheckLosslessImport(users []*archive.User, rooms []*archive.
 			continue
 		}
 		slog.Info("checking original room events", "room", room.RoomID, "position", i+1, "rooms", len(rooms))
-		var data relay.RoomData
-		ok, err := im.Archive.ReadRoomPDUs(room.RoomID, &data)
-		if err != nil || !ok {
-			failures = append(failures, fmt.Errorf("%s: original PDUs required: %v", room.RoomID, err))
-			continue
-		}
-		if !relay.SupportsVersion(room.Version) || checkEventIDs(data.Events, room.Version) != 0 {
-			failures = append(failures, fmt.Errorf("%s: original event IDs cannot be preserved", room.RoomID))
+		if err := im.checkArchivedEventIDs(ctx, room); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			failures = append(failures, fmt.Errorf("%s: original event IDs cannot be preserved: %w", room.RoomID, err))
 		}
 	}
 	if server != nil {
@@ -179,6 +186,33 @@ func (im *Importer) CheckLosslessImport(users []*archive.User, rooms []*archive.
 		return fmt.Errorf("lossless import blocked: %w", errors.Join(failures...))
 	}
 	slog.Info("import preservation checks passed")
+	return nil
+}
+
+func (im *Importer) checkArchivedEventIDs(ctx context.Context, room *archive.ArchivedRoom) error {
+	if !relay.SupportsVersion(room.Version) {
+		return fmt.Errorf("unsupported room version %q", room.Version)
+	}
+	seen := map[string]bool{}
+	for raw, err := range im.Archive.RoomPDUEvents(ctx, room.RoomID) {
+		if err != nil {
+			return err
+		}
+		var event relay.EventJSON
+		if err := json.Unmarshal(raw, &event); err != nil {
+			return err
+		}
+		if event.EventID == "" || seen[event.EventID] {
+			return errors.New("missing or duplicate original event ID")
+		}
+		if err := checkEventID(event, room.Version); err != nil {
+			return err
+		}
+		seen[event.EventID] = true
+	}
+	if len(seen) == 0 {
+		return errors.New("room has no original events")
+	}
 	return nil
 }
 

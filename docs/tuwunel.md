@@ -251,6 +251,29 @@ Failed backfill, knock and read-marker steps appear in `import-report.json`.
 Rerun import with the same archive and relay settings to retry. Keep the archive
 and proxy running to serve existing logins and original media URLs.
 
+Import loads one relay room at a time and releases it after each attempt.
+Verification streams the archived messages, and key backups upload in batches of
+up to 1,000 sessions with a 4 MiB size target. The largest room and its historical
+state still need RAM; Continuwuity uses memory separately.
+
+On Linux with systemd, this example caps Exodus at 1 GiB. Adjust the limit to
+leave room for Continuwuity and the rest of the system:
+
+```sh
+GOMEMLIMIT=512MiB systemd-run --user --scope --expand-environment=no \
+  -p MemoryHigh=768M -p MemoryMax=1G -p MemorySwapMax=256M \
+  exodus import --archive ./exodus-archive \
+  --to http://continuwuity:8008 --to-admin-token "$CADMIN" \
+  --registration-token "$REG" --relay-name relay.example.net \
+  --skip-private-receipts --skip-threaded-receipts \
+  --archive-departed-rooms --deactivated-id-only
+```
+
+[`MemoryMax`](https://www.freedesktop.org/software/systemd/man/latest/systemd.resource-control.html#MemoryMax=bytes)
+limits the importer process group. The kernel may terminate Exodus at this
+limit; rerun with the same archive to retry. `GOMEMLIMIT` is a soft limit.
+Limit Continuwuity separately.
+
 Queued to-device messages from remote senders stay in the archive. The proxy
 delivers them to the original recipient and device through sync, up to 100 per
 response. It saves acknowledgements under `proxy-inbox/` and retries unacknowledged

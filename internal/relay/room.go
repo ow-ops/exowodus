@@ -71,8 +71,24 @@ func ParsePDU(raw []byte) (*pdu.PDU, error) {
 }
 
 type event struct {
-	pdu *pdu.PDU
-	raw json.RawMessage
+	meta eventMetadata
+	raw  json.RawMessage
+}
+
+// Payloads remain in raw; only fields needed to traverse the room are cached.
+type eventMetadata struct {
+	Type       string
+	StateKey   *string
+	AuthEvents []id.EventID
+	PrevEvents []id.EventID
+	Depth      int64
+}
+
+func cacheEvent(p *pdu.PDU, raw json.RawMessage) event {
+	return event{meta: eventMetadata{
+		Type: p.Type, StateKey: p.StateKey,
+		AuthEvents: p.AuthEvents, PrevEvents: p.PrevEvents, Depth: p.Depth,
+	}, raw: raw}
 }
 
 type room struct {
@@ -110,7 +126,7 @@ func newRoom(roomID, version string, data RoomData) (*room, error) {
 		if err != nil {
 			return nil, fmt.Errorf("event %s: %w", e.EventID, err)
 		}
-		r.events[e.EventID] = event{pdu: p, raw: wire}
+		r.events[e.EventID] = cacheEvent(p, wire)
 	}
 	for _, eventID := range data.StateUnavailable {
 		if _, ok := r.events[eventID]; !ok {
@@ -227,8 +243,8 @@ func (r *room) stateAfter(eventID string) (map[string]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		if ev, ok := r.events[eventID]; ok && ev.pdu.StateKey != nil {
-			state[StateKey(ev.pdu.Type, *ev.pdu.StateKey)] = eventID
+		if ev, ok := r.events[eventID]; ok && ev.meta.StateKey != nil {
+			state[StateKey(ev.meta.Type, *ev.meta.StateKey)] = eventID
 		}
 		return state, nil
 	}
@@ -253,14 +269,14 @@ func (r *room) stateBefore(eventID string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !ok || ev.pdu.StateKey == nil {
+	if !ok || ev.meta.StateKey == nil {
 		return after, nil
 	}
 	before := maps.Clone(after)
-	k := StateKey(ev.pdu.Type, *ev.pdu.StateKey)
+	k := StateKey(ev.meta.Type, *ev.meta.StateKey)
 	delete(before, k)
-	if len(ev.pdu.PrevEvents) > 0 {
-		previous, err := r.stateAfter(string(ev.pdu.PrevEvents[0]))
+	if len(ev.meta.PrevEvents) > 0 {
+		previous, err := r.stateAfter(string(ev.meta.PrevEvents[0]))
 		if err != nil {
 			return nil, err
 		}
@@ -276,7 +292,7 @@ func (r *room) add(eventID string, p *pdu.PDU, raw json.RawMessage) {
 	if _, ok := r.events[eventID]; ok {
 		return
 	}
-	r.events[eventID] = event{pdu: p, raw: raw}
+	r.events[eventID] = cacheEvent(p, raw)
 	if p.StateKey != nil {
 		r.current = maps.Clone(r.current)
 		r.current[StateKey(p.Type, *p.StateKey)] = eventID
@@ -288,7 +304,7 @@ func (r *room) add(eventID string, p *pdu.PDU, raw json.RawMessage) {
 func (r *room) maxDepth() int64 {
 	var d int64
 	for _, ev := range r.events {
-		d = max(d, ev.pdu.Depth)
+		d = max(d, ev.meta.Depth)
 	}
 	return d
 }
@@ -380,7 +396,7 @@ func (r *room) authChain(ids []string) []string {
 		if !ok {
 			continue
 		}
-		for _, a := range ev.pdu.AuthEvents {
+		for _, a := range ev.meta.AuthEvents {
 			if !seen[string(a)] {
 				seen[string(a)] = true
 				chain = append(chain, string(a))
@@ -409,7 +425,7 @@ func (r *room) before(from []string, limit int, stop map[string]bool) []string {
 			continue
 		}
 		out = append(out, cur)
-		for _, p := range ev.pdu.PrevEvents {
+		for _, p := range ev.meta.PrevEvents {
 			queue = append(queue, string(p))
 		}
 	}

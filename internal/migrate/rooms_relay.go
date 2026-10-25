@@ -2,12 +2,13 @@ package migrate
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"log/slog"
 	"maps"
-	"reflect"
 
 	"exodus/internal/archive"
 	"exodus/internal/relay"
@@ -34,6 +35,9 @@ func (im *Importer) RelayRooms(ctx context.Context, rooms []*archive.ArchivedRoo
 	var reports []*RoomReport
 	var rest []*archive.ArchivedRoom
 	for _, room := range rooms {
+		if ctx.Err() != nil {
+			break
+		}
 		if im.Archive.IsRoomSkipped(room.RoomID) {
 			continue
 		}
@@ -73,6 +77,7 @@ func (im *Importer) RelayRooms(ctx context.Context, rooms []*archive.ArchivedRoo
 			rest = append(rest, room)
 			continue
 		}
+		data = relay.RoomData{}
 		rep := &RoomReport{RoomID: room.RoomID, NewRoomID: room.RoomID, KeptRoomID: true}
 		reports = append(reports, rep)
 		slog.Info("moving room through the relay", "room", room.RoomID)
@@ -81,7 +86,6 @@ func (im *Importer) RelayRooms(ctx context.Context, rooms []*archive.ArchivedRoo
 			im.roomFailures[room.RoomID] = true
 			continue
 		}
-		rl.RemoveRoom(room.RoomID)
 		delete(im.roomFailures, room.RoomID)
 		im.rooms[room.RoomID] = room.RoomID
 	}
@@ -89,7 +93,8 @@ func (im *Importer) RelayRooms(ctx context.Context, rooms []*archive.ArchivedRoo
 }
 
 func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, rl *relay.Relay, rep *RoomReport) error {
-	r, err := im.newReplay(ctx, room, rep)
+	defer rl.RemoveRoom(room.RoomID)
+	r, err := im.loadReplay(ctx, room, rep, false)
 	if err != nil {
 		return err
 	}
@@ -103,7 +108,7 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 	}
 	if r.st.Done {
 		if im.RequireLossless {
-			return verifyOriginalRoom(ctx, r.as(r.mapUser(owner)), room.RoomID, r.events)
+			return verifyOriginalRoomEvents(ctx, r.as(r.mapUser(owner)), room.RoomID, im.Archive.RoomEventsIter(room.RoomID))
 		}
 		return nil
 	}
@@ -124,13 +129,13 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 		return err
 	}
 
-	backfilled, err := backfillRoom(ctx, c, room.RoomID, r.events)
+	backfilled, err := backfillRoomEvents(ctx, c, room.RoomID, im.Archive.RoomEventsIter(room.RoomID))
 	if err != nil {
 		return fmt.Errorf("backfill: %w", err)
 	}
 	rep.Replayed = backfilled
 	if im.RequireLossless {
-		if err := verifyOriginalRoom(ctx, c, room.RoomID, r.events); err != nil {
+		if err := verifyOriginalRoomEvents(ctx, c, room.RoomID, im.Archive.RoomEventsIter(room.RoomID)); err != nil {
 			return err
 		}
 	}
@@ -181,13 +186,33 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 }
 
 func verifyOriginalRoom(ctx context.Context, c *mautrix.Client, roomID string, events []json.RawMessage) error {
-	expected := map[string]json.RawMessage{}
-	for _, raw := range events {
+	return verifyOriginalRoomEvents(ctx, c, roomID, roomEventSequence(events))
+}
+
+func verifyOriginalRoomEvents(ctx context.Context, c *mautrix.Client, roomID string, events iter.Seq2[json.RawMessage, error]) error {
+	expected := map[string][sha256.Size]byte{}
+	for raw, err := range events {
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		ev, err := decodeEvent(raw)
 		if err != nil {
 			return err
 		}
-		expected[ev.EventID] = raw
+		if _, duplicate := expected[ev.EventID]; ev.EventID == "" || duplicate {
+			return errors.New("missing or duplicate exported event ID")
+		}
+		fingerprint, err := originalEventFingerprint(raw)
+		if err != nil {
+			return err
+		}
+		expected[ev.EventID] = fingerprint
+	}
+	if len(expected) == 0 {
+		return errors.New("room has no exported events")
 	}
 	var mismatch error
 	_, _, err := paginateBack(ctx, c, roomID, func(ev *event.Event) bool {
@@ -195,18 +220,13 @@ func verifyOriginalRoom(ctx context.Context, c *mautrix.Client, roomID string, e
 		if !ok {
 			return len(expected) == 0
 		}
-		wantFields, fieldErr := originalEventFields(want)
-		if fieldErr != nil {
-			mismatch = fieldErr
-			return true
-		}
 		raw, marshalErr := json.Marshal(ev)
 		if marshalErr != nil {
 			mismatch = marshalErr
 			return true
 		}
-		got, fieldErr := originalEventFields(raw)
-		if fieldErr != nil || !reflect.DeepEqual(wantFields, got) {
+		got, fieldErr := originalEventFingerprint(raw)
+		if fieldErr != nil || want != got {
 			mismatch = fmt.Errorf("original event %s differs on the destination", ev.ID)
 			return true
 		}
@@ -223,6 +243,18 @@ func verifyOriginalRoom(ctx context.Context, c *mautrix.Client, roomID string, e
 		return fmt.Errorf("%d original events absent on destination", len(expected))
 	}
 	return nil
+}
+
+func originalEventFingerprint(raw json.RawMessage) ([sha256.Size]byte, error) {
+	fields, err := originalEventFields(raw)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	normalized, err := json.Marshal(fields)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	return sha256.Sum256(normalized), nil
 }
 
 // relayHandOver raises the relay's member above the default level so
@@ -309,13 +341,29 @@ func paginateBack(ctx context.Context, c *mautrix.Client, roomID string, found f
 
 // backfillRoom requires both the create event and every exported timeline event.
 func backfillRoom(ctx context.Context, c *mautrix.Client, roomID string, events []json.RawMessage) (int, error) {
-	missing := make(map[string]bool, len(events))
-	for _, raw := range events {
+	return backfillRoomEvents(ctx, c, roomID, roomEventSequence(events))
+}
+
+func backfillRoomEvents(ctx context.Context, c *mautrix.Client, roomID string, events iter.Seq2[json.RawMessage, error]) (int, error) {
+	missing := map[string]bool{}
+	for raw, err := range events {
+		if err != nil {
+			return 0, err
+		}
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		ev, err := decodeEvent(raw)
 		if err != nil {
 			return 0, err
 		}
+		if ev.EventID == "" || missing[ev.EventID] {
+			return 0, errors.New("missing or duplicate exported event ID")
+		}
 		missing[ev.EventID] = true
+	}
+	if len(missing) == 0 {
+		return 0, errors.New("room has no exported events")
 	}
 	count, complete, err := paginateBack(ctx, c, roomID, func(ev *event.Event) bool {
 		delete(missing, string(ev.ID))
@@ -328,4 +376,14 @@ func backfillRoom(ctx context.Context, c *mautrix.Client, roomID string, events 
 		return count, fmt.Errorf("incomplete backfill: reached create event: %t, %d exported events missing", complete, len(missing))
 	}
 	return count, nil
+}
+
+func roomEventSequence(events []json.RawMessage) iter.Seq2[json.RawMessage, error] {
+	return func(yield func(json.RawMessage, error) bool) {
+		for _, raw := range events {
+			if !yield(raw, nil) {
+				return
+			}
+		}
+	}
 }

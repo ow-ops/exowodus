@@ -376,6 +376,15 @@ func (state roomStateStream) MarshalJSONTo(enc *jsontext.Encoder) error {
 }
 
 func (a *Archive) Rooms() ([]*ArchivedRoom, error) {
+	return a.readRooms(true)
+}
+
+// RoomHeaders lists rooms without retaining their state events.
+func (a *Archive) RoomHeaders() ([]*ArchivedRoom, error) {
+	return a.readRooms(false)
+}
+
+func (a *Archive) readRooms(includeState bool) ([]*ArchivedRoom, error) {
 	entries, err := os.ReadDir(filepath.Join(a.Dir, "rooms"))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -386,7 +395,13 @@ func (a *Archive) Rooms() ([]*ArchivedRoom, error) {
 	var rooms []*ArchivedRoom
 	for _, e := range entries {
 		r := &ArchivedRoom{}
-		err := readJSON(filepath.Join(a.Dir, "rooms", e.Name(), "room.json"), r)
+		path := filepath.Join(a.Dir, "rooms", e.Name(), "room.json")
+		var err error
+		if includeState {
+			err = readJSON(path, r)
+		} else {
+			err = readRoomHeader(path, r)
+		}
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}

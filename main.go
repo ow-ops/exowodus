@@ -557,7 +557,7 @@ after replacing Synapse with Continuwuity on the same server name.`,
 			for _, u := range users {
 				migrated[u.UserID] = true
 			}
-			rooms, err := a.Rooms()
+			rooms, err := a.RoomHeaders()
 			if err != nil {
 				return err
 			}
@@ -586,7 +586,7 @@ after replacing Synapse with Continuwuity on the same server name.`,
 				return err
 			}
 			if im.RequireLossless {
-				if err := im.CheckLosslessImport(users, rooms, srv, relayOpts.name != ""); err != nil {
+				if err := im.CheckLosslessImportContext(ctx, users, rooms, srv, relayOpts.name != ""); err != nil {
 					return err
 				}
 			}
@@ -997,7 +997,7 @@ func needsAppservice(users []*archive.User, rooms []*archive.ArchivedRoom, srv *
 		return true
 	}
 	return slices.ContainsFunc(users, func(u *archive.User) bool {
-		return u.CrossSigning != nil || len(u.Devices) > 0 || u.Guest || u.Passwordless
+		return u.CrossSigning != nil || len(u.Devices) > 0 || u.Guest || u.Passwordless || u.Deactivated
 	})
 }
 

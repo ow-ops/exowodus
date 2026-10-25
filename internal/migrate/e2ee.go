@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -17,6 +16,7 @@ import (
 )
 
 const maxSessionsPerRequest = 1000
+const maxBackupBatchBytes = 4 << 20
 
 func exportKeyBackup(ctx context.Context, c *mautrix.Client) (*archive.KeyBackup, error) {
 	var version struct {
@@ -200,7 +200,7 @@ func importVerifications(ctx context.Context, c *mautrix.Client, verified map[st
 }
 
 // importKeyBackup reuses the original auth data so the recovery key still works.
-func importKeyBackup(ctx context.Context, dest *mautrix.Client, kb *archive.KeyBackup, state *archive.ImportState, save func() error) error {
+func importKeyBackup(ctx context.Context, dest *mautrix.Client, kb *archive.KeyBackupReader, state *archive.ImportState, save func() error) error {
 	if state.KeyBackup == "" {
 		var resp struct {
 			Version string `json:"version"`
@@ -216,29 +216,33 @@ func importKeyBackup(ctx context.Context, dest *mautrix.Client, kb *archive.KeyB
 	}
 
 	keysURL := dest.BuildURLWithQuery(mautrix.ClientURLPath{"v3", "room_keys", "keys"}, map[string]string{"version": state.KeyBackup})
-	batch := map[string]json.RawMessage{}
+	batch := map[string]map[string]map[string]json.RawMessage{}
 	sessions := 0
+	batchBytes := 0
 	flush := func() error {
 		if len(batch) == 0 {
 			return nil
 		}
 		_, err := dest.MakeRequest(ctx, http.MethodPut, keysURL, map[string]any{"rooms": batch}, nil)
-		batch, sessions = map[string]json.RawMessage{}, 0
+		batch, sessions, batchBytes = map[string]map[string]map[string]json.RawMessage{}, 0, 0
 		return err
 	}
-	for _, roomID := range slices.Sorted(maps.Keys(kb.Rooms)) {
-		var room struct {
-			Sessions map[string]json.RawMessage `json:"sessions"`
-		}
-		if err := json.Unmarshal(kb.Rooms[roomID], &room); err != nil {
+	for session, err := range kb.Sessions(ctx) {
+		if err != nil {
 			return err
 		}
-		batch[roomID] = kb.Rooms[roomID]
-		if sessions += len(room.Sessions); sessions >= maxSessionsPerRequest {
+		size := len(session.RoomID) + len(session.SessionID) + len(session.Data)
+		if sessions > 0 && (sessions >= maxSessionsPerRequest || batchBytes+size > maxBackupBatchBytes) {
 			if err := flush(); err != nil {
 				return err
 			}
 		}
+		if batch[session.RoomID] == nil {
+			batch[session.RoomID] = map[string]map[string]json.RawMessage{"sessions": {}}
+		}
+		batch[session.RoomID]["sessions"][session.SessionID] = session.Data
+		sessions++
+		batchBytes += size
 	}
 	if err := flush(); err != nil {
 		return err

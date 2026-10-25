@@ -102,7 +102,7 @@ func (rl *Relay) AddRoom(roomID, version string, data RoomData) error {
 	return nil
 }
 
-// RemoveRoom releases a room after the destination has restored and verified it.
+// RemoveRoom releases the in-memory room after an import attempt.
 func (rl *Relay) RemoveRoom(roomID string) {
 	rl.mu.Lock()
 	delete(rl.rooms, roomID)
@@ -160,13 +160,15 @@ func (rl *Relay) Content(roomID, typ, stateKey string) map[string]any {
 	if !ok {
 		return nil
 	}
-	var content map[string]any
-	dec := json.NewDecoder(bytes.NewReader(ev.pdu.Content))
+	var stored struct {
+		Content map[string]any `json:"content"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(ev.raw))
 	dec.UseNumber()
-	if dec.Decode(&content) != nil {
+	if dec.Decode(&stored) != nil {
 		return nil
 	}
-	return content
+	return stored.Content
 }
 
 func (rl *Relay) room(roomID string) *room {
@@ -465,7 +467,7 @@ func (rl *Relay) missingEvents(w http.ResponseWriter, r *http.Request) {
 		var from []string
 		for _, l := range req.LatestEvents {
 			if ev, ok := rm.events[string(l)]; ok {
-				for _, p := range ev.pdu.PrevEvents {
+				for _, p := range ev.meta.PrevEvents {
 					from = append(from, string(p))
 				}
 			}
@@ -509,5 +511,11 @@ func writeJSON(w http.ResponseWriter, v any) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(v)
+	err := jsonv2.MarshalWrite(w, v, json.DefaultOptionsV1())
+	if err == nil {
+		_, err = io.WriteString(w, "\n")
+	}
+	if err != nil {
+		slog.Warn("relay response failed", "err", err)
+	}
 }

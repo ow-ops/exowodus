@@ -59,6 +59,10 @@ type replay struct {
 }
 
 func (im *Importer) newReplay(ctx context.Context, room *archive.ArchivedRoom, rep *RoomReport) (*replay, error) {
+	return im.loadReplay(ctx, room, rep, true)
+}
+
+func (im *Importer) loadReplay(ctx context.Context, room *archive.ArchivedRoom, rep *RoomReport, keepEvents bool) (*replay, error) {
 	im.recordOmittedEvents(room)
 	if im.Appservice == nil {
 		return nil, errors.New("recreating local-only rooms requires --to-admin-token")
@@ -67,9 +71,14 @@ func (im *Importer) newReplay(ctx context.Context, room *archive.ArchivedRoom, r
 	if err != nil {
 		return nil, err
 	}
-	events, err := im.Archive.RoomEvents(room.RoomID)
-	if err != nil {
-		return nil, err
+	var events []json.RawMessage
+	eventStream := im.Archive.RoomEventsIter(room.RoomID)
+	if keepEvents {
+		events, err = im.Archive.RoomEvents(room.RoomID)
+		if err != nil {
+			return nil, err
+		}
+		eventStream = roomEventSequence(events)
 	}
 	r := &replay{
 		im: im, room: room, st: st, rep: rep, events: events,
@@ -79,7 +88,14 @@ func (im *Importer) newReplay(ctx context.Context, room *archive.ArchivedRoom, r
 	for _, g := range room.Ghosts {
 		r.ghosts[g] = true
 	}
-	for _, raw := range room.State {
+	state := im.Archive.RoomStateIter(ctx, room.RoomID)
+	if room.State != nil {
+		state = roomEventSequence(room.State)
+	}
+	for raw, err := range state {
+		if err != nil {
+			return nil, err
+		}
 		ev, err := decodeEvent(raw)
 		if err != nil {
 			return nil, err
@@ -89,7 +105,13 @@ func (im *Importer) newReplay(ctx context.Context, room *archive.ArchivedRoom, r
 		}
 	}
 	sameServer := im.Archive.Manifest.ServerName == mx.ServerName(im.Appservice.Bot)
-	for _, raw := range events {
+	for raw, err := range eventStream {
+		if err != nil {
+			return nil, err
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		ev, err := decodeEvent(raw)
 		if err != nil {
 			return nil, err
@@ -713,8 +735,15 @@ func (im *Importer) ReplayRooms(ctx context.Context, rooms []*archive.ArchivedRo
 		im.roomFailures = map[string]bool{}
 	}
 	var reports []*RoomReport
-	var replays []*replay
+	type pendingReplay struct {
+		room   *archive.ArchivedRoom
+		report *RoomReport
+	}
+	var pending []pendingReplay
 	for _, room := range rooms {
+		if ctx.Err() != nil {
+			break
+		}
 		if im.Archive.IsRoomSkipped(room.RoomID) {
 			continue
 		}
@@ -734,7 +763,7 @@ func (im *Importer) ReplayRooms(ctx context.Context, rooms []*archive.ArchivedRo
 			im.roomFailures[room.RoomID] = true
 			continue
 		}
-		replays = append(replays, r)
+		pending = append(pending, pendingReplay{room, rep})
 	}
 
 	if im.ghosts == nil {
@@ -743,7 +772,16 @@ func (im *Importer) ReplayRooms(ctx context.Context, rooms []*archive.ArchivedRo
 	if im.eventMaps == nil {
 		im.eventMaps = map[string]map[string]string{}
 	}
-	for _, r := range replays {
+	for _, job := range pending {
+		if ctx.Err() != nil {
+			break
+		}
+		r, err := im.loadReplay(ctx, job.room, job.report, false)
+		if err != nil {
+			job.report.fail("finalize", job.room.RoomID, err)
+			im.roomFailures[job.room.RoomID] = true
+			continue
+		}
 		if err := r.Finalize(ctx); err != nil {
 			r.rep.fail("finalize", r.room.RoomID, err)
 			im.roomFailures[r.room.RoomID] = true

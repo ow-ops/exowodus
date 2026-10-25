@@ -113,7 +113,7 @@ func (im *Importer) ImportServer(ctx context.Context) ([]string, []Failure) {
 		}
 		return nil, []Failure{{Step: "server", Error: "registration tokens, blocked rooms, reports and to-device messages require --to-admin-token"}}
 	}
-	rooms, err := im.Archive.Rooms()
+	rooms, err := im.Archive.RoomHeaders()
 	if err != nil {
 		return nil, []Failure{{Step: "server", Error: err.Error()}}
 	}

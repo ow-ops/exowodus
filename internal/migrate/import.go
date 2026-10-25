@@ -179,13 +179,17 @@ func (im *Importer) PrepareUser(ctx context.Context, u *archive.User) (*UserJob,
 		}
 	}
 
-	kb, err := im.Archive.ReadKeyBackup(u.UserID)
-	if err != nil {
-		return nil, err
-	}
-	if kb != nil && !state.KeysDone {
-		if err := importKeyBackup(ctx, acct.client, kb, state, save); err != nil {
-			rep.fail("key_backup", "", err)
+	if !state.KeysDone {
+		kb, err := im.Archive.OpenKeyBackup(ctx, u.UserID)
+		if err != nil {
+			return nil, err
+		}
+		if kb != nil {
+			err := importKeyBackup(ctx, acct.client, kb, state, save)
+			closeErr := kb.Close()
+			if err := errors.Join(err, closeErr); err != nil {
+				rep.fail("key_backup", "", err)
+			}
 		}
 	}
 	if job.sameServer() && u.CrossSigning != nil && !state.Signing {
@@ -797,7 +801,7 @@ func (im *Importer) destSession(ctx context.Context, u *archive.User) (destAccou
 	}
 	a := destAccount{
 		id: string(c.UserID), client: c, password: password,
-		generated: im.DestPassword == "" && im.DestToken == "" && !u.Guest && !u.Passwordless,
+		generated: im.DestPassword == "" && im.DestToken == "" && !u.Guest && !u.Passwordless && !(u.Deactivated && im.DeactivatedIDOnly),
 		ephemeral: im.DestToken == "",
 	}
 	im.sessions[u.UserID] = a
@@ -806,7 +810,7 @@ func (im *Importer) destSession(ctx context.Context, u *archive.User) (destAccou
 
 // login also returns the account's password, when known.
 func (im *Importer) login(ctx context.Context, u *archive.User) (*mautrix.Client, string, error) {
-	if u.Guest || u.Passwordless {
+	if u.Guest || u.Passwordless || u.Deactivated && im.DeactivatedIDOnly {
 		return im.guestLogin(ctx, u)
 	}
 	if im.DestToken != "" {
