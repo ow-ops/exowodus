@@ -113,6 +113,10 @@ func TestKeyBackupImportRetryKeepsVersion(t *testing.T) {
 	versions, uploads := 0, 0
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			fmt.Fprintf(w, `{"version":"saved-version","algorithm":%q,"auth_data":%s}`, reader.Algorithm, reader.AuthData)
+			return
+		}
 		if r.Method == http.MethodPost {
 			versions++
 			_, _ = w.Write([]byte(`{"version":"saved-version"}`))

@@ -201,6 +201,53 @@ func importVerifications(ctx context.Context, c *mautrix.Client, verified map[st
 
 // importKeyBackup reuses the original auth data so the recovery key still works.
 func importKeyBackup(ctx context.Context, dest *mautrix.Client, kb *archive.KeyBackupReader, state *archive.ImportState, save func() error) error {
+	for range 3 {
+		if err := prepareBackupVersion(ctx, dest, kb, state, save); err != nil {
+			return err
+		}
+		err := uploadBackupSessions(ctx, dest, kb, state.KeyBackup)
+		if err == nil {
+			state.KeysDone = true
+			return save()
+		}
+		stale := mx.IsCode(err, "M_WRONG_ROOM_KEYS_VERSION") || mx.IsCode(err, "M_INVALID_PARAM") && strings.Contains(err.Error(), "most recently created version")
+		if !stale {
+			return err
+		}
+	}
+	return errors.New("destination backup version keeps changing; pause destination client writes and retry import")
+}
+
+func prepareBackupVersion(ctx context.Context, dest *mautrix.Client, kb *archive.KeyBackupReader, state *archive.ImportState, save func() error) error {
+	if state.KeyBackup != "" {
+		var latest struct {
+			Version   string          `json:"version"`
+			Algorithm string          `json:"algorithm"`
+			AuthData  json.RawMessage `json:"auth_data"`
+		}
+		_, err := dest.MakeRequest(ctx, http.MethodGet, dest.BuildClientURL("v3", "room_keys", "version"), nil, &latest)
+		if err != nil && !mx.IsStatus(err, http.StatusNotFound) {
+			return fmt.Errorf("check current backup version: %w", err)
+		}
+		if err == nil {
+			if latest.Version == "" || latest.Algorithm == "" || len(latest.AuthData) == 0 {
+				return errors.New("destination returned incomplete backup version metadata")
+			}
+			sourceAuth, err := decodeContent(kb.AuthData)
+			if err != nil {
+				return fmt.Errorf("source backup auth data: %w", err)
+			}
+			latestAuth, err := decodeContent(latest.AuthData)
+			if err != nil {
+				return fmt.Errorf("destination backup auth data: %w", err)
+			}
+			if latest.Version == state.KeyBackup && latest.Algorithm == kb.Algorithm && jsonEqual(sourceAuth, latestAuth) {
+				return nil
+			}
+		}
+		// Retain previous backups and avoid writing into another client's version.
+		state.KeyBackup = ""
+	}
 	if state.KeyBackup == "" {
 		var resp struct {
 			Version string `json:"version"`
@@ -209,13 +256,19 @@ func importKeyBackup(ctx context.Context, dest *mautrix.Client, kb *archive.KeyB
 		if _, err := dest.MakeRequest(ctx, http.MethodPost, dest.BuildClientURL("v3", "room_keys", "version"), body, &resp); err != nil {
 			return fmt.Errorf("create backup version: %w", err)
 		}
+		if resp.Version == "" {
+			return errors.New("destination created a backup without returning its version")
+		}
 		state.KeyBackup = resp.Version
 		if err := save(); err != nil {
 			return err
 		}
 	}
+	return nil
+}
 
-	keysURL := dest.BuildURLWithQuery(mautrix.ClientURLPath{"v3", "room_keys", "keys"}, map[string]string{"version": state.KeyBackup})
+func uploadBackupSessions(ctx context.Context, dest *mautrix.Client, kb *archive.KeyBackupReader, version string) error {
+	keysURL := dest.BuildURLWithQuery(mautrix.ClientURLPath{"v3", "room_keys", "keys"}, map[string]string{"version": version})
 	batch := map[string]map[string]map[string]json.RawMessage{}
 	sessions := 0
 	batchBytes := 0
@@ -244,11 +297,7 @@ func importKeyBackup(ctx context.Context, dest *mautrix.Client, kb *archive.KeyB
 		sessions++
 		batchBytes += size
 	}
-	if err := flush(); err != nil {
-		return err
-	}
-	state.KeysDone = true
-	return save()
+	return flush()
 }
 
 // importCrossSigning only applies when the user ID is unchanged.

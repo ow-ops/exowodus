@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 	"time"
@@ -39,6 +40,34 @@ func NewContinuwuityAdmin(ctx context.Context, c *mautrix.Client) (*Continuwuity
 }
 
 func (a *ContinuwuityAdmin) ServerName() string { return mx.ServerName(a.bot) }
+
+// EnsureUserAdmin verifies an existing grant before accepting an already-joined reply.
+func (a *ContinuwuityAdmin) EnsureUserAdmin(ctx context.Context, user *mautrix.Client, userID string) error {
+	_, err := a.Run(ctx, AdminHint(userID))
+	if err == nil || !strings.Contains(err.Error(), "User is already joined in the admin room") {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	endpoint := user.BuildURL(mautrix.BaseURLPath{"_continuwuity", "admin", "rooms", "list"})
+	req, checkErr := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if checkErr != nil {
+		return errors.Join(err, checkErr)
+	}
+	req.Header.Set("Authorization", "Bearer "+user.AccessToken)
+	resp, checkErr := user.Client.Do(req)
+	if checkErr != nil {
+		return errors.Join(err, checkErr)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%w; could not verify %s has server admin rights (HTTP %d)", err, userID, resp.StatusCode)
+	}
+	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
+		return fmt.Errorf("%w; admin verification endpoint did not return JSON", err)
+	}
+	return nil
+}
 
 func (a *ContinuwuityAdmin) Run(ctx context.Context, command string) (string, error) {
 	sent, err := a.client.SendMessageEvent(ctx, a.room, event.EventMessage,

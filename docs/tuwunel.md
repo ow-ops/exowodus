@@ -162,6 +162,7 @@ these files. Room state and event indexes still use RAM.
 Export downloads local uploads through the authenticated media API. Remote
 media, including cached files and remote avatars, is skipped. Those files
 depend on their original servers remaining available after migration.
+Remote avatar URLs are retained in profiles without downloading their files.
 `allow_legacy_media` is not needed. Missing local media still fails the export.
 The archive records this policy as `skipped_remote_media` in `server.json`, and
 import reports it as a note.
@@ -306,6 +307,12 @@ Import loads one relay room at a time and releases it after each attempt.
 Verification streams the archived messages, and key backups upload in batches of
 up to 1,000 sessions with a 4 MiB size target. The largest room and its historical
 state still need RAM; Continuwuity uses memory separately.
+
+Backup retries check that the saved destination version is still current and
+uses the source recovery metadata. If another version has replaced it, import
+creates a new version with the source metadata and retains previous backups.
+Keep destination clients paused until import finishes so they do not rotate
+the backup during restoration.
 
 On Linux with systemd, this example caps Exodus at 1 GiB. Adjust the limit to
 leave room for Continuwuity and the rest of the system:

@@ -169,7 +169,7 @@ func (im *Importer) PrepareUser(ctx context.Context, u *archive.User) (*UserJob,
 	importProfile(ctx, acct.client, u, state, rep)
 
 	if u.Admin && im.Admin != nil && !state.Admin {
-		if _, err := im.Admin.Run(ctx, AdminHint(acct.id)); err != nil {
+		if err := im.Admin.EnsureUserAdmin(ctx, acct.client, acct.id); err != nil {
 			rep.fail("admin", acct.id, err)
 		} else {
 			state.Admin = true
@@ -987,8 +987,16 @@ func importProfile(ctx context.Context, dest *mautrix.Client, u *archive.User, s
 	}
 	mxc, ok := state.Media[u.AvatarURL]
 	if !ok {
-		rep.fail("avatar", u.AvatarURL, errors.New("avatar media was not uploaded"))
-		return
+		server, _, err := mx.ParseMXC(u.AvatarURL)
+		if err != nil {
+			rep.fail("avatar", u.AvatarURL, err)
+			return
+		}
+		if server == mx.ServerName(u.UserID) {
+			rep.fail("avatar", u.AvatarURL, errors.New("local avatar media was not uploaded"))
+			return
+		}
+		mxc = u.AvatarURL
 	}
 	uri, err := id.ParseContentURI(mxc)
 	if err == nil {
