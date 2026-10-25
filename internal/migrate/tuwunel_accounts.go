@@ -30,7 +30,7 @@ var accountRecoveryTables = []string{
 	"keyid_key", "userid_masterkeyid", "userid_selfsigningkeyid", "userid_usersigningkeyid",
 	"userid_dehydrateddevice", "useridprofilekey_value", "roomuserdataid_accountdata",
 	"roomusertype_roomuserdataid", "backupid_algorithm", "backupkeyid_backup",
-	"userroomid_joinedcount", "userroomid_invitestate", "userroomid_knockedstate",
+	"userroomid_joined", "userroomid_invitestate", "userroomid_knockedstate",
 	"userid_locked", "userid_suspended",
 }
 
@@ -82,6 +82,9 @@ func RepairTuwunelAccounts(ctx context.Context, a *archive.Archive, database, ld
 	if err != nil {
 		return nil, err
 	}
+	if err := checkAccountRecoveryTables(families); err != nil {
+		return nil, err
+	}
 	stage, err := os.MkdirTemp(a.Dir, ".tuwunel-account-repair-")
 	if err != nil {
 		return nil, err
@@ -91,17 +94,13 @@ func RepairTuwunelAccounts(ctx context.Context, a *archive.Archive, database, ld
 	for _, table := range append(slices.Clone(accountCheckpointTables), accountRecoveryTables...) {
 		slog.Info("reading account recovery table", "table", table, "users", len(selected))
 		checkpoint := slices.Contains(accountCheckpointTables, table)
-		optional := table == "userdeviceid_refresh" || table == "onetimekeyid4225_otk" || table == "onetimekeyid_onetimekeys"
-		if !families[table] && !optional {
-			return nil, fmt.Errorf("database lacks %s; account recovery requires the Tuwunel 1.9.4 schema", table)
-		}
 		expected := sha256.New()
 		if checkpoint {
 			err := walkTuwunelScan(ctx, filepath.Join(source, table+".txt"), func(key string, value []byte, _ tuwunelValueRef) error {
 				hashAccountRow(expected, key, value)
 				return nil
 			})
-			if err != nil && !(optional && errors.Is(err, os.ErrNotExist)) {
+			if err != nil && !(optionalAccountTable(table) && errors.Is(err, os.ErrNotExist)) {
 				return nil, err
 			}
 		}
@@ -191,6 +190,26 @@ func RepairTuwunelAccounts(ctx context.Context, a *archive.Archive, database, ld
 		}
 	}
 	return recovered, nil
+}
+
+func optionalAccountTable(table string) bool {
+	return table == "userdeviceid_refresh" || table == "onetimekeyid4225_otk" || table == "onetimekeyid_onetimekeys"
+}
+
+func checkAccountRecoveryTables(families map[string]bool) error {
+	var missing []string
+	for _, table := range append(slices.Clone(accountCheckpointTables), accountRecoveryTables...) {
+		if !families[table] && !optionalAccountTable(table) {
+			missing = append(missing, table)
+		}
+	}
+	if !families["onetimekeyid4225_otk"] && !families["onetimekeyid_onetimekeys"] {
+		missing = append(missing, "onetimekeyid4225_otk or onetimekeyid_onetimekeys")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("account recovery database is missing required tables: %s; no account files were changed", strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 func hashAccountRow(h hash.Hash, key string, value []byte) {

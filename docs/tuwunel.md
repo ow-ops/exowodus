@@ -225,6 +225,8 @@ exodus repair-tuwunel-accounts --archive ./exodus-archive \
 Stop export and import commands first. Recovery reads the backup without
 changing it and checks passwords, tokens, devices and signing data against
 the retained dump. It uses the archived appservice registrations.
+It checks all required table names before scanning account data and reports
+missing tables together.
 
 Passwordless accounts with live devices are restored with their device keys,
 tokens, cross-signing keys, account data and latest encrypted key backup. The

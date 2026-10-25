@@ -21,6 +21,21 @@ import (
 
 const recoveryUser = "@discordbot:example.org"
 
+func tuwunel194Families(t *testing.T) map[string]bool {
+	t.Helper()
+	raw, err := os.ReadFile("testdata/tuwunel-v1.9.4-column-families.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	families := map[string]bool{}
+	for line := range strings.SplitSeq(string(raw), "\n") {
+		if line != "" && !strings.HasPrefix(line, "#") {
+			families[line] = true
+		}
+	}
+	return families
+}
+
 func accountRecoveryFixture(t *testing.T) (*archive.Archive, string, string) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -47,7 +62,7 @@ func accountRecoveryFixture(t *testing.T) (*archive.Archive, string, string) {
 		t.Fatal(err)
 	}
 	rows := map[string]map[string][]byte{}
-	for _, table := range append(slices.Clone(accountCheckpointTables), accountRecoveryTables...) {
+	for table := range tuwunel194Families(t) {
 		rows[table] = map[string][]byte{}
 	}
 	device := recoveryUser + "\xffDEVICE"
@@ -64,7 +79,7 @@ func accountRecoveryFixture(t *testing.T) (*archive.Archive, string, string) {
 	rows["keyid_key"]["@alice:example.org\xffmaster"] = []byte(`{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:alice":"alice"},"signatures":{"` + recoveryUser + `":{"ed25519:signing":"signed"}}}`)
 	rows["useridprofilekey_value"][recoveryUser+"\xffdisplayname"] = []byte(`"Discord bot"`)
 	rows["userid_locked"][recoveryUser] = nil
-	rows["userroomid_joinedcount"][recoveryUser+"\xff!room:example.org"] = make([]byte, 8)
+	rows["userroomid_joined"][recoveryUser+"\xff!room:example.org"] = make([]byte, 8)
 	var counter [8]byte
 	binary.BigEndian.PutUint64(counter[:], 255)
 	primary := "\xff" + recoveryUser + "\xff" + string(counter[:]) + "\xffm.secret_storage.key.test"
@@ -172,6 +187,33 @@ func TestAccountRepairRefusesDifferentSnapshot(t *testing.T) {
 	}
 }
 
+func TestAccountRepairReportsMissingTablesBeforeScanning(t *testing.T) {
+	a, database, ldb := accountRecoveryFixture(t)
+	families := tuwunel194Families(t)
+	delete(families, "keyid_key")
+	delete(families, "backupkeyid_backup")
+	list := "{" + strings.Join(slices.Sorted(maps.Keys(families)), ", ") + "}\n"
+	if err := os.WriteFile(filepath.Join(database, "families"), []byte(list), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// A scan would fail here if validation did not run first.
+	if err := os.Remove(filepath.Join(database, "userid_password.txt")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := RepairTuwunelAccounts(t.Context(), a, database, ldb)
+	if err == nil || !strings.Contains(err.Error(), "keyid_key") || !strings.Contains(err.Error(), "backupkeyid_backup") || !strings.Contains(err.Error(), "missing required tables") {
+		t.Fatalf("missing tables were not reported together before scanning: %v", err)
+	}
+	u, err := a.ReadUser(recoveryUser)
+	if err != nil || !u.Deactivated {
+		t.Fatal("schema check changed the archived account")
+	}
+	secrets, err := a.ReadSecrets(recoveryUser)
+	if err != nil || secrets != nil {
+		t.Fatal("schema check changed the archived secrets")
+	}
+}
+
 func TestAccountRepairKeepsArchivedAppservices(t *testing.T) {
 	for _, retainedScan := range []bool{false, true} {
 		t.Run(fmt.Sprintf("retained_scan=%t", retainedScan), func(t *testing.T) {
@@ -180,15 +222,6 @@ func TestAccountRepairKeepsArchivedAppservices(t *testing.T) {
 				t.Fatal(err)
 			}
 			const table = "id_appserviceregistrations"
-			familiesPath := filepath.Join(database, "families")
-			families, err := os.ReadFile(familiesPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			families = []byte(strings.TrimSuffix(string(families), "}\n") + ", " + table + "}\n")
-			if err := os.WriteFile(familiesPath, families, 0600); err != nil {
-				t.Fatal(err)
-			}
 			nativeRegistration := strings.ReplaceAll(testBridgeRegistration, "bridge-test-token", "changed-test-token")
 			nativeRow := fmt.Sprintf("0x%x ==> 0x%x\n", "example-bridge", nativeRegistration)
 			if err := os.WriteFile(filepath.Join(database, table+".txt"), []byte(nativeRow), 0600); err != nil {
@@ -254,11 +287,14 @@ func TestAccountRepairRocksDB(t *testing.T) {
 	}
 	run(nil, "put", "fixture", "true", "--create_if_missing")
 	for _, table := range append(slices.Clone(accountCheckpointTables), accountRecoveryTables...) {
-		run(nil, "create_column_family", table)
 		rows, err := os.ReadFile(filepath.Join(fixture, table+".txt"))
+		if os.IsNotExist(err) {
+			continue
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
+		run(nil, "create_column_family", table)
 		run(rows, "--column_family="+table, "load", "--hex")
 	}
 	if _, err := RepairTuwunelAccounts(t.Context(), a, database, ldb); err != nil {

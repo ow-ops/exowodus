@@ -174,7 +174,7 @@ func recoverTuwunelAccount(ctx context.Context, a *archive.Archive, dir, user st
 
 func recoverAccountRooms(ctx context.Context, a *archive.Archive, d *TuwunelDump, u *archive.User) error {
 	rooms := map[string]*archive.Room{}
-	for key := range d.maps["userroomid_joinedcount"] {
+	for key := range d.maps["userroomid_joined"] {
 		_, roomID, _ := strings.Cut(key, "\xff")
 		if a.IsRoomSkipped(roomID) {
 			continue
