@@ -122,7 +122,7 @@ func (j *UserJob) sameServer() bool {
 	return mx.ServerName(j.User.UserID) == mx.ServerName(j.acct.id)
 }
 
-// PrepareUser imports what does not depend on rooms.
+// PrepareUser creates accounts and restores devices before room import.
 func (im *Importer) PrepareUser(ctx context.Context, u *archive.User) (*UserJob, error) {
 	state, err := im.Archive.ReadImportState(u.UserID)
 	if err != nil {
@@ -190,19 +190,6 @@ func (im *Importer) PrepareUser(ctx context.Context, u *archive.User) (*UserJob,
 		}
 	}
 
-	if !state.KeysDone {
-		kb, err := im.Archive.OpenKeyBackup(ctx, u.UserID)
-		if err != nil {
-			return nil, err
-		}
-		if kb != nil {
-			err := importKeyBackup(ctx, acct.client, kb, state, save)
-			closeErr := kb.Close()
-			if err := errors.Join(err, closeErr); err != nil {
-				rep.fail("key_backup", "", err)
-			}
-		}
-	}
 	if job.sameServer() && u.CrossSigning != nil && !state.Signing {
 		if err := importCrossSigning(ctx, acct, im.Appservice, u.CrossSigning); err != nil {
 			rep.fail("cross_signing", "", err)
@@ -496,6 +483,20 @@ func (im *Importer) FinishUser(ctx context.Context, job *UserJob, src *Session) 
 		}
 		rep.RoomsJoined++
 		im.members[r.RoomID] = append(im.members[r.RoomID], acct)
+	}
+
+	if !state.KeysDone {
+		kb, err := im.Archive.OpenKeyBackup(ctx, u.UserID)
+		if err != nil {
+			return nil, err
+		}
+		if kb != nil {
+			err := importKeyBackup(ctx, acct.client, kb, state, save)
+			closeErr := kb.Close()
+			if err := errors.Join(err, closeErr); err != nil {
+				rep.fail("key_backup", "", err)
+			}
+		}
 	}
 
 	if err := save(); err != nil {

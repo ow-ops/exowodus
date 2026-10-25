@@ -179,7 +179,79 @@ func TestCompletedKeyBackupIsNotRead(t *testing.T) {
 	defer api.Close()
 	c := mx.MustNew(api.URL, "token")
 	im := &Importer{Archive: a, sessions: map[string]destAccount{user.UserID: {id: user.UserID, client: c}}}
-	if _, err := im.PrepareUser(t.Context(), user); err != nil {
+	job, err := im.PrepareUser(t.Context(), user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := im.FinishUser(t.Context(), job, nil); err != nil {
 		t.Fatalf("completed backup was opened again: %v", err)
+	}
+}
+
+func TestBackupConflictDoesNotBlockRoomImport(t *testing.T) {
+	a, userID := keyBackupImportFixture(t, 2, 16)
+	const roomID = "!room:example.org"
+	user := &archive.User{UserID: userID, Rooms: []archive.Room{{RoomID: roomID}}}
+	compatible := false
+	metadataReads, keyUploads, roomWrites := 0, 0, 0
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/room_keys/version"):
+			metadataReads++
+			if roomWrites == 0 {
+				t.Error("backup restoration ran before room import")
+			}
+			key := "destination-key"
+			if compatible {
+				key = "original"
+			}
+			fmt.Fprintf(w, `{"version":"525","algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":%q}}`, key)
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/room_keys/keys/"):
+			keyUploads++
+			_, _ = w.Write([]byte(`{}`))
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/rooms/"+roomID+"/account_data/"):
+			roomWrites++
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer api.Close()
+	c := mx.MustNew(api.URL, "token")
+	im := &Importer{Archive: a, Dest: c, rooms: map[string]string{roomID: roomID}, sessions: map[string]destAccount{userID: {id: userID, client: c}}}
+	user.Rooms[0].AccountData = map[string]json.RawMessage{"custom": json.RawMessage(`{"test":true}`)}
+	job, err := im.PrepareUser(t.Context(), user)
+	if err != nil || len(job.Report.Failures) != 0 || metadataReads != 0 {
+		t.Fatalf("preparation error=%v report=%+v backup reads=%d", err, job, metadataReads)
+	}
+	report, err := im.FinishUser(t.Context(), job, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.PreparationOnly || report.RoomsJoined != 1 || len(report.Failures) != 1 || report.Failures[0].Step != "key_backup" || metadataReads != 1 || keyUploads != 0 {
+		t.Fatalf("report=%+v reads=%d uploads=%d", report, metadataReads, keyUploads)
+	}
+	state, err := a.ReadImportState(userID)
+	if err != nil || !state.Rooms[roomID] || state.KeysDone {
+		t.Fatalf("state=%+v error=%v", state, err)
+	}
+	if backup, err := a.ReadKeyBackup(userID); err != nil || backup == nil || !strings.Contains(string(backup.AuthData), `"original"`) {
+		t.Fatal("backup conflict changed the archived recovery metadata")
+	}
+
+	compatible = true
+	job, err = im.PrepareUser(t.Context(), user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err = im.FinishUser(t.Context(), job, nil)
+	if err != nil || len(report.Failures) != 0 || report.RoomsJoined != 1 || keyUploads != 2 || roomWrites != 1 {
+		t.Fatalf("retry error=%v report=%+v uploads=%d room writes=%d", err, report, keyUploads, roomWrites)
+	}
+	state, err = a.ReadImportState(userID)
+	if err != nil || !state.KeysDone || state.KeyBackup != "525" {
+		t.Fatalf("restored backup state=%+v error=%v", state, err)
 	}
 }

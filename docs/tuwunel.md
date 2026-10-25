@@ -308,18 +308,20 @@ Verification streams the archived messages, and key backups upload one session
 at a time. The largest room and its historical state still need RAM;
 Continuwuity uses memory separately.
 
-Key-backup import reuses the current destination backup when its algorithm and
-encryption key match the archive. It retains the destination's signatures and
-uses per-session uploads so Continuwuity keeps better existing keys. A new
-version is created only when the account has no backup. Matching version changes
-are retried without creating another version.
+Key backups are restored after rooms. Import reuses the current destination
+backup when its algorithm and encryption key match the archive. It retains the
+destination's signatures and uses per-session uploads so Continuwuity keeps
+better existing keys. A new version is created only when the account has no
+backup. Matching version changes are retried without creating another version.
 
-Normal client activity does not require pausing for this backup step. If a client
-resets the recovery key, import stops rather than mixing keys encrypted for
-different recovery keys. Configure that account's key backup with the source
-recovery key before retrying. Existing backups and the archived keys are retained. Repeated version
-rejections appear in the report; check the destination backup or pause automatic
-key backup for the affected account and rerun import with the same archive.
+Normal client activity does not require pausing for this backup step. If the
+recovery keys differ, backup restoration fails without blocking room import.
+The report retains the failure and migration remains incomplete. Existing
+backups and the archived keys are retained. Configure that account's key backup
+with the source recovery key before retrying. Repeated version rejections also
+appear in the report; check the destination backup or pause automatic key backup
+for the affected account. Rerun import with the same archive to retry the backup
+without repeating completed room writes.
 
 On Linux with systemd, this example caps Exodus at 1 GiB. Adjust the limit to
 leave room for Continuwuity and the rest of the system:
