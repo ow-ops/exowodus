@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,22 @@ import (
 	"exodus/internal/archive"
 	"exodus/internal/mx"
 )
+
+func TestCanceledDeviceDeliveryStopsWithoutFailureFlood(t *testing.T) {
+	a, err := archive.Create(t.TempDir(), "example.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	im := &Importer{Archive: a, Admin: &ContinuwuityAdmin{bot: "@conduit:example.org"}}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	state := &archive.ServerImportState{ToDevice: map[string]bool{}}
+	var failures []Failure
+	im.deliverToDevice(ctx, make([]archive.ToDevice, 20000), state, &failures)
+	if len(failures) != 1 || len(state.ToDevice) != 0 || !strings.Contains(failures[0].Error, "retained for retry") {
+		t.Fatalf("cancellation checkpoint or failure count is wrong: %d", len(failures))
+	}
+}
 
 func TestBridgeQueuedDeviceMessages(t *testing.T) {
 	for _, sender := range []string{"@puppet_123:example.org", "@puppet_bot:example.org"} {

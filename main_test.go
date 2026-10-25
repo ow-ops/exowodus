@@ -339,10 +339,14 @@ func TestImportRejectsIncompleteArchive(t *testing.T) {
 }
 
 func TestImportCommandFailsOnReportedStepFailure(t *testing.T) {
+	joins := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/whoami") {
 			_, _ = w.Write([]byte(`{"user_id":"@alice:example.org","device_id":"DEVICE"}`))
 			return
+		}
+		if strings.Contains(r.URL.Path, "/join/") {
+			joins++
 		}
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"errcode":"M_FORBIDDEN","error":"injected"}`))
@@ -352,7 +356,7 @@ func TestImportCommandFailsOnReportedStepFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := a.WriteUser(&archive.User{UserID: "@alice:example.org", DisplayName: "Alice"}); err != nil {
+	if err := a.WriteUser(&archive.User{UserID: "@alice:example.org", DisplayName: "Alice", Rooms: []archive.Room{{RoomID: "!room:example.org"}}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.FinishExport(nil); err != nil {
@@ -364,5 +368,69 @@ func TestImportCommandFailsOnReportedStepFailure(t *testing.T) {
 	cmd.SetArgs([]string{"import", "--archive", a.Dir, "--to", srv.URL, "--to-token", "token"})
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "migration incomplete") {
 		t.Fatalf("step failure did not fail the command: %v", err)
+	}
+	if joins != 0 {
+		t.Fatal("room import continued after account preparation failed")
+	}
+}
+
+func TestRelayNameValidation(t *testing.T) {
+	for _, name := range []string{"", "relay.example.org", "relay.example.org:8448", "[::1]:8448"} {
+		if err := validateRelayName(name); err != nil {
+			t.Errorf("valid name %q: %v", name, err)
+		}
+	}
+	for _, name := range []string{"https://relay.example.org", "relay.example.org/path", "relay.example.org?x=y", "relay.example.org:", "relay.example.org:99999", "user@relay.example.org", "relay.example.org\n", "::1"} {
+		if err := validateRelayName(name); err == nil {
+			t.Errorf("invalid name accepted: %q", name)
+		}
+	}
+}
+
+func TestImportPreflightReplacesStaleReport(t *testing.T) {
+	posts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/login") {
+			_, _ = w.Write([]byte(`{"flows":[]}`))
+			return
+		}
+		posts++
+		w.WriteHeader(400)
+	}))
+	defer srv.Close()
+	a, err := archive.Create(t.TempDir(), "example.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.WriteUser(&archive.User{UserID: "@alice:example.org"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.FinishExport(nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.WriteImportReport(map[string]any{"users": []string{"old report"}}); err != nil {
+		t.Fatal(err)
+	}
+	cmd := newRootCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"import", "--archive", a.Dir, "--to", srv.URL})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "preflight") {
+		t.Fatalf("error=%v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(a.Dir, "import-report.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report struct {
+		Failures []migrate.Failure
+		Users    []json.RawMessage
+	}
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatal(err)
+	}
+	if posts != 0 || len(report.Users) != 0 || len(report.Failures) != 1 || report.Failures[0].Step != "preflight" {
+		t.Fatalf("posts=%d report=%+v", posts, report)
 	}
 }

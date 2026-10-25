@@ -288,7 +288,9 @@ func TestRegistrationResponseLossAndPasswordChangeResume(t *testing.T) {
 	c := mx.MustNew(api.URL, "")
 	c.DefaultHTTPRetries = 0
 	makeImporter := func() *Importer {
-		return &Importer{Archive: a, Dest: c, Appservice: &Appservice{Bot: "@exodus:example.org", client: mx.WithToken(c, "as-token")}}
+		asClient := mx.WithToken(c, "as-token")
+		asClient.DefaultHTTPRetries = 0
+		return &Importer{Archive: a, Dest: c, Appservice: &Appservice{Bot: "@exodus:example.org", client: asClient}}
 	}
 	u := &archive.User{UserID: user}
 	if _, err := makeImporter().destSession(t.Context(), u); !mx.IsStatus(err, http.StatusServiceUnavailable) {

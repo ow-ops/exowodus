@@ -273,6 +273,10 @@ func (im *Importer) deliverToDevice(ctx context.Context, msgs []archive.ToDevice
 	var remote int
 	devices := map[string]map[string]bool{}
 	for _, m := range msgs {
+		if err := ctx.Err(); err != nil {
+			*failures = append(*failures, Failure{Step: "to_device", Error: "delivery canceled; remaining messages retained for retry: " + err.Error()})
+			break
+		}
 		if state.ToDevice[m.Key] {
 			continue
 		}

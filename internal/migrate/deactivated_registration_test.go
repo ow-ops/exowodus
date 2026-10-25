@@ -103,7 +103,7 @@ func TestDeactivatedIDRestorationWithRegistrationDisabled(t *testing.T) {
 	}
 }
 
-func TestIDOnlyOptionDoesNotChangeNormalSignup(t *testing.T) {
+func TestIDOnlyOptionKeepsPasswordRegistration(t *testing.T) {
 	for _, deactivated := range []bool{false, true} {
 		t.Run(fmt.Sprintf("deactivated=%t", deactivated), func(t *testing.T) {
 			var requests int
@@ -115,8 +115,8 @@ func TestIDOnlyOptionDoesNotChangeNormalSignup(t *testing.T) {
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 					t.Error(err)
 				}
-				if !strings.HasSuffix(r.URL.Path, "/register") || body.Type != "" || body.Password == "" || r.Header.Get("Authorization") != "" {
-					t.Error("normal account was registered through an appservice")
+				if !strings.HasSuffix(r.URL.Path, "/register") || body.Type != "" || body.Password == "" || r.Header.Get("Authorization") != "Bearer as-token" {
+					t.Error("normal account did not use authenticated password registration")
 				}
 				requests++
 				w.Header().Set("Content-Type", "application/json")

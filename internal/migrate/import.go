@@ -33,9 +33,10 @@ type Importer struct {
 	Archive              *archive.Archive
 	Dest                 *mautrix.Client
 	// Without DestToken or DestPassword, accounts get generated passwords.
-	DestToken         string
-	DestPassword      string
-	RegistrationToken string
+	DestToken          string
+	DestPassword       string
+	RegistrationToken  string
+	AdoptExistingUsers map[string]bool
 	// Migrated source user IDs; references between them are rewritten.
 	Migrated map[string]bool
 
@@ -52,6 +53,7 @@ type Importer struct {
 	bridgeAccounts               []string
 	deactivatedAppserviceSenders []string
 	protectedDeactivated         map[string]bool
+	registrationNeeded           bool
 	outboxSummary                *outbox.Summary
 	// oldSessions and pending are loaded lazily.
 	oldSessions map[string]archive.Session
@@ -855,7 +857,7 @@ func (im *Importer) login(ctx context.Context, u *archive.User) (*mautrix.Client
 		c.UserID, c.DeviceID = who.UserID, who.DeviceID
 		return c, "", nil
 	}
-	migration, err := im.migrationSession(u)
+	migration, err := im.migrationSession(ctx, u)
 	if err != nil {
 		return nil, "", err
 	}
@@ -918,7 +920,7 @@ func (im *Importer) login(ctx context.Context, u *archive.User) (*mautrix.Client
 			return nil, "", err
 		}
 	}
-	c, err := mx.RegisterDevice(ctx, im.Dest, localpart, password, im.RegistrationToken, migration.DeviceID)
+	c, err := mx.RegisterDevice(ctx, im.registrationClient(), localpart, password, im.RegistrationToken, migration.DeviceID)
 	if mx.IsCode(err, "M_USER_IN_USE") {
 		return nil, "", fmt.Errorf("%s already exists on the destination; pass its password or access token", localpart)
 	}
@@ -936,7 +938,7 @@ func (im *Importer) guestLoginSession(ctx context.Context, u *archive.User, migr
 	if !migration.Owned {
 		if err := registerNewAppserviceUser(ctx, im.Appservice.client, userID); err != nil {
 			if mx.IsCode(err, "M_USER_IN_USE") {
-				return nil, "", fmt.Errorf("%s already exists without an authenticated import checkpoint; refusing to take ownership", userID)
+				return nil, "", fmt.Errorf("%s already exists without an authenticated import checkpoint; refusing to take ownership; if an earlier import created it, explicitly pass --adopt-existing-user %s", userID, userID)
 			}
 			return nil, "", fmt.Errorf("recreate passwordless account %s: %w", u.UserID, err)
 		}

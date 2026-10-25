@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -531,6 +532,7 @@ func newImportCmd() *cobra.Command {
 	var dst destFlags
 	var relayOpts relayFlags
 	var dir string
+	var adoptExisting []string
 	var requireLossless bool
 	var skipPrivateReceipts, skipThreadedReceipts, archiveDepartedRooms, deactivatedIDOnly bool
 	cmd := &cobra.Command{
@@ -542,6 +544,9 @@ after replacing Synapse with Continuwuity on the same server name.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
+			if err := validateRelayName(relayOpts.name); err != nil {
+				return err
+			}
 			a, err := archive.Open(dir)
 			if err != nil {
 				return err
@@ -579,6 +584,12 @@ after replacing Synapse with Continuwuity on the same server name.`,
 			if err != nil {
 				return err
 			}
+			if err := im.SetAdoptExistingUsers(users, adoptExisting); err != nil {
+				return err
+			}
+			if err := im.CheckDestination(ctx, users); err != nil {
+				return importPreflightFailure(a, fmt.Errorf("destination preflight: %w", err))
+			}
 			if err := im.PrepareOutbox(ctx, srv, rooms); err != nil {
 				return err
 			}
@@ -590,15 +601,30 @@ after replacing Synapse with Continuwuity on the same server name.`,
 					return err
 				}
 			}
-			if im.Admin != nil && needsAppservice(users, rooms, srv) {
+			if im.Admin != nil && (needsAppservice(users, rooms, srv) || len(users) > 0) {
 				unregister, err := registerAppservice(ctx, im)
 				if err != nil {
 					return err
 				}
 				defer unregister()
 			}
+			if err := im.CheckRegistration(ctx); err != nil {
+				return importPreflightFailure(a, fmt.Errorf("destination registration preflight: %w", err))
+			}
 
 			defer im.Close(context.WithoutCancel(ctx))
+			var rl *relay.Relay
+			if len(rooms) > 0 && relayOpts.name != "" {
+				rl, err = startRelay(ctx, a, dst.url, relayOpts, im)
+				if err != nil {
+					return err
+				}
+				defer func() {
+					stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+					defer cancel()
+					_ = rl.Stop(stopCtx)
+				}()
+			}
 			var reports []*migrate.Report
 			var jobs []*migrate.UserJob
 			var failed int
@@ -614,17 +640,27 @@ after replacing Synapse with Continuwuity on the same server name.`,
 					continue
 				}
 				jobs = append(jobs, job)
+				if len(job.Report.Failures) > 0 {
+					failed++
+				}
+			}
+			if failed > 0 {
+				for _, job := range jobs {
+					reports = append(reports, job.Report)
+				}
+				notes := []string{"Room import, queued deliveries and account status changes were deferred because account preparation failed. Fix the reported errors and rerun with the same archive."}
+				printSummary(cmd.OutOrStdout(), a, users, reports, nil, notes)
+				reportErr := a.WriteImportReport(struct {
+					Users []*migrate.Report `json:"users"`
+					Notes []string          `json:"notes"`
+				}{reports, notes})
+				return errors.Join(reportErr, migrationFailures(reports, nil, nil))
 			}
 			if err := im.RestoreBridges(ctx, srv); err != nil {
 				return err
 			}
 			var roomReports []*migrate.RoomReport
-			if len(rooms) > 0 && relayOpts.name != "" {
-				rl, err := startRelay(ctx, a, dst.url, relayOpts, im)
-				if err != nil {
-					return err
-				}
-				defer func() { _ = rl.Stop(context.WithoutCancel(ctx)) }()
+			if rl != nil {
 				roomReports, rooms = im.RelayRooms(ctx, rooms, rl)
 			}
 			if len(rooms) > 0 {
@@ -654,6 +690,7 @@ after replacing Synapse with Continuwuity on the same server name.`,
 	}
 	dst.register(cmd)
 	fs := cmd.Flags()
+	fs.StringSliceVar(&adoptExisting, "adopt-existing-user", nil, "restore this existing passwordless account after an earlier import failed before saving ownership (repeatable; overwrites its account data)")
 	fs.StringVar(&relayOpts.name, "relay-name", "", "temporary federation relay server name for original-event transfer (requires exported signing key and PDUs)")
 	fs.BoolVar(&requireLossless, "require-lossless", false, "require preservation checks (inherited from the export)")
 	fs.BoolVar(&skipPrivateReceipts, "skip-private-receipts", false, "omit private read positions; keep message and session verification")
@@ -665,6 +702,34 @@ after replacing Synapse with Continuwuity on the same server name.`,
 	fs.StringVar(&relayOpts.key, "relay-tls-key", "", "TLS key of the relay")
 	fs.StringVar(&dir, "archive", "exodus-archive", "archive directory")
 	return cmd
+}
+
+func importPreflightFailure(a *archive.Archive, err error) error {
+	reportErr := a.WriteImportReport(struct {
+		Failures []migrate.Failure `json:"failures"`
+		Notes    []string          `json:"notes"`
+	}{
+		Failures: []migrate.Failure{{Step: "preflight", Error: err.Error()}},
+		Notes:    []string{"Account and room import did not start because destination preflight failed."},
+	})
+	return errors.Join(err, reportErr)
+}
+
+func validateRelayName(name string) error {
+	if name == "" {
+		return nil
+	}
+	u, err := url.Parse("https://" + name)
+	if err != nil || u.Host != name || u.Hostname() == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || strings.ContainsAny(name, "\\ \t\r\n") || strings.HasSuffix(name, ":") || strings.Count(name, ":") > 1 && !strings.HasPrefix(name, "[") {
+		return errors.New("--relay-name must be a Matrix server name such as relay.example.org, without https:// or a path")
+	}
+	if port := u.Port(); port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return errors.New("--relay-name has an invalid port")
+		}
+	}
+	return nil
 }
 
 func newMigrateCmd() *cobra.Command {

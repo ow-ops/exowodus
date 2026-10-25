@@ -111,6 +111,28 @@ exodus import --to http://continuwuity:8008 --to-admin-token "$CADMIN" \
 exodus proxy --upstream http://continuwuity:8008
 ```
 
+Import checks destination login methods and username compatibility before creating
+accounts. With `--to-admin-token`, ordinary registration requests authenticate
+through the temporary migration appservice, so public registration can stay
+disabled on current Continuwuity.
+The configured registration-token flow still applies. Legacy login APIs must be
+available; delegated `[global.oauth.oidc]` forces OAuth-exclusive mode and blocks
+the appservice logins needed to restore devices.
+
+If an earlier attempt created a passwordless account but failed before recording
+ownership, confirm that the destination account belongs to that attempt, then
+add `--adopt-existing-user` to the same import command:
+
+```sh
+exodus import --to http://continuwuity:8008 --to-admin-token "$CADMIN" \
+  --registration-token "$REG" --relay-name relay.example.net \
+  --adopt-existing-user '@bridgebot:example.org'
+```
+
+This restores the account's data from the archive and may overwrite changes made
+on the destination. It requires the original server name and applies only to
+passwordless, guest or ID-only accounts. Existing accounts are refused by default.
+
 Keep dump files unchanged during export. Original event bodies stream from
 these files. Room state and event indexes still use RAM.
 

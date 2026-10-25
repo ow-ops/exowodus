@@ -222,8 +222,8 @@ original timestamps:
 ### Relay (`--relay-name`)
 
 exodus hands the rooms over with their **original events**: event IDs,
-signatures, senders and timestamps are unchanged. Requires
-`export --synapse-db --synapse-signing-key` and `import --to-admin-token`.
+signatures, senders and timestamps are unchanged. Requires exported original
+PDUs, the source signing key and `import --to-admin-token`.
 
 During the import, exodus runs a temporary federation server under that name
 (`--relay-listen`, default `:8448`) that serves the exported events:
@@ -234,6 +234,23 @@ During the import, exodus runs a temporary federation server under that name
    whole history from it.
 3. The migrated member removes the relay's member, leaving the room only on
    Continuwuity.
+
+Use a server name such as `--relay-name relay.example.net`, without `https://`.
+The listener uses HTTPS, including behind a reverse proxy. Point the proxy at
+`https://<reachable-host>:8448` and configure backend certificate trust. When the
+proxy is in Docker and Exodus runs on the host, use the host's reachable address.
+Exodus does not serve `/.well-known/matrix/server`; provide federation delegation
+separately if the public relay is served on port 443 rather than 8448.
+
+While import is running, test the local listener and public route:
+
+```sh
+curl -kfsS https://127.0.0.1:8448/_matrix/key/v2/server
+curl -fsS https://relay.example.net/_matrix/key/v2/server
+```
+
+`-k` is only for diagnosing the local self-signed listener. Both responses should
+identify the configured relay server name.
 
 Requirements:
 

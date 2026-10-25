@@ -12,10 +12,29 @@ import (
 	"exodus/internal/mx"
 )
 
-func (im *Importer) migrationSession(u *archive.User) (*archive.MigrationSession, error) {
+func (im *Importer) migrationSession(ctx context.Context, u *archive.User) (*archive.MigrationSession, error) {
 	session, err := im.Archive.ReadMigrationSession(u.UserID)
 	if err != nil {
 		return nil, err
+	}
+	if !session.Owned && im.AdoptExistingUsers[u.UserID] {
+		if !(u.Passwordless || u.Guest || u.Deactivated && im.DeactivatedIDOnly) {
+			return nil, errors.New("--adopt-existing-user applies only to passwordless, guest or ID-only accounts")
+		}
+		if im.Admin == nil || im.Appservice == nil || im.Admin.ServerName() != im.Archive.Manifest.ServerName || mx.ServerName(u.UserID) != im.Archive.Manifest.ServerName {
+			return nil, errors.New("adopting an existing account requires --to-admin-token and the original server name")
+		}
+		who, err := im.Appservice.As(u.UserID).Whoami(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("verify existing account %s: %w", u.UserID, err)
+		}
+		if string(who.UserID) != u.UserID {
+			return nil, errors.New("appservice returned a different existing account")
+		}
+		session.UserID, session.Owned = u.UserID, true
+		if err := im.Archive.WriteMigrationSession(u.UserID, session); err != nil {
+			return nil, err
+		}
 	}
 	if !session.Owned && im.Appservice != nil && mx.ServerName(im.Appservice.Bot) == im.Archive.Manifest.ServerName && mx.ServerName(u.UserID) == im.Archive.Manifest.ServerName {
 		state, err := im.Archive.ReadImportState(u.UserID)

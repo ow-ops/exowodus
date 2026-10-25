@@ -160,6 +160,12 @@ func RegisterDevice(ctx context.Context, c *mautrix.Client, username, password, 
 	return nil, fmt.Errorf("register %s: too many auth rounds", username)
 }
 
+// CheckRegistrationFlow rejects UIAA stages Exodus cannot complete.
+func CheckRegistrationFlow(state *mautrix.RespUserInteractive, haveToken bool) error {
+	_, err := nextStage(state, haveToken)
+	return err
+}
+
 func nextStage(state *mautrix.RespUserInteractive, haveToken bool) (mautrix.AuthType, error) {
 	done := map[string]bool{}
 	for _, s := range state.Completed {
