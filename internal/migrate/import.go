@@ -21,12 +21,16 @@ import (
 
 	"exodus/internal/archive"
 	"exodus/internal/mx"
+	"exodus/internal/outbox"
 )
 
 type Importer struct {
-	RequireLossless bool
-	Archive         *archive.Archive
-	Dest            *mautrix.Client
+	RequireLossless      bool
+	SkipPrivateReceipts  bool
+	ArchiveDepartedRooms bool
+	DeactivatedIDOnly    bool
+	Archive              *archive.Archive
+	Dest                 *mautrix.Client
 	// Without DestToken or DestPassword, accounts get generated passwords.
 	DestToken         string
 	DestPassword      string
@@ -39,10 +43,14 @@ type Importer struct {
 	Appservice *Appservice
 	Bridges    []*Bridge
 
-	sessions     map[string]destAccount
-	media        map[string]string
-	rooms        map[string]string
-	roomFailures map[string]bool
+	sessions             map[string]destAccount
+	media                map[string]string
+	rooms                map[string]string
+	roomFailures         map[string]bool
+	archiveOnlyRooms     map[string]bool
+	bridgeAccounts       []string
+	protectedDeactivated map[string]bool
+	outboxSummary        *outbox.Summary
 	// oldSessions and pending are loaded lazily.
 	oldSessions map[string]archive.Session
 	pending     map[string]archive.PendingPassword
@@ -386,7 +394,7 @@ func (im *Importer) FinishUser(ctx context.Context, job *UserJob, src *Session) 
 		im.members = map[string][]destAccount{}
 	}
 	for _, r := range u.Rooms {
-		if im.Archive.IsRoomSkipped(r.RoomID) {
+		if im.roomLeftInArchive(r.RoomID) {
 			rep.SkippedRooms = append(rep.SkippedRooms, r.RoomID)
 			continue
 		}
@@ -472,9 +480,12 @@ func (im *Importer) restoreReadMarker(ctx context.Context, acct destAccount, r a
 	}
 	body := map[string]string{}
 	private := mapEvent(r.PrivateReceipt)
+	if im.SkipPrivateReceipts {
+		private = ""
+	}
 	if eventID := mapEvent(marker.EventID); eventID != "" {
 		body["m.fully_read"] = eventID
-		if r.Receipt == "" && private == "" && !im.RequireLossless {
+		if r.Receipt == "" && private == "" && !im.RequireLossless && !im.SkipPrivateReceipts {
 			private = eventID
 		}
 	}
@@ -633,7 +644,7 @@ func (im *Importer) RestoreInvites(ctx context.Context, users []*archive.User) [
 			continue
 		}
 		for _, inv := range u.Invites {
-			if im.Archive.IsRoomSkipped(inv.RoomID) {
+			if im.roomLeftInArchive(inv.RoomID) {
 				continue
 			}
 			if _, replayed := im.rooms[inv.RoomID]; replayed {
@@ -671,7 +682,7 @@ func (im *Importer) RestoreKnocks(ctx context.Context, users []*archive.User) []
 			state.Knocks = map[string]bool{}
 		}
 		for _, k := range u.Knocks {
-			if im.Archive.IsRoomSkipped(k.RoomID) {
+			if im.roomLeftInArchive(k.RoomID) {
 				continue
 			}
 			if _, replayed := im.rooms[k.RoomID]; replayed || state.Knocks[k.RoomID] {

@@ -39,7 +39,7 @@ func (im *Importer) RelayRooms(ctx context.Context, rooms []*archive.ArchivedRoo
 		}
 		if room.ArchiveOnly {
 			rep := &RoomReport{RoomID: room.RoomID, ArchiveOnly: true}
-			if im.RequireLossless {
+			if im.RequireLossless && !im.ArchiveDepartedRooms {
 				rep.fail("lossless", room.RoomID, errors.New("archive-only retention does not restore the room"))
 			}
 			reports = append(reports, rep)

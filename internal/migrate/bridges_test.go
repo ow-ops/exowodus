@@ -79,3 +79,26 @@ func TestRelayMembersIncludesBridgeGhosts(t *testing.T) {
 		t.Fatalf("owner=%s members=%v", owner, members)
 	}
 }
+
+func TestBridgePuppetUsesItsOwnRegistration(t *testing.T) {
+	var registered int
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer bridge-test-token" {
+			t.Error("puppet registered through another appservice")
+		}
+		registered++
+		_, _ = w.Write([]byte(`{"user_id":"@puppet_123:example.org","device_id":"","access_token":""}`))
+	}))
+	defer api.Close()
+	b, err := parseBridge([]byte(testBridgeRegistration), mx.MustNew(api.URL, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &replay{im: &Importer{Bridges: []*Bridge{b}}, room: &archive.ArchivedRoom{Ghosts: []string{"@puppet_123:example.org"}}, puppets: map[string]bool{"@puppet_123:example.org": true}}
+	if err := r.registerGhosts(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if registered != 1 {
+		t.Fatalf("puppet registered %d times", registered)
+	}
+}

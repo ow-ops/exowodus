@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"exodus/internal/archive"
@@ -22,6 +24,9 @@ func (im *Importer) VerifySessions(ctx context.Context, users []*archive.User) [
 	var failures []Failure
 	checked := map[string]error{}
 	for _, user := range users {
+		if user.Deactivated && im.DeactivatedIDOnly {
+			continue
+		}
 		secrets, err := im.Archive.ReadSecrets(user.UserID)
 		if err != nil || secrets == nil {
 			failures = append(failures, Failure{Step: "sessions", Target: user.UserID, Error: "source login data unavailable"})
@@ -65,6 +70,7 @@ func (d *TuwunelDump) CheckLosslessMaps() error {
 
 // CheckLosslessImport runs before creating accounts or changing the target.
 func (im *Importer) CheckLosslessImport(users []*archive.User, rooms []*archive.ArchivedRoom, server *archive.Server, hasRelay bool) error {
+	im.SetArchiveOnlyRooms(rooms)
 	slog.Info("checking import preservation", "users", len(users), "rooms", len(rooms))
 	var failures []error
 	for _, room := range rooms {
@@ -88,12 +94,27 @@ func (im *Importer) CheckLosslessImport(users []*archive.User, rooms []*archive.
 	if im.Admin.ServerName() != im.Archive.Manifest.ServerName {
 		failures = append(failures, errors.New("lossless import requires the same server name"))
 	}
-	if len(rooms) > 0 && !hasRelay {
-		failures = append(failures, errors.New("lossless room import requires --relay-name"))
+	if !hasRelay {
+		for _, room := range rooms {
+			if !room.ArchiveOnly && !im.Archive.IsRoomSkipped(room.RoomID) {
+				failures = append(failures, errors.New("lossless room import requires --relay-name"))
+				break
+			}
+		}
 	}
 	for _, u := range users {
 		if u.Deactivated {
-			failures = append(failures, fmt.Errorf("%s: full deactivated-account data restoration is not implemented", u.UserID))
+			if !im.DeactivatedIDOnly {
+				failures = append(failures, fmt.Errorf("%s: full deactivated-account data restoration is not implemented; use --deactivated-id-only to reserve its ID without restoring account data", u.UserID))
+			} else {
+				secrets, err := im.Archive.ReadSecrets(u.UserID)
+				hasSecrets := secrets != nil && (secrets.PasswordHash != "" || len(secrets.Tokens)+len(secrets.Devices)+len(secrets.OneTimeKeys)+len(secrets.FallbackKeys)+len(secrets.Pushers) > 0)
+				_, backupErr := os.Stat(filepath.Join(im.Archive.UserDir(u.UserID), "key_backup.json"))
+				hasBackup := !errors.Is(backupErr, os.ErrNotExist)
+				if err != nil || hasBackup || hasSecrets || im.protectedDeactivated[u.UserID] || len(u.Devices) > 0 || u.CrossSigning != nil || u.Dehydrated != nil {
+					failures = append(failures, fmt.Errorf("%s: deactivated account has login or device data; ID-only restoration refused", u.UserID))
+				}
+			}
 		}
 		if !u.Deactivated {
 			if secrets, err := im.Archive.ReadSecrets(u.UserID); err != nil || secrets == nil {
@@ -101,10 +122,10 @@ func (im *Importer) CheckLosslessImport(users []*archive.User, rooms []*archive.
 			}
 		}
 		for _, r := range u.Rooms {
-			if im.Archive.IsRoomSkipped(r.RoomID) {
+			if im.roomLeftInArchive(r.RoomID) {
 				continue
 			}
-			if _, omitted := im.omittedEvents[r.RoomID][r.PrivateReceipt]; r.PrivateReceipt != "" && !omitted {
+			if _, omitted := im.omittedEvents[r.RoomID][r.PrivateReceipt]; r.PrivateReceipt != "" && !omitted && !im.SkipPrivateReceipts {
 				failures = append(failures, fmt.Errorf("%s: private receipt in %s cannot be preserved on backfilled events", u.UserID, r.RoomID))
 			}
 		}
@@ -117,7 +138,9 @@ func (im *Importer) CheckLosslessImport(users []*archive.User, rooms []*archive.
 			continue
 		}
 		if room.ArchiveOnly {
-			failures = append(failures, fmt.Errorf("%s: rooms without joined local users cannot currently be restored", room.RoomID))
+			if !im.ArchiveDepartedRooms {
+				failures = append(failures, fmt.Errorf("%s: rooms without joined local users cannot currently be restored; use --archive-departed-rooms to retain them offline", room.RoomID))
+			}
 			continue
 		}
 		slog.Info("checking original room events", "room", room.RoomID, "position", i+1, "rooms", len(rooms))
@@ -133,6 +156,12 @@ func (im *Importer) CheckLosslessImport(users []*archive.User, rooms []*archive.
 	}
 	if server != nil {
 		for _, limitation := range server.Limitations {
+			if table, count, ok := outgoingLimitation(limitation); ok && im.outboxSummary != nil && im.outboxSummary.Rows[table] == count {
+				continue
+			}
+			if im.SkipPrivateReceipts && limitation == "private read receipts on backfilled events cannot currently be restored" {
+				continue
+			}
 			failures = append(failures, errors.New(limitation))
 		}
 		for _, message := range server.ToDevice {
@@ -148,6 +177,21 @@ func (im *Importer) CheckLosslessImport(users []*archive.User, rooms []*archive.
 	}
 	slog.Info("import preservation checks passed")
 	return nil
+}
+
+func (im *Importer) SetArchiveOnlyRooms(rooms []*archive.ArchivedRoom) {
+	im.archiveOnlyRooms = map[string]bool{}
+	if im.ArchiveDepartedRooms {
+		for _, room := range rooms {
+			if room.ArchiveOnly {
+				im.archiveOnlyRooms[room.RoomID] = true
+			}
+		}
+	}
+}
+
+func (im *Importer) roomLeftInArchive(roomID string) bool {
+	return im.Archive.IsRoomSkipped(roomID) || im.archiveOnlyRooms[roomID]
 }
 
 func (im *Importer) recordOmittedEvents(room *archive.ArchivedRoom) {

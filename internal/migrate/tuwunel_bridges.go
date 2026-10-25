@@ -40,6 +40,39 @@ func (d *TuwunelDump) BridgeUsers(users map[string]bool, serverName string) (map
 	if len(bridges) == 0 {
 		return skipped, nil
 	}
+	protected, err := d.protectedBridgeUsers(bridges, serverName)
+	if err != nil {
+		return nil, err
+	}
+	consider := func(user string) {
+		if isBridgeGhost(user, bridges, protected, serverName) {
+			skipped[user] = true
+		}
+	}
+	for user := range users {
+		consider(user)
+	}
+	for user := range d.passwords {
+		consider(user)
+	}
+	return skipped, nil
+}
+
+func isBridgeGhost(user string, bridges []*Bridge, protected map[string]bool, serverName string) bool {
+	if protected[user] || mx.ServerName(user) != serverName {
+		return false
+	}
+	for _, b := range bridges {
+		for _, re := range b.exclusive {
+			if re.MatchString(user) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (d *TuwunelDump) protectedBridgeUsers(bridges []*Bridge, serverName string) (map[string]bool, error) {
 	protected := map[string]bool{}
 	for user, password := range d.passwords {
 		if len(password) != 0 && string(password) != "*" {
@@ -72,24 +105,5 @@ func (d *TuwunelDump) BridgeUsers(users map[string]bool, serverName string) (map
 	for _, b := range bridges {
 		protected["@"+b.sender+":"+serverName] = true
 	}
-	consider := func(user string) {
-		if protected[user] || mx.ServerName(user) != serverName {
-			return
-		}
-		for _, b := range bridges {
-			for _, re := range b.exclusive {
-				if re.MatchString(user) {
-					skipped[user] = true
-					return
-				}
-			}
-		}
-	}
-	for user := range users {
-		consider(user)
-	}
-	for user := range d.passwords {
-		consider(user)
-	}
-	return skipped, nil
+	return protected, nil
 }

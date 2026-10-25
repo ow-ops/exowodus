@@ -88,7 +88,8 @@ mv "$OUT/id_appserviceregistrations.txt.part" "$OUT/id_appserviceregistrations.t
 Adding a scan changes the dump; use a new `--archive` directory.
 
 Keep the dump private: it contains password hashes, login tokens and the server
-signing key. Drain pending outbound deliveries before cutover. Exodus excludes
+signing key. Pending federation deliveries can be retained for proxy retry as
+described below. Exodus excludes
 expired tokens, superseded refresh tokens and used fallback keys.
 
 Tuwunel must provide the [Synapse-compatible admin endpoints](https://github.com/matrix-construct/tuwunel/blob/main/docs/development/compliance/synapse-admin.md)
@@ -189,19 +190,30 @@ other flags to reuse completed exports. Skipped room IDs are recorded in
 `manifest.json`, `export-report.json` and the import report. Import omits their
 history, membership, receipts, room account data and aliases. Removing a
 `--skip-room` option on a later export includes that room again. Use the updated
-binary for import as well; new archives use format version 6.
+binary for import as well; new archives use format version 7.
 
 Whole-server migration requires these scans, even for empty tables. Export
 checks the database timeline against the API unless `--history-at-checkpoint` is
 set. Import checks original event IDs, content, senders and timestamps, and
 verifies destination sessions. It does not fall back to replaying messages.
 
-Import blocks these known unsupported cases:
+Import blocks these cases unless the corresponding import option is supplied:
 
-- Private receipts on backfilled events and per-thread receipts.
-- Pending outbound deliveries.
-- Rooms without joined local users.
-- Deactivated accounts and accounts with multiple email addresses.
+- `--skip-private-receipts` omits private read positions.
+- `--archive-departed-rooms` keeps rooms with no joined local users in the archive
+  only, including their history and media.
+- `--deactivated-id-only` recreates deactivated IDs without their old account data.
+  Accounts with saved logins, devices or encryption keys still block import.
+
+Registered bridge ghosts without login or device data are handled through their
+appservice registration. Existing archives are checked against the retained dump;
+user-name prefixes are not used to identify bridge accounts.
+
+These cases remain unsupported:
+
+- Per-thread receipts.
+- Pending appservice and push deliveries.
+- Accounts with multiple email addresses.
 
 Moderation reports, older fallback-key formats and disabled-room settings are
 not restored. Unknown source features may also require separate handling.
@@ -217,3 +229,44 @@ response. It saves acknowledgements under `proxy-inbox/` and retries unacknowled
 messages after a restart. Run one proxy process per archive and keep that directory
 with the archive. Both classic sync and sliding sync are supported. Use the updated
 binary for import and proxy; existing archives do not need a new export.
+
+## Pending federation deliveries
+
+The proxy can retry the outgoing federation queue from the retained dump. It
+preserves original PDU IDs and EDU payloads, including device-list updates and
+receipts. Expired typing notifications are omitted. Import verifies queued PDU
+IDs before making the queue available to the proxy.
+
+Continuwuity must use the original server signing key. Stop Continuwuity, then
+run this as the database owner with a compatible `ldb`:
+
+```sh
+exodus restore-signing-key --archive ./exodus-archive \
+  --database /path/to/continuwuity-database
+```
+
+The command backs up the current key to
+`exodus-archive/continuwuity-signing-key-backup.txt` before replacing it. Private
+key material is passed to `ldb` through stdin. It also writes
+`exodus-archive/continuwuity-old-verify-key.toml`; merge that entry into the
+Continuwuity configuration so events already signed by its previous key remain
+verifiable. Then restart Continuwuity.
+
+For the three accepted limitations above, import with:
+
+```sh
+exodus import --archive ./exodus-archive \
+  --to http://continuwuity:8008 --to-admin-token "$CADMIN" \
+  --registration-token "$REG" --relay-name relay.example.net \
+  --skip-private-receipts --archive-departed-rooms --deactivated-id-only
+
+exodus proxy --archive ./exodus-archive --upstream http://continuwuity:8008
+```
+
+Import prepares `federation-outbox.sqlite` once by scanning the retained PDU
+tables. It stores payloads on disk and reuses the prepared queue on retry; no new
+dump or export is needed. Keep the SQLite file with the archive. The proxy sends
+one transaction at a time, with up to 50 entries and a 512 KiB batch target. A
+larger individual event is sent alone. Failed destinations back off independently.
+Network retries keep the same transaction ID, and PDU processing errors retain
+the batch for retry. Logs report the remaining delivery count.

@@ -55,7 +55,7 @@ func (a *Archive) WriteProxyInboxState(state *ProxyInboxState) error {
 	return writeJSONFile(a.proxyInboxPath(state.UserID, state.DeviceID), state, true)
 }
 
-func (a *Archive) EnableProxyInbox() error {
+func (a *Archive) UpgradeFormat() error {
 	if a.Manifest.Version >= version {
 		return nil
 	}
@@ -69,13 +69,21 @@ func (a *Archive) EnableProxyInbox() error {
 }
 
 func (a *Archive) LockProxyInbox() (io.Closer, error) {
-	f, err := os.OpenFile(filepath.Join(a.Dir, "proxy-inbox.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	return a.lockProxyFile("proxy-inbox.lock")
+}
+
+func (a *Archive) LockFederationOutbox() (io.Closer, error) {
+	return a.lockProxyFile("federation-outbox.lock")
+}
+
+func (a *Archive) lockProxyFile(name string) (io.Closer, error) {
+	f, err := os.OpenFile(filepath.Join(a.Dir, name), os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err
 	}
 	if err := lockExportFile(f); err != nil {
 		f.Close()
-		return nil, fmt.Errorf("proxy inbox already in use: %w", err)
+		return nil, fmt.Errorf("%s already in use: %w", name, err)
 	}
 	return f, nil
 }

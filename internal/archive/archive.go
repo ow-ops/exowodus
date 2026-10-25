@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-const version = 6
+const version = 7
 
 type Manifest struct {
 	SkippedRooms    map[string]string `json:"skipped_rooms,omitempty"`

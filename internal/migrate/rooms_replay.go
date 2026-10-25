@@ -273,6 +273,9 @@ func (r *replay) ensureJoined(ctx context.Context, userID string) error {
 // registerGhosts recreates deactivated users and puppets from the history.
 func (r *replay) registerGhosts(ctx context.Context) error {
 	for _, g := range r.room.Ghosts {
+		if r.puppets[g] {
+			continue
+		}
 		if err := r.im.Appservice.Register(ctx, g); err != nil {
 			return err
 		}
@@ -749,7 +752,7 @@ func (im *Importer) ReplayRooms(ctx context.Context, rooms []*archive.ArchivedRo
 		}
 		im.eventMaps[r.room.RoomID] = r.st.Events
 		for _, g := range r.room.Ghosts {
-			if !im.Migrated[g] {
+			if !im.Migrated[g] && !r.puppets[g] {
 				im.ghosts[r.mapUser(g)] = true
 			}
 		}

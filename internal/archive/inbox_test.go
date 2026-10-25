@@ -50,7 +50,7 @@ func TestProxyInboxStateAndLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := old.EnableProxyInbox(); err != nil {
+	if err := old.UpgradeFormat(); err != nil {
 		t.Fatal(err)
 	}
 	updated, err := Open(a.Dir)

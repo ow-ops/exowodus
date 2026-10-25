@@ -55,6 +55,7 @@ type mediaFile struct {
 }
 
 type Proxy struct {
+	outbox    *federationOutbox
 	inboxes   map[string]*deviceInbox
 	inboxLock io.Closer
 	archive   *archive.Archive
@@ -143,6 +144,10 @@ func New(a *archive.Archive, upstream *url.URL, pepper string, macaroonKey []byt
 		}
 	}
 	if upstream != nil {
+		if err := p.loadOutbox(); err != nil {
+			p.Close()
+			return nil, err
+		}
 		if p.upstream, err = mx.New(upstream.String(), ""); err != nil {
 			p.Close()
 			return nil, err
@@ -307,10 +312,11 @@ func (p *Proxy) identityOf(r *http.Request) cachedUser {
 }
 
 func (p *Proxy) Close() error {
+	err := p.outbox.close()
 	if p.inboxLock != nil {
-		return p.inboxLock.Close()
+		err = errors.Join(err, p.inboxLock.Close())
 	}
-	return nil
+	return err
 }
 
 func (p *Proxy) authenticated(r *http.Request) bool {

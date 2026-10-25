@@ -64,7 +64,7 @@ Replacing Synapse on the same server name:
 		},
 	}
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable debug logging")
-	root.AddCommand(newExportCmd(), newImportCmd(), newMigrateCmd(), newProxyCmd(), newLinkSSOCmd())
+	root.AddCommand(newExportCmd(), newImportCmd(), newMigrateCmd(), newProxyCmd(), newLinkSSOCmd(), newRestoreSigningKeyCmd())
 	return root
 }
 
@@ -532,6 +532,7 @@ func newImportCmd() *cobra.Command {
 	var relayOpts relayFlags
 	var dir string
 	var requireLossless bool
+	var skipPrivateReceipts, archiveDepartedRooms, deactivatedIDOnly bool
 	cmd := &cobra.Command{
 		Use:   "import",
 		Short: "Import an archive into Continuwuity",
@@ -565,8 +566,19 @@ after replacing Synapse with Continuwuity on the same server name.`,
 				return err
 			}
 			im.RequireLossless = requireLossless || a.Manifest.RequireLossless
+			im.SkipPrivateReceipts = skipPrivateReceipts
+			im.ArchiveDepartedRooms = archiveDepartedRooms
+			im.DeactivatedIDOnly = deactivatedIDOnly
+			im.SetArchiveOnlyRooms(rooms)
 			srv, err := a.ReadServer()
 			if err != nil {
+				return err
+			}
+			users, err = im.FilterBridgeAccounts(ctx, users, srv)
+			if err != nil {
+				return err
+			}
+			if err := im.PrepareOutbox(ctx, srv, rooms); err != nil {
 				return err
 			}
 			if im.RequireLossless {
@@ -640,6 +652,9 @@ after replacing Synapse with Continuwuity on the same server name.`,
 	fs := cmd.Flags()
 	fs.StringVar(&relayOpts.name, "relay-name", "", "temporary federation relay server name for original-event transfer (requires exported signing key and PDUs)")
 	fs.BoolVar(&requireLossless, "require-lossless", false, "require preservation checks (inherited from the export)")
+	fs.BoolVar(&skipPrivateReceipts, "skip-private-receipts", false, "omit private read positions; keep message and session verification")
+	fs.BoolVar(&archiveDepartedRooms, "archive-departed-rooms", false, "keep rooms with no joined local users in the archive only")
+	fs.BoolVar(&deactivatedIDOnly, "deactivated-id-only", false, "recreate deactivated IDs without restoring their account data; refuse accounts with saved logins or devices")
 	fs.StringVar(&relayOpts.listen, "relay-listen", ":8448", "address the relay listens on")
 	fs.StringVar(&relayOpts.cert, "relay-tls-cert", "", "TLS certificate of the relay; self-signed when unset")
 	fs.StringVar(&relayOpts.key, "relay-tls-key", "", "TLS key of the relay")
@@ -805,6 +820,9 @@ Without --upstream it only serves archived media, for a retired server name.`,
 				return err
 			}
 			defer p.Close()
+			if err := p.StartOutbox(cmd.Context()); err != nil {
+				return err
+			}
 			srv := &http.Server{Addr: listen, Handler: p, ReadHeaderTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute}
 			stopped := make(chan struct{})
 			go func() {

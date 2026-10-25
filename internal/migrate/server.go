@@ -122,6 +122,26 @@ func (im *Importer) ImportServer(ctx context.Context) ([]string, []Failure) {
 		archiveOnly[room.RoomID] = room.ArchiveOnly
 	}
 	var notes []string
+	if im.outboxSummary != nil {
+		notes = append(notes, fmt.Sprintf("Pending federation deliveries retained for proxy retry; %d expired typing notifications omitted.", im.outboxSummary.ExpiredTyping))
+		if im.outboxSummary.OmittedEvents > 0 {
+			notes = append(notes, fmt.Sprintf("%d pending deliveries referenced events already omitted from room history.", im.outboxSummary.OmittedEvents))
+		}
+	}
+	if im.SkipPrivateReceipts {
+		notes = append(notes, "Private read receipts were omitted (--skip-private-receipts).")
+	}
+	for _, room := range rooms {
+		if im.archiveOnlyRooms[room.RoomID] {
+			notes = append(notes, "Room "+room.RoomID+" retained in the archive only (--archive-departed-rooms).")
+		}
+	}
+	for _, user := range im.bridgeAccounts {
+		notes = append(notes, "Appservice account "+user+" retained with its bridge registration.")
+	}
+	if im.DeactivatedIDOnly {
+		notes = append(notes, "Deactivated accounts were recreated with their IDs and deactivated status only (--deactivated-id-only).")
+	}
 	for _, roomID := range slices.Sorted(maps.Keys(im.Archive.Manifest.SkippedRooms)) {
 		notes = append(notes, fmt.Sprintf("Skipped room %s: %s", roomID, im.Archive.Manifest.SkippedRooms[roomID]))
 	}
@@ -140,6 +160,12 @@ func (im *Importer) ImportServer(ctx context.Context) ([]string, []Failure) {
 		notes = append(notes, "Remote media unavailable on source: "+mxc)
 	}
 	for _, limitation := range srv.Limitations {
+		if im.SkipPrivateReceipts && limitation == "private read receipts on backfilled events cannot currently be restored" {
+			continue
+		}
+		if table, count, ok := outgoingLimitation(limitation); ok && im.outboxSummary != nil && im.outboxSummary.Rows[table] == count {
+			continue
+		}
 		notes = append(notes, "Source limitation: "+limitation)
 	}
 	var failures []Failure
@@ -266,7 +292,7 @@ func (im *Importer) deliverToDevice(ctx context.Context, msgs []archive.ToDevice
 		}
 	}
 	if remote > 0 {
-		if err := im.Archive.EnableProxyInbox(); err != nil {
+		if err := im.Archive.UpgradeFormat(); err != nil {
 			*failures = append(*failures, Failure{Step: "to_device", Error: err.Error()})
 			return nil
 		}
