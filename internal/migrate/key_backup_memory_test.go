@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -24,7 +23,7 @@ func keyBackupImportFixture(t *testing.T, count, keyBytes int) (*archive.Archive
 	const user = "@alice:example.org"
 	sessions := map[string]json.RawMessage{}
 	for i := range count {
-		sessions[fmt.Sprintf("session%d", i)] = json.RawMessage(`{"session_data":{"ciphertext":"` + strings.Repeat("x", keyBytes) + `"}}`)
+		sessions[fmt.Sprintf("session%d", i)] = json.RawMessage(`{"first_message_index":10,"forwarded_count":1,"is_verified":false,"session_data":{"ciphertext":"` + strings.Repeat("x", keyBytes) + `"}}`)
 	}
 	raw, err := json.Marshal(map[string]any{"sessions": sessions})
 	if err != nil {
@@ -36,15 +35,14 @@ func keyBackupImportFixture(t *testing.T, count, keyBytes int) (*archive.Archive
 	return a, user
 }
 
-func TestKeyBackupImportBoundsSingleRoomBatches(t *testing.T) {
+func TestKeyBackupImportStreamsSingleSessions(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		count int
 		size  int
-		want  []int
 	}{
-		{name: "session count", count: 2101, size: 64, want: []int{1000, 1000, 101}},
-		{name: "payload bytes", count: 9, size: 1 << 20, want: []int{3, 3, 3}},
+		{name: "session count", count: 2101, size: 64},
+		{name: "payload bytes", count: 9, size: 1 << 20},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a, user := keyBackupImportFixture(t, tc.count, tc.size)
@@ -53,11 +51,17 @@ func TestKeyBackupImportBoundsSingleRoomBatches(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer reader.Close()
-			var batches []int
+			creates := 0
 			seen := map[string]bool{}
 			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
+				if r.Method == http.MethodGet {
+					w.WriteHeader(http.StatusNotFound)
+					_, _ = w.Write([]byte(`{"errcode":"M_NOT_FOUND"}`))
+					return
+				}
 				if r.Method == http.MethodPost {
+					creates++
 					var body struct {
 						Algorithm string `json:"algorithm"`
 						AuthData  struct {
@@ -73,22 +77,24 @@ func TestKeyBackupImportBoundsSingleRoomBatches(t *testing.T) {
 				if r.URL.Query().Get("version") != "new-version" {
 					t.Error("keys uploaded to a different backup version")
 				}
+				prefix := "/_matrix/client/v3/room_keys/keys/!room:example.org/"
+				if r.Method != http.MethodPut || !strings.HasPrefix(r.URL.Path, prefix) {
+					t.Errorf("unexpected key upload: %s %s", r.Method, r.URL.Path)
+				}
 				var body struct {
-					Rooms map[string]struct {
-						Sessions map[string]json.RawMessage `json:"sessions"`
-					} `json:"rooms"`
+					SessionData struct{ Ciphertext string } `json:"session_data"`
 				}
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 					t.Error(err)
 				}
-				keys := body.Rooms["!room:example.org"].Sessions
-				batches = append(batches, len(keys))
-				for key := range keys {
-					if seen[key] {
-						t.Error("key uploaded twice without a retry")
-					}
-					seen[key] = true
+				if body.SessionData.Ciphertext != strings.Repeat("x", tc.size) {
+					t.Error("encrypted session data changed")
 				}
+				key := strings.TrimPrefix(r.URL.Path, prefix)
+				if seen[key] {
+					t.Error("key uploaded twice without a retry")
+				}
+				seen[key] = true
 				_, _ = w.Write([]byte(`{}`))
 			}))
 			defer api.Close()
@@ -96,8 +102,8 @@ func TestKeyBackupImportBoundsSingleRoomBatches(t *testing.T) {
 			if err := importKeyBackup(t.Context(), mx.MustNew(api.URL, "token"), reader, state, func() error { return nil }); err != nil {
 				t.Fatal(err)
 			}
-			if !slices.Equal(batches, tc.want) || len(seen) != tc.count || !state.KeysDone {
-				t.Fatalf("batches=%v keys=%d complete=%t", batches, len(seen), state.KeysDone)
+			if creates != 1 || len(seen) != tc.count || !state.KeysDone {
+				t.Fatalf("versions=%d keys=%d complete=%t", creates, len(seen), state.KeysDone)
 			}
 		})
 	}
@@ -114,6 +120,11 @@ func TestKeyBackupImportRetryKeepsVersion(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method == http.MethodGet {
+			if versions == 0 {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"errcode":"M_NOT_FOUND"}`))
+				return
+			}
 			fmt.Fprintf(w, `{"version":"saved-version","algorithm":%q,"auth_data":%s}`, reader.Algorithm, reader.AuthData)
 			return
 		}
@@ -147,7 +158,7 @@ func TestKeyBackupImportRetryKeepsVersion(t *testing.T) {
 	if err := importKeyBackup(t.Context(), c, reader, state, save); err != nil {
 		t.Fatal(err)
 	}
-	if versions != 1 || uploads != 4 || !state.KeysDone {
+	if versions != 1 || uploads != 1003 || !state.KeysDone {
 		t.Fatal("backup retry created another version or skipped pending keys")
 	}
 }

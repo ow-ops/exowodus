@@ -304,15 +304,22 @@ Rerun import with the same archive and relay settings to retry. Keep the archive
 and proxy running to serve existing logins and original media URLs.
 
 Import loads one relay room at a time and releases it after each attempt.
-Verification streams the archived messages, and key backups upload in batches of
-up to 1,000 sessions with a 4 MiB size target. The largest room and its historical
-state still need RAM; Continuwuity uses memory separately.
+Verification streams the archived messages, and key backups upload one session
+at a time. The largest room and its historical state still need RAM;
+Continuwuity uses memory separately.
 
-Backup retries check that the saved destination version is still current and
-uses the source recovery metadata. If another version has replaced it, import
-creates a new version with the source metadata and retains previous backups.
-Keep destination clients paused until import finishes so they do not rotate
-the backup during restoration.
+Key-backup import reuses the current destination backup when its algorithm and
+encryption key match the archive. It retains the destination's signatures and
+uses per-session uploads so Continuwuity keeps better existing keys. A new
+version is created only when the account has no backup. Matching version changes
+are retried without creating another version.
+
+Normal client activity does not require pausing for this backup step. If a client
+resets the recovery key, import stops rather than mixing keys encrypted for
+different recovery keys. Configure that account's key backup with the source
+recovery key before retrying. Existing backups and the archived keys are retained. Repeated version
+rejections appear in the report; check the destination backup or pause automatic
+key backup for the affected account and rerun import with the same archive.
 
 On Linux with systemd, this example caps Exodus at 1 GiB. Adjust the limit to
 leave room for Continuwuity and the rest of the system:

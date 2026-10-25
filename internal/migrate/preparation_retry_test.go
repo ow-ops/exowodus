@@ -106,14 +106,18 @@ func TestKeyBackupResumeReconcilesCurrentVersion(t *testing.T) {
 		name                                string
 		owned                               bool
 		differentKey, missing, race, denied bool
+		signaturesDiffer                    bool
+		fresh                               bool
 		wantCreates                         int
 		wantErr                             bool
 	}{
 		{name: "resume owned version", owned: true},
-		{name: "retain matching newer version", wantCreates: 1},
-		{name: "retain different key", differentKey: true, wantCreates: 1},
+		{name: "reuse matching newer version"},
+		{name: "reuse key with new signatures", signaturesDiffer: true},
+		{name: "reuse matching backup without checkpoint", fresh: true},
+		{name: "retain different key", differentKey: true, wantErr: true},
 		{name: "deleted version", missing: true, wantCreates: 1},
-		{name: "version changes during upload", race: true, owned: true, wantCreates: 1},
+		{name: "version changes during upload", race: true, owned: true},
 		{name: "permission failure", denied: true, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -146,6 +150,9 @@ func TestKeyBackupResumeReconcilesCurrentVersion(t *testing.T) {
 					if tc.differentKey && creates == 0 {
 						auth = json.RawMessage(`{"public_key":"different destination key"}`)
 					}
+					if tc.signaturesDiffer {
+						auth = json.RawMessage(`{"public_key":"original","signatures":{"@alice:example.org":{"ed25519:device":"new signature"}}}`)
+					}
 					fmt.Fprintf(w, `{"version":%q,"algorithm":%q,"auth_data":%s}`, latest, reader.Algorithm, auth)
 				case http.MethodPost:
 					creates++
@@ -163,29 +170,26 @@ func TestKeyBackupResumeReconcilesCurrentVersion(t *testing.T) {
 					fmt.Fprintf(w, `{"version":%q}`, latest)
 				case http.MethodPut:
 					uploads++
-					if !tc.owned && r.URL.Query().Get("version") == "newer" {
-						t.Error("a newer destination backup was overwritten")
-					}
 					if r.URL.Query().Get("version") != latest {
 						t.Error("upload used a stale version")
 					}
-					if tc.race && uploads == 1 {
+					if tc.race && uploads == 2 {
 						latest = "raced"
 						w.WriteHeader(400)
 						_, _ = w.Write([]byte(`{"errcode":"M_INVALID_PARAM","error":"You may only manipulate the most recently created version of the backup."}`))
 						return
 					}
-					var body struct {
-						Rooms map[string]struct{ Sessions map[string]json.RawMessage }
+					prefix := "/_matrix/client/v3/room_keys/keys/!room:example.org/"
+					if !strings.HasPrefix(r.URL.Path, prefix) {
+						t.Error("bulk upload would overwrite existing keys")
 					}
-					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					var data json.RawMessage
+					if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
 						t.Error(err)
 					}
-					for key, data := range body.Rooms["!room:example.org"].Sessions {
-						seen[key] = true
-						if !strings.Contains(string(data), strings.Repeat("x", 16)) {
-							t.Error("encrypted key data changed")
-						}
+					seen[strings.TrimPrefix(r.URL.Path, prefix)] = true
+					if !strings.Contains(string(data), strings.Repeat("x", 16)) {
+						t.Error("encrypted key data changed")
 					}
 					_, _ = w.Write([]byte(`{}`))
 				default:
@@ -195,6 +199,9 @@ func TestKeyBackupResumeReconcilesCurrentVersion(t *testing.T) {
 			}))
 			defer api.Close()
 			state := &archive.ImportState{KeyBackup: "old-version"}
+			if tc.fresh {
+				state.KeyBackup = ""
+			}
 			err = importKeyBackup(t.Context(), mx.MustNew(api.URL, "token"), reader, state, func() error { return a.WriteImportState(user, state) })
 			if (err != nil) != tc.wantErr || creates != tc.wantCreates {
 				t.Fatalf("error=%v created=%d", err, creates)
@@ -202,9 +209,90 @@ func TestKeyBackupResumeReconcilesCurrentVersion(t *testing.T) {
 			if !tc.wantErr && (!state.KeysDone || state.KeyBackup != latest || len(seen) != 2) {
 				t.Fatalf("version=%s complete=%v keys=%d", state.KeyBackup, state.KeysDone, len(seen))
 			}
-			if tc.denied && (state.KeysDone || uploads != 0) {
-				t.Fatal("permission failure advanced backup checkpoint")
+			if tc.wantErr && (state.KeysDone || uploads != 0 || state.KeyBackup != "old-version") {
+				t.Fatal("failed backup preparation changed keys or checkpoint")
 			}
 		})
+	}
+}
+
+func TestKeyBackupMergeKeepsBetterDestinationKeys(t *testing.T) {
+	a, user := keyBackupImportFixture(t, 2, 16)
+	reader, err := a.OpenKeyBackup(t.Context(), user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	better := json.RawMessage(`{"first_message_index":0,"forwarded_count":0,"is_verified":true,"session_data":{"ciphertext":"existing better key"}}`)
+	onlyAtDestination := json.RawMessage(`{"first_message_index":0,"forwarded_count":0,"is_verified":true,"session_data":{"ciphertext":"destination-only key"}}`)
+	keys := map[string]json.RawMessage{"session0": better, "destination-only": onlyAtDestination}
+	uploads := 0
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/version") {
+			// Continuwuity orders string versions lexically. Reuse the version it
+			// reports current instead of creating version 10 after version 9.
+			fmt.Fprintf(w, `{"version":"9","algorithm":%q,"auth_data":%s}`, reader.Algorithm, reader.AuthData)
+			return
+		}
+		prefix := "/_matrix/client/v3/room_keys/keys/!room:example.org/"
+		if r.Method != http.MethodPut || !strings.HasPrefix(r.URL.Path, prefix) || r.URL.Query().Get("version") != "9" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+			w.WriteHeader(400)
+			return
+		}
+		uploads++
+		key := strings.TrimPrefix(r.URL.Path, prefix)
+		var data json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+			t.Error(err)
+		}
+		// Model the single-session route's verified-key preference. The bulk
+		// route would overwrite this key without comparing its quality.
+		if key != "session0" {
+			keys[key] = data
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer api.Close()
+	state := &archive.ImportState{KeyBackup: "10"}
+	if err := importKeyBackup(t.Context(), mx.MustNew(api.URL, "token"), reader, state, func() error { return a.WriteImportState(user, state) }); err != nil {
+		t.Fatal(err)
+	}
+	if uploads != 2 || len(keys) != 3 || !state.KeysDone || state.KeyBackup != "9" {
+		t.Fatalf("uploads=%d keys=%d state=%+v", uploads, len(keys), state)
+	}
+	if string(keys["session0"]) != string(better) || string(keys["destination-only"]) != string(onlyAtDestination) || !strings.Contains(string(keys["session1"]), strings.Repeat("x", 16)) {
+		t.Fatal("merge changed existing keys or lost an archived key")
+	}
+}
+
+func TestKeyBackupVersionRejectionsAreBounded(t *testing.T) {
+	a, user := keyBackupImportFixture(t, 1, 16)
+	reader, err := a.OpenKeyBackup(t.Context(), user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	uploads := 0
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			fmt.Fprintf(w, `{"version":"current","algorithm":%q,"auth_data":%s}`, reader.Algorithm, reader.AuthData)
+		case http.MethodPut:
+			uploads++
+			w.WriteHeader(400)
+			_, _ = w.Write([]byte(`{"errcode":"M_INVALID_PARAM","error":"You may only manipulate the most recently created version of the backup."}`))
+		default:
+			t.Error("rejection must not create or delete backups")
+			w.WriteHeader(400)
+		}
+	}))
+	defer api.Close()
+	state := &archive.ImportState{}
+	err = importKeyBackup(t.Context(), mx.MustNew(api.URL, "token"), reader, state, func() error { return nil })
+	if err == nil || uploads != 3 || state.KeysDone || strings.Contains(err.Error(), "keeps changing") || !mx.IsCode(err, "M_INVALID_PARAM") {
+		t.Fatalf("error=%v uploads=%d complete=%t", err, uploads, state.KeysDone)
 	}
 }
