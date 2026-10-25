@@ -114,7 +114,7 @@ func TestStreamJSONCompatibility(t *testing.T) {
 func TestArchiveVersionCompatibility(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "manifest.json")
-	for _, old := range []int{1, 2, 3, 4, 5, 6} {
+	for _, old := range []int{1, 2, 3, 4, 5, 6, 7} {
 		if err := writeJSON(path, Manifest{Version: old, ServerName: "example.org", RequireLossless: true}); err != nil {
 			t.Fatal(err)
 		}

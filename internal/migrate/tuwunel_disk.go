@@ -48,7 +48,11 @@ func walkTuwunelScan(ctx context.Context, path string, visit func(string, []byte
 		return err
 	}
 	defer f.Close()
-	scanner := bufio.NewScanner(f)
+	return walkTuwunelReader(ctx, path, f, visit)
+}
+
+func walkTuwunelReader(ctx context.Context, path string, r io.Reader, visit func(string, []byte, tuwunelValueRef) error) error {
+	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 4096), 16*1024*1024)
 	// Preserve CR bytes when calculating offsets for CRLF input.
 	scanner.Split(func(data []byte, eof bool) (int, []byte, error) {

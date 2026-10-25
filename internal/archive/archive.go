@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-const version = 7
+const version = 8
 
 type Manifest struct {
 	SkippedRooms    map[string]string `json:"skipped_rooms,omitempty"`
@@ -50,6 +50,8 @@ type User struct {
 	Dehydrated  *Dehydrated  `json:"dehydrated_device,omitempty"`
 	// Guests become passwordless appservice accounts; the proxy keeps their sessions.
 	Guest bool `json:"guest,omitempty"`
+	// Passwordless accounts with live devices use appservice registration on import.
+	Passwordless bool `json:"passwordless,omitempty"`
 	// Enforced by the proxy: Continuwuity has no shadow bans.
 	ShadowBanned bool `json:"shadow_banned,omitempty"`
 	// Excludes the display name and avatar.

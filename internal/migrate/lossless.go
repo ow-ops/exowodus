@@ -112,7 +112,7 @@ func (im *Importer) CheckLosslessImport(users []*archive.User, rooms []*archive.
 				_, backupErr := os.Stat(filepath.Join(im.Archive.UserDir(u.UserID), "key_backup.json"))
 				hasBackup := !errors.Is(backupErr, os.ErrNotExist)
 				if err != nil || hasBackup || hasSecrets || im.protectedDeactivated[u.UserID] || len(u.Devices) > 0 || u.CrossSigning != nil || u.Dehydrated != nil {
-					failures = append(failures, fmt.Errorf("%s: deactivated account has login or device data; ID-only restoration refused", u.UserID))
+					failures = append(failures, fmt.Errorf("%s: deactivated account has login or device data; ID-only restoration refused; run repair-tuwunel-accounts with the original backup for passwordless Tuwunel accounts", u.UserID))
 				}
 			}
 		}
@@ -160,6 +160,9 @@ func (im *Importer) CheckLosslessImport(users []*archive.User, rooms []*archive.
 				continue
 			}
 			if im.SkipPrivateReceipts && limitation == "private read receipts on backfilled events cannot currently be restored" {
+				continue
+			}
+			if im.SkipThreadedReceipts && limitation == threadedReceiptLimitation {
 				continue
 			}
 			failures = append(failures, errors.New(limitation))

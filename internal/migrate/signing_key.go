@@ -46,7 +46,12 @@ func RestoreSigningKey(ctx context.Context, a *archive.Archive, database, ldb st
 		cmd := exec.CommandContext(ctx, ldb, append(args, "get", "--hex", "0x6b657970616972")...)
 		raw, err := cmd.Output()
 		if err != nil {
-			return nil, fmt.Errorf("read destination key: %w; stop Continuwuity and use a compatible ldb version", err)
+			var exit *exec.ExitError
+			var diagnostic []byte
+			if errors.As(err, &exit) {
+				diagnostic = exit.Stderr
+			}
+			return nil, fmt.Errorf("read destination key: %w; stop Continuwuity and use a compatible ldb version", ldbCommandError(err, diagnostic))
 		}
 		text := strings.TrimSpace(string(raw))
 		if !strings.HasPrefix(text, "0x") {
@@ -99,8 +104,10 @@ func RestoreSigningKey(ctx context.Context, a *archive.Archive, database, ldb st
 	}
 	cmd := exec.CommandContext(ctx, ldb, append(args, "load", "--hex")...)
 	cmd.Stdin = strings.NewReader(fmt.Sprintf("0x6b657970616972 ==> 0x%x\n", wanted))
+	output := &ldbOutput{}
+	cmd.Stdout, cmd.Stderr = output, output
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("restore source signing key: %w; previous key saved in %s", err, backup)
+		return "", fmt.Errorf("restore source signing key: %w; previous key saved in %s", ldbCommandError(err, output.data), backup)
 	}
 	stored, err := read()
 	if err != nil {

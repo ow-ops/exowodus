@@ -9,12 +9,71 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"exodus/internal/archive"
 	"maunium.net/go/mautrix/federation"
 )
+
+func TestRestoreSigningKeyReportsWriteFailureWithoutKeyData(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses a POSIX shell")
+	}
+	database := t.TempDir()
+	if err := os.WriteFile(filepath.Join(database, "CURRENT"), []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	old := federation.GenerateSigningKey()
+	der, err := x509.MarshalPKCS8PrivateKey(old.Priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, version, _ := strings.Cut(string(old.ID), ":")
+	record := append(append([]byte(version), 0xff), der...)
+	readValue := filepath.Join(t.TempDir(), "key.txt")
+	if err := os.WriteFile(readValue, []byte(fmt.Sprintf("0x%x\n", record)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EXODUS_TEST_LDB_RECORD", readValue)
+	ldb := filepath.Join(t.TempDir(), "ldb")
+	script := `#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in
+    get) cat "$EXODUS_TEST_LDB_RECORD"; exit 0 ;;
+    load)
+      printf 'Failed: IO error: Permission denied\n' >&2
+      cat >&2
+      exit 1 ;;
+  esac
+done
+exit 2
+`
+	if err := os.WriteFile(ldb, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	a, err := archive.Create(t.TempDir(), "example.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := federation.GenerateSigningKey()
+	_, version, _ = strings.Cut(string(source.ID), ":")
+	if err := a.WriteSigningKey("ed25519 " + version + " " + base64.RawStdEncoding.EncodeToString(source.Priv.Seed())); err != nil {
+		t.Fatal(err)
+	}
+	_, err = RestoreSigningKey(t.Context(), a, database, ldb)
+	if err == nil || !strings.Contains(err.Error(), "Permission denied") {
+		t.Fatal("ldb write failure detail was hidden")
+	}
+	if strings.Contains(err.Error(), hex.EncodeToString(source.Priv.Seed())) {
+		t.Fatal("error exposed the source private key")
+	}
+	backup, err := os.ReadFile(filepath.Join(a.Dir, "continuwuity-signing-key-backup.txt"))
+	if err != nil || string(backup) != fmt.Sprintf("0x6b657970616972 ==> 0x%x\n", record) {
+		t.Fatal("write failure lost the previous key backup")
+	}
+}
 
 func TestRestoreSigningKeyRocksDB(t *testing.T) {
 	ldb := os.Getenv("EXODUS_TEST_LDB")

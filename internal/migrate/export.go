@@ -309,13 +309,14 @@ func ownReceipt(events []*event.Event, userID, typ string) string {
 			continue
 		}
 		var content map[string]map[string]map[string]struct {
-			TS int64 `json:"ts"`
+			TS       int64  `json:"ts"`
+			ThreadID string `json:"thread_id"`
 		}
 		if json.Unmarshal(ev.Content.VeryRaw, &content) != nil {
 			continue
 		}
 		for eventID, receipts := range content {
-			if r, ok := receipts[typ][userID]; ok && r.TS >= latestTS {
+			if r, ok := receipts[typ][userID]; ok && (r.ThreadID == "" || r.ThreadID == "main") && r.TS >= latestTS {
 				latest, latestTS = eventID, r.TS
 			}
 		}

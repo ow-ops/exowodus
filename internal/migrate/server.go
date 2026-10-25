@@ -131,6 +131,9 @@ func (im *Importer) ImportServer(ctx context.Context) ([]string, []Failure) {
 	if im.SkipPrivateReceipts {
 		notes = append(notes, "Private read receipts were omitted (--skip-private-receipts).")
 	}
+	if im.SkipThreadedReceipts {
+		notes = append(notes, "Threaded read receipts were omitted (--skip-threaded-receipts).")
+	}
 	for _, room := range rooms {
 		if im.archiveOnlyRooms[room.RoomID] {
 			notes = append(notes, "Room "+room.RoomID+" retained in the archive only (--archive-departed-rooms).")
@@ -161,6 +164,9 @@ func (im *Importer) ImportServer(ctx context.Context) ([]string, []Failure) {
 	}
 	for _, limitation := range srv.Limitations {
 		if im.SkipPrivateReceipts && limitation == "private read receipts on backfilled events cannot currently be restored" {
+			continue
+		}
+		if im.SkipThreadedReceipts && limitation == threadedReceiptLimitation {
 			continue
 		}
 		if table, count, ok := outgoingLimitation(limitation); ok && im.outboxSummary != nil && im.outboxSummary.Rows[table] == count {

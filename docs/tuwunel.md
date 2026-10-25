@@ -190,7 +190,7 @@ other flags to reuse completed exports. Skipped room IDs are recorded in
 `manifest.json`, `export-report.json` and the import report. Import omits their
 history, membership, receipts, room account data and aliases. Removing a
 `--skip-room` option on a later export includes that room again. Use the updated
-binary for import as well; new archives use format version 7.
+binary for import as well; new archives use format version 8.
 
 Whole-server migration requires these scans, even for empty tables. Export
 checks the database timeline against the API unless `--history-at-checkpoint` is
@@ -200,6 +200,9 @@ verifies destination sessions. It does not fall back to replaying messages.
 Import blocks these cases unless the corresponding import option is supplied:
 
 - `--skip-private-receipts` omits private read positions.
+- `--skip-threaded-receipts` omits per-thread read positions. For older Tuwunel
+  archives, room-wide receipts are read from the retained dump so a thread's
+  position is not applied to the whole room.
 - `--archive-departed-rooms` keeps rooms with no joined local users in the archive
   only, including their history and media.
 - `--deactivated-id-only` recreates deactivated IDs without their old account data.
@@ -209,9 +212,30 @@ Registered bridge ghosts without login or device data are handled through their
 appservice registration. Existing archives are checked against the retained dump;
 user-name prefixes are not used to identify bridge accounts.
 
+Passwordless Tuwunel accounts can appear deactivated in its admin API while
+still having devices and valid tokens. If import refuses ID-only restoration
+for such an account, recover its missing account data from the **original
+database backup used for the dump**:
+
+```sh
+exodus repair-tuwunel-accounts --archive ./exodus-archive \
+  --database /backup/tuwunel --ldb /path/to/ldb
+```
+
+Stop export and import commands first. Recovery reads the backup without
+changing it and verifies its account tables against the retained dump. It
+recovers passwordless accounts with live devices, including their device keys,
+tokens, cross-signing keys, account data and latest encrypted key backup. The
+existing room histories and media are reused. Accounts whose import has already
+started are refused. Recovery inputs are retained in a private
+`.tuwunel-account-repair-*-saved` directory in the archive. Account recovery is
+limited to 32 MiB of source records per account.
+
+Prekeys left behind for deleted devices do not create new devices or block
+ID-only restoration. Their original rows remain in the retained dump.
+
 These cases remain unsupported:
 
-- Per-thread receipts.
 - Pending appservice and push deliveries.
 - Accounts with multiple email addresses.
 
@@ -242,7 +266,7 @@ run this as the database owner with a compatible `ldb`:
 
 ```sh
 exodus restore-signing-key --archive ./exodus-archive \
-  --database /path/to/continuwuity-database
+  --database /path/to/continuwuity-database --ldb /absolute/path/to/ldb
 ```
 
 The command backs up the current key to
@@ -252,13 +276,18 @@ key material is passed to `ldb` through stdin. It also writes
 Continuwuity configuration so events already signed by its previous key remain
 verifiable. Then restart Continuwuity.
 
-For the three accepted limitations above, import with:
+Run the command as the database owner. A read-only `get` can succeed even when
+that user cannot write the database directory. If the database is owned by root,
+use `sudo` with absolute paths for the executable, archive, database and `--ldb`.
+
+To accept these metadata limitations, import with:
 
 ```sh
 exodus import --archive ./exodus-archive \
   --to http://continuwuity:8008 --to-admin-token "$CADMIN" \
   --registration-token "$REG" --relay-name relay.example.net \
-  --skip-private-receipts --archive-departed-rooms --deactivated-id-only
+  --skip-private-receipts --skip-threaded-receipts \
+  --archive-departed-rooms --deactivated-id-only
 
 exodus proxy --archive ./exodus-archive --upstream http://continuwuity:8008
 ```

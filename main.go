@@ -64,7 +64,7 @@ Replacing Synapse on the same server name:
 		},
 	}
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable debug logging")
-	root.AddCommand(newExportCmd(), newImportCmd(), newMigrateCmd(), newProxyCmd(), newLinkSSOCmd(), newRestoreSigningKeyCmd())
+	root.AddCommand(newExportCmd(), newImportCmd(), newMigrateCmd(), newProxyCmd(), newLinkSSOCmd(), newRestoreSigningKeyCmd(), newRepairTuwunelAccountsCmd())
 	return root
 }
 
@@ -532,7 +532,7 @@ func newImportCmd() *cobra.Command {
 	var relayOpts relayFlags
 	var dir string
 	var requireLossless bool
-	var skipPrivateReceipts, archiveDepartedRooms, deactivatedIDOnly bool
+	var skipPrivateReceipts, skipThreadedReceipts, archiveDepartedRooms, deactivatedIDOnly bool
 	cmd := &cobra.Command{
 		Use:   "import",
 		Short: "Import an archive into Continuwuity",
@@ -567,6 +567,7 @@ after replacing Synapse with Continuwuity on the same server name.`,
 			}
 			im.RequireLossless = requireLossless || a.Manifest.RequireLossless
 			im.SkipPrivateReceipts = skipPrivateReceipts
+			im.SkipThreadedReceipts = skipThreadedReceipts
 			im.ArchiveDepartedRooms = archiveDepartedRooms
 			im.DeactivatedIDOnly = deactivatedIDOnly
 			im.SetArchiveOnlyRooms(rooms)
@@ -579,6 +580,9 @@ after replacing Synapse with Continuwuity on the same server name.`,
 				return err
 			}
 			if err := im.PrepareOutbox(ctx, srv, rooms); err != nil {
+				return err
+			}
+			if err := im.LoadThreadedReceipts(ctx, users, srv); err != nil {
 				return err
 			}
 			if im.RequireLossless {
@@ -653,6 +657,7 @@ after replacing Synapse with Continuwuity on the same server name.`,
 	fs.StringVar(&relayOpts.name, "relay-name", "", "temporary federation relay server name for original-event transfer (requires exported signing key and PDUs)")
 	fs.BoolVar(&requireLossless, "require-lossless", false, "require preservation checks (inherited from the export)")
 	fs.BoolVar(&skipPrivateReceipts, "skip-private-receipts", false, "omit private read positions; keep message and session verification")
+	fs.BoolVar(&skipThreadedReceipts, "skip-threaded-receipts", false, "omit per-thread read positions")
 	fs.BoolVar(&archiveDepartedRooms, "archive-departed-rooms", false, "keep rooms with no joined local users in the archive only")
 	fs.BoolVar(&deactivatedIDOnly, "deactivated-id-only", false, "recreate deactivated IDs without restoring their account data; refuse accounts with saved logins or devices")
 	fs.StringVar(&relayOpts.listen, "relay-listen", ":8448", "address the relay listens on")
@@ -991,7 +996,9 @@ func needsAppservice(users []*archive.User, rooms []*archive.ArchivedRoom, srv *
 	if slices.ContainsFunc(rooms, func(r *archive.ArchivedRoom) bool { return !r.ArchiveOnly }) || (srv != nil && len(srv.Reports)+len(srv.ToDevice) > 0) {
 		return true
 	}
-	return slices.ContainsFunc(users, func(u *archive.User) bool { return u.CrossSigning != nil || len(u.Devices) > 0 || u.Guest })
+	return slices.ContainsFunc(users, func(u *archive.User) bool {
+		return u.CrossSigning != nil || len(u.Devices) > 0 || u.Guest || u.Passwordless
+	})
 }
 
 func printRoomSummary(out io.Writer, reports []*migrate.RoomReport) {

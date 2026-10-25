@@ -20,6 +20,7 @@ func (im *Importer) FilterBridgeAccounts(ctx context.Context, users []*archive.U
 	var bridges []*Bridge
 	seen := map[string]bool{}
 	protected := map[string]bool{}
+	senders := map[string]bool{}
 	for _, raw := range server.AppserviceRegistrations {
 		b, err := parseBridge([]byte(raw), nil)
 		if err != nil {
@@ -30,7 +31,7 @@ func (im *Importer) FilterBridgeAccounts(ctx context.Context, users []*archive.U
 		}
 		seen[b.ID] = true
 		bridges = append(bridges, b)
-		protected["@"+b.sender+":"+im.Archive.Manifest.ServerName] = true
+		senders["@"+b.sender+":"+im.Archive.Manifest.ServerName] = true
 	}
 	im.protectedDeactivated = protected
 	candidates := map[string]bool{}
@@ -44,6 +45,9 @@ func (im *Importer) FilterBridgeAccounts(ctx context.Context, users []*archive.U
 	}
 	dir := filepath.Join(im.Archive.Dir, "source", "tuwunel")
 	if _, err := os.Stat(filepath.Join(dir, "userid_password.txt")); errors.Is(err, os.ErrNotExist) {
+		for user := range senders {
+			protected[user] = true
+		}
 		for user := range candidates {
 			for _, b := range bridges {
 				if b.owns(user) {
@@ -55,6 +59,7 @@ func (im *Importer) FilterBridgeAccounts(ctx context.Context, users []*archive.U
 	} else if err != nil {
 		return nil, err
 	}
+	devices := map[string]bool{}
 	for _, name := range []string{"userid_password", "token_userdeviceid", "userdeviceid_refresh", "userdeviceid_metadata", "onetimekeyid4225_otk", "onetimekeyid_onetimekeys", "userdeviceidalgorithm_fallback", "senderkey_pusher"} {
 		err := walkTuwunelScan(ctx, filepath.Join(dir, name+".txt"), func(key string, value []byte, _ tuwunelValueRef) error {
 			user, _, ok := strings.Cut(key, "\xff")
@@ -72,6 +77,19 @@ func (im *Importer) FilterBridgeAccounts(ctx context.Context, users []*archive.U
 				return errors.New("invalid Tuwunel login or device record")
 			}
 			if candidates[user] {
+				switch name {
+				case "userdeviceid_metadata":
+					devices[key] = true
+				case "onetimekeyid4225_otk", "onetimekeyid_onetimekeys":
+					_, device, _, err := tuwunelDeviceKey(key)
+					if err != nil {
+						return err
+					}
+					// Older databases can retain prekeys after deleting a device.
+					if !devices[user+"\xff"+device] {
+						return nil
+					}
+				}
 				protected[user] = true
 			}
 			return nil
@@ -82,9 +100,16 @@ func (im *Importer) FilterBridgeAccounts(ctx context.Context, users []*archive.U
 		}
 	}
 	im.protectedDeactivated = protected
+	ghostProtected := map[string]bool{}
+	for user := range protected {
+		ghostProtected[user] = true
+	}
+	for user := range senders {
+		ghostProtected[user] = true
+	}
 	var selected []*archive.User
 	for _, user := range users {
-		if !user.Deactivated || !isBridgeGhost(user.UserID, bridges, protected, im.Archive.Manifest.ServerName) || user.Admin || len(user.ExternalIDs) > 0 || len(user.Devices) > 0 || user.CrossSigning != nil || user.Dehydrated != nil || len(user.Verified) > 0 || len(user.Rooms) > 0 {
+		if !user.Deactivated || !isBridgeGhost(user.UserID, bridges, ghostProtected, im.Archive.Manifest.ServerName) || user.Admin || len(user.ExternalIDs) > 0 || len(user.Devices) > 0 || user.CrossSigning != nil || user.Dehydrated != nil || len(user.Verified) > 0 || len(user.Rooms) > 0 {
 			selected = append(selected, user)
 			continue
 		}

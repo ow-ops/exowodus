@@ -27,6 +27,7 @@ import (
 type Importer struct {
 	RequireLossless      bool
 	SkipPrivateReceipts  bool
+	SkipThreadedReceipts bool
 	ArchiveDepartedRooms bool
 	DeactivatedIDOnly    bool
 	Archive              *archive.Archive
@@ -796,7 +797,7 @@ func (im *Importer) destSession(ctx context.Context, u *archive.User) (destAccou
 	}
 	a := destAccount{
 		id: string(c.UserID), client: c, password: password,
-		generated: im.DestPassword == "" && im.DestToken == "" && !u.Guest,
+		generated: im.DestPassword == "" && im.DestToken == "" && !u.Guest && !u.Passwordless,
 		ephemeral: im.DestToken == "",
 	}
 	im.sessions[u.UserID] = a
@@ -805,7 +806,7 @@ func (im *Importer) destSession(ctx context.Context, u *archive.User) (destAccou
 
 // login also returns the account's password, when known.
 func (im *Importer) login(ctx context.Context, u *archive.User) (*mautrix.Client, string, error) {
-	if u.Guest {
+	if u.Guest || u.Passwordless {
 		return im.guestLogin(ctx, u)
 	}
 	if im.DestToken != "" {
@@ -857,14 +858,14 @@ func (im *Importer) login(ctx context.Context, u *archive.User) (*mautrix.Client
 	return c, password, nil
 }
 
-// guestLogin uses an appservice account, which like a guest has no password.
+// guestLogin preserves passwordless accounts through appservice registration.
 func (im *Importer) guestLogin(ctx context.Context, u *archive.User) (*mautrix.Client, string, error) {
 	if im.Appservice == nil {
-		return nil, "", errors.New("guest accounts require --to-admin-token")
+		return nil, "", errors.New("passwordless accounts require --to-admin-token")
 	}
 	userID := mx.WithServer(u.UserID, mx.ServerName(im.Appservice.Bot))
 	if err := im.Appservice.Register(ctx, userID); err != nil {
-		return nil, "", fmt.Errorf("recreate guest %s: %w", u.UserID, err)
+		return nil, "", fmt.Errorf("recreate passwordless account %s: %w", u.UserID, err)
 	}
 	token, err := im.Appservice.Login(ctx, userID, "EXODUS", "exodus")
 	if err != nil {
