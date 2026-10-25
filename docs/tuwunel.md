@@ -146,6 +146,16 @@ the verified login in the private archive. It does not recreate the account or
 change its password, profile or rooms. The proxy can restore the source
 password on first login. Rerun import with the same archive afterward.
 
+If recovery says the user cannot log in with a password, the destination account
+is a passwordless shadow account. In the Continuwuity admin room, run:
+
+```text
+!admin users reset-password --convert-to-local-account @alice:example.org
+```
+
+Use the generated password returned by the bot in `recover-login`. Omit
+`--logout` to preserve existing devices and sessions.
+
 Keep dump files unchanged during export. Original event bodies stream from
 these files. Room state and event indexes still use RAM.
 

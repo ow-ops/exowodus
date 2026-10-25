@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"exodus/internal/mx"
 )
@@ -29,6 +30,9 @@ func (im *Importer) RecoverLogin(ctx context.Context, userID, password string) e
 	}
 	c, err := mx.LoginDevice(ctx, im.Dest, userID, password, session.DeviceID)
 	if err != nil {
+		if mx.IsCode(err, "M_FORBIDDEN") && strings.Contains(err.Error(), "This user cannot log in with a password.") {
+			return fmt.Errorf("destination account %s is a passwordless shadow account; in the destination admin room run !admin users reset-password --convert-to-local-account %s, then rerun recover-login with the generated password; omit --logout to preserve devices: %w", userID, userID, err)
+		}
 		return fmt.Errorf("verify destination login for %s: %w", userID, err)
 	}
 	if string(c.UserID) != userID || string(c.DeviceID) != session.DeviceID {

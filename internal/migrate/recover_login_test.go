@@ -17,10 +17,12 @@ func TestRecoverExistingLogin(t *testing.T) {
 	for _, tc := range []struct {
 		name, password, returnedUser string
 		wrongDevice                  bool
+		shadow                       bool
 		wantError                    bool
 	}{
 		{name: "valid", password: "current destination password", returnedUser: user},
 		{name: "wrong password", password: "incorrect", returnedUser: user, wantError: true},
+		{name: "shadow account", password: "current destination password", returnedUser: user, shadow: true, wantError: true},
 		{name: "wrong identity", password: "current destination password", returnedUser: "@other:example.org", wantError: true},
 		{name: "wrong device", password: "current destination password", returnedUser: user, wrongDevice: true, wantError: true},
 	} {
@@ -47,6 +49,11 @@ func TestRecoverExistingLogin(t *testing.T) {
 				}
 				if req.Identifier.User != user {
 					t.Error("different user requested")
+				}
+				if tc.shadow {
+					w.WriteHeader(403)
+					_, _ = w.Write([]byte(`{"errcode":"M_FORBIDDEN","error":"This user cannot log in with a password."}`))
+					return
 				}
 				if req.Password != "current destination password" {
 					w.WriteHeader(403)
@@ -78,6 +85,9 @@ func TestRecoverExistingLogin(t *testing.T) {
 			err = im.RecoverLogin(t.Context(), user, tc.password)
 			if (err != nil) != tc.wantError {
 				t.Fatalf("recovery=%v", err)
+			}
+			if tc.shadow && !strings.Contains(err.Error(), "--convert-to-local-account") {
+				t.Fatal("shadow account conversion guidance missing")
 			}
 			credentials, err := a.Credentials()
 			if err != nil {
