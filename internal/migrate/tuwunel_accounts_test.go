@@ -172,6 +172,54 @@ func TestAccountRepairRefusesDifferentSnapshot(t *testing.T) {
 	}
 }
 
+func TestAccountRepairKeepsArchivedAppservices(t *testing.T) {
+	for _, retainedScan := range []bool{false, true} {
+		t.Run(fmt.Sprintf("retained_scan=%t", retainedScan), func(t *testing.T) {
+			a, database, ldb := accountRecoveryFixture(t)
+			if err := a.WriteServer(&archive.Server{AppserviceRegistrations: []string{testBridgeRegistration}}); err != nil {
+				t.Fatal(err)
+			}
+			const table = "id_appserviceregistrations"
+			familiesPath := filepath.Join(database, "families")
+			families, err := os.ReadFile(familiesPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			families = []byte(strings.TrimSuffix(string(families), "}\n") + ", " + table + "}\n")
+			if err := os.WriteFile(familiesPath, families, 0600); err != nil {
+				t.Fatal(err)
+			}
+			nativeRegistration := strings.ReplaceAll(testBridgeRegistration, "bridge-test-token", "changed-test-token")
+			nativeRow := fmt.Sprintf("0x%x ==> 0x%x\n", "example-bridge", nativeRegistration)
+			if err := os.WriteFile(filepath.Join(database, table+".txt"), []byte(nativeRow), 0600); err != nil {
+				t.Fatal(err)
+			}
+			sourcePath := filepath.Join(a.Dir, "source", "tuwunel", table+".txt")
+			originalRow := []byte(fmt.Sprintf("0x%x ==> 0x%x\n", "example-bridge", testBridgeRegistration))
+			if retainedScan {
+				if err := os.WriteFile(sourcePath, originalRow, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := RepairTuwunelAccounts(t.Context(), a, database, ldb); err != nil {
+				t.Fatal(err)
+			}
+			server, err := a.ReadServer()
+			if err != nil || server == nil || !slices.Equal(server.AppserviceRegistrations, []string{testBridgeRegistration}) {
+				t.Fatal("recovery changed the archived appservice registration")
+			}
+			retained, err := os.ReadFile(sourcePath)
+			if retainedScan {
+				if err != nil || string(retained) != string(originalRow) {
+					t.Fatal("recovery changed the retained registration scan")
+				}
+			} else if !os.IsNotExist(err) {
+				t.Fatal("recovery added a registration scan to the checkpoint")
+			}
+		})
+	}
+}
+
 func TestAccountRepairRefusesWrongDeviceKeys(t *testing.T) {
 	a, database, ldb := accountRecoveryFixture(t)
 	path := filepath.Join(database, "keyid_key.txt")

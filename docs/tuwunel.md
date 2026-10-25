@@ -223,8 +223,10 @@ exodus repair-tuwunel-accounts --archive ./exodus-archive \
 ```
 
 Stop export and import commands first. Recovery reads the backup without
-changing it and verifies its account tables against the retained dump. It
-recovers passwordless accounts with live devices, including their device keys,
+changing it and checks passwords, tokens, devices and signing data against
+the retained dump. It uses the archived appservice registrations.
+
+Passwordless accounts with live devices are restored with their device keys,
 tokens, cross-signing keys, account data and latest encrypted key backup. The
 existing room histories and media are reused. Accounts whose import has already
 started are refused. Recovery inputs are retained in a private

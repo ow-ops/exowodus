@@ -23,7 +23,7 @@ import (
 var accountCheckpointTables = []string{
 	"userid_password", "token_userdeviceid", "userdeviceid_refresh", "userdeviceid_metadata",
 	"onetimekeyid4225_otk", "onetimekeyid_onetimekeys", "userdeviceidalgorithm_fallback",
-	"senderkey_pusher", "pushkey_deviceid", "global", "id_appserviceregistrations",
+	"senderkey_pusher", "pushkey_deviceid", "global",
 }
 
 var accountRecoveryTables = []string{
@@ -91,7 +91,7 @@ func RepairTuwunelAccounts(ctx context.Context, a *archive.Archive, database, ld
 	for _, table := range append(slices.Clone(accountCheckpointTables), accountRecoveryTables...) {
 		slog.Info("reading account recovery table", "table", table, "users", len(selected))
 		checkpoint := slices.Contains(accountCheckpointTables, table)
-		optional := table == "userdeviceid_refresh" || table == "onetimekeyid4225_otk" || table == "onetimekeyid_onetimekeys" || table == "id_appserviceregistrations"
+		optional := table == "userdeviceid_refresh" || table == "onetimekeyid4225_otk" || table == "onetimekeyid_onetimekeys"
 		if !families[table] && !optional {
 			return nil, fmt.Errorf("database lacks %s; account recovery requires the Tuwunel 1.9.4 schema", table)
 		}
