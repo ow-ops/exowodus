@@ -170,9 +170,15 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 
 	readers := r.relayReaders(owner, members)
 	backfilled, err := backfillRoomEvents(ctx, readers, room.RoomID, im.Archive.RoomEventsIter(room.RoomID))
-	var incomplete *incompleteBackfillError
-	if errors.As(err, &incomplete) && incomplete.reachedCreate {
-		slog.Warn("offering skipped events before the room's create event", "room", room.RoomID, "events", len(incomplete.missing))
+	// Each pass only reaches the relay when Continuwuity picks it; repeat
+	// while passes still restore events.
+	for remaining := math.MaxInt; ; {
+		var incomplete *incompleteBackfillError
+		if !errors.As(err, &incomplete) || !incomplete.reachedCreate || len(incomplete.missing) >= remaining {
+			break
+		}
+		remaining = len(incomplete.missing)
+		slog.Warn("offering skipped events before the room's create event", "room", room.RoomID, "events", remaining)
 		rl.OfferEvents(room.RoomID, slices.Collect(maps.Keys(incomplete.missing)))
 		backfilled, err = backfillRoomEvents(ctx, readers, room.RoomID, im.Archive.RoomEventsIter(room.RoomID))
 	}
