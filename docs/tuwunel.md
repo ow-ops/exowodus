@@ -476,6 +476,9 @@ it stops working. Users log in with their Tuwunel password again. Devices whose
 token changed since the import, guests and refresh tokens are left to the
 proxy; the command reports how many. Rerunning it is safe.
 
+`exodus finish` runs `restore-signing-key`, `restore-media` and
+`restore-sessions` in that order, with the same flags.
+
 To accept these metadata limitations, import with:
 
 ```sh

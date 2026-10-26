@@ -65,8 +65,10 @@ Keep the same `server_name` to preserve message IDs, encrypted history and login
 1. Pause client, bridge and federation writes, keeping Tuwunel's APIs available.
 2. Back up the database and media, then [prepare the database export](docs/tuwunel.md).
 3. Export, stop Tuwunel, and start Continuwuity with the same `server_name`.
-4. [Configure the relay](#relay---relay-name), import, then route traffic through
-   [the proxy](#the-proxy) to keep existing logins and media URLs working.
+4. [Configure the relay](#relay---relay-name) and import.
+5. Stop Continuwuity, run `exodus finish` to restore the signing key, media and
+   logins, then start it again. Use [the proxy](#the-proxy) for sessions
+   `finish` reports it could not restore and for pending deliveries.
 
 ```sh
 exodus export --from https://example.org --from-type tuwunel \
@@ -76,7 +78,9 @@ exodus export --from https://example.org --from-type tuwunel \
 exodus import --to http://continuwuity:8008 --to-admin-token "$CADMIN" \
   --registration-token "$REG" --relay-name relay.example.net
 
-exodus proxy --upstream http://continuwuity:8008
+# Stop Continuwuity.
+exodus finish --database /path/to/continuwuity-database --ldb /absolute/path/to/ldb
+# Start Continuwuity.
 ```
 
 Some Tuwunel data, including certain read receipts, cannot be restored in stock
