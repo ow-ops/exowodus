@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1056,11 +1057,28 @@ func importPushRules(ctx context.Context, dest *mautrix.Client, u *archive.User,
 		rep.fail("push_rules", "", err)
 		return
 	}
+	// Each rule follows the last one created, so one rejected rule does not
+	// leave later rules of its kind without a position.
+	created := map[string]string{}
+	failed := map[string]bool{}
 	for _, op := range ops {
+		if failed[op.Rule] {
+			continue
+		}
+		if prev := created[op.Kind]; op.Create && prev != "" {
+			op.Query = url.Values{"after": {prev}}
+		}
 		u := op.url(dest)
 		_, err := dest.MakeRequest(ctx, http.MethodPut, u, op.Body, nil)
 		if err != nil && (!op.Optional || !mx.IsStatus(err, http.StatusNotFound)) {
 			rep.fail("push_rules", u, err)
+			if op.Create {
+				failed[op.Rule] = true
+			}
+			continue
+		}
+		if op.Create {
+			created[op.Kind] = op.Rule
 		}
 	}
 }

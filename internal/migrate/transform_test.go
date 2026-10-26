@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"exodus/internal/archive"
 	"exodus/internal/mx"
 	"maunium.net/go/mautrix/event"
 )
@@ -93,7 +94,7 @@ func TestPushRuleOps(t *testing.T) {
 		"/_matrix/client/v3/pushrules/global/override/.m.rule.master/enabled",
 		"/_matrix/client/v3/pushrules/global/override/.m.rule.master/actions",
 		"/_matrix/client/v3/pushrules/global/override/mine",
-		"/_matrix/client/v3/pushrules/global/override/mine2?after=mine",
+		"/_matrix/client/v3/pushrules/global/override/mine2",
 		"/_matrix/client/v3/pushrules/global/override/mine2/enabled",
 		"/_matrix/client/v3/pushrules/global/content/word",
 		"/_matrix/client/v3/pushrules/global/room/%21r:new",
@@ -240,5 +241,33 @@ func TestTransferPowerGrantsV12CreatorAdmin(t *testing.T) {
 	users, _ := powerLevels["users"].(map[string]any)
 	if got := users["@founder:new.org"]; got != float64(100) {
 		t.Fatalf("new creator power = %v", got)
+	}
+}
+
+func TestImportPushRulesSkipsRejectedRulePosition(t *testing.T) {
+	raw := `{"global":{"underride":[
+		{"rule_id":"a","default":false,"enabled":true,"actions":[]},
+		{"rule_id":"b","default":false,"enabled":false,"actions":[]},
+		{"rule_id":"c","default":false,"enabled":true,"actions":[]},
+		{"rule_id":"d","default":false,"enabled":true,"actions":[]}
+	]}}`
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, strings.TrimPrefix(r.URL.Path, "/_matrix/client/v3/pushrules/global/underride/")+"?"+r.URL.RawQuery)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/_matrix/client/v3/pushrules/global/underride/b" {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"errcode":"M_UNKNOWN","error":"Internal server error occurred"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	rep := &Report{}
+	same := func(id string) string { return id }
+	importPushRules(t.Context(), mx.MustNew(srv.URL, "token"), &archive.User{PushRules: json.RawMessage(raw)}, same, same, rep)
+	want := []string{"a?", "b?after=a", "c?after=a", "d?after=c"}
+	if !reflect.DeepEqual(got, want) || len(rep.Failures) != 1 {
+		t.Fatalf("requests %q, failures %+v", got, rep.Failures)
 	}
 }

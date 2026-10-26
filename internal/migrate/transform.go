@@ -77,11 +77,14 @@ type putOp struct {
 	Body  any
 	// Optional ops target server-default rules the destination may lack.
 	Optional bool
+	// Kind and Rule identify the user-defined rule an op creates or changes.
+	Kind, Rule string
+	Create     bool
 }
 
 var pushRuleKinds = []string{"override", "content", "room", "sender", "underride"}
 
-// pushRuleOps preserves the order of user-defined rules within each kind.
+// pushRuleOps lists user-defined rules in their order within each kind.
 func pushRuleOps(raw json.RawMessage, mapID, mapRoom func(string) string) ([]putOp, error) {
 	if len(raw) == 0 {
 		return nil, nil
@@ -94,7 +97,6 @@ func pushRuleOps(raw json.RawMessage, mapID, mapRoom func(string) string) ([]put
 	}
 	var ops []putOp
 	for _, kind := range pushRuleKinds {
-		prev := ""
 		for _, r := range rules.Global[kind] {
 			if r.Default {
 				ops = append(ops,
@@ -117,15 +119,10 @@ func pushRuleOps(raw json.RawMessage, mapID, mapRoom func(string) string) ([]put
 			case "content":
 				body["pattern"] = r.Pattern
 			}
-			var q url.Values
-			if prev != "" {
-				q = url.Values{"after": {prev}}
-			}
-			ops = append(ops, putOp{Path: pushRulePath(kind, id), Query: q, Body: body})
+			ops = append(ops, putOp{Path: pushRulePath(kind, id), Body: body, Kind: kind, Rule: id, Create: true})
 			if !r.Enabled {
-				ops = append(ops, putOp{Path: pushRulePath(kind, id, "enabled"), Body: map[string]bool{"enabled": false}})
+				ops = append(ops, putOp{Path: pushRulePath(kind, id, "enabled"), Body: map[string]bool{"enabled": false}, Kind: kind, Rule: id})
 			}
-			prev = id
 		}
 	}
 	return ops, nil
