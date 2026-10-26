@@ -104,7 +104,10 @@ type room struct {
 	extra            map[string]map[string]string // state after events without a group
 	current          map[string]string
 	extremities      []string
-	omittedParents   map[string][]string
+	// archiveHeads are the archived forward extremities; extremities also
+	// follow events the relay authors or receives.
+	archiveHeads   []string
+	omittedParents map[string][]string
 }
 
 func newRoom(roomID, version string, data RoomData) (*room, error) {
@@ -116,7 +119,8 @@ func newRoom(roomID, version string, data RoomData) (*room, error) {
 		beforeGroupOf:    data.BeforeEventGroups,
 		stateUnavailable: map[string]bool{},
 		extra:            map[string]map[string]string{}, current: maps.Clone(data.CurrentState),
-		extremities: slices.Clone(data.Extremities), omittedParents: data.OmittedParents}
+		extremities: slices.Clone(data.Extremities), archiveHeads: slices.Clone(data.Extremities),
+		omittedParents: data.OmittedParents}
 	for _, e := range data.Events {
 		wire, err := federationPDU(e.PDU, version)
 		if err != nil {
@@ -405,6 +409,13 @@ func (r *room) authChain(ids []string) []string {
 		}
 	}
 	return chain
+}
+
+// reachable reports whether backfill can walk back from the event.
+func (r *room) reachable(eventID string) bool {
+	_, known := r.events[eventID]
+	_, omitted := r.omittedParents[eventID]
+	return known || omitted
 }
 
 // before walks prev events backwards from the given events, including them.

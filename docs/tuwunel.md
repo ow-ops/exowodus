@@ -215,6 +215,11 @@ key and are unused by room state, auth checks or room heads. Their IDs and failu
 are recorded in `room.json` and the import report. Other events keep their
 original IDs and contents; backfill can traverse the omitted events' predecessors.
 
+Some servers have sent dummy events whose `content` is a string or `null`.
+Exodus computes their IDs as Tuwunel and Continuwuity do, so these events are
+kept. Archives exported by earlier versions omit them; export again to a new
+`--archive` directory to keep them.
+
 Pause writes for cutover and keep the original backup. `server.json` records
 `history_at_checkpoint`, and import reports it as a note. Resume with the same
 flag, archive and unchanged dump.

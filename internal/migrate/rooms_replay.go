@@ -59,7 +59,16 @@ type replay struct {
 }
 
 func (im *Importer) newReplay(ctx context.Context, room *archive.ArchivedRoom, rep *RoomReport) (*replay, error) {
-	return im.loadReplay(ctx, room, rep, true)
+	r, err := im.loadReplay(ctx, room, rep, true)
+	if err != nil {
+		return nil, err
+	}
+	if r.st.NewRoomID != "" {
+		if err := r.loadJoined(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return r, nil
 }
 
 func (im *Importer) loadReplay(ctx context.Context, room *archive.ArchivedRoom, rep *RoomReport, keepEvents bool) (*replay, error) {
@@ -145,11 +154,6 @@ func (im *Importer) loadReplay(ctx context.Context, room *archive.ArchivedRoom, 
 	}
 
 	rep.NewRoomID, rep.KeptRoomID = st.NewRoomID, r.keptRoomID()
-	if st.NewRoomID != "" {
-		if err := r.loadJoined(ctx); err != nil {
-			return nil, err
-		}
-	}
 	return r, nil
 }
 
@@ -777,6 +781,9 @@ func (im *Importer) ReplayRooms(ctx context.Context, rooms []*archive.ArchivedRo
 			break
 		}
 		r, err := im.loadReplay(ctx, job.room, job.report, false)
+		if err == nil {
+			err = r.loadJoined(ctx)
+		}
 		if err != nil {
 			job.report.fail("finalize", job.room.RoomID, err)
 			im.roomFailures[job.room.RoomID] = true

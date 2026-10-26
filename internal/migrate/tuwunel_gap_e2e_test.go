@@ -4,6 +4,7 @@ package migrate
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"exodus/internal/mx"
 	"exodus/internal/relay"
 	"maunium.net/go/mautrix"
+	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/federation"
 	"maunium.net/go/mautrix/federation/pdu"
 	"maunium.net/go/mautrix/id"
@@ -50,9 +52,26 @@ func TestTuwunelDummyGapLive(t *testing.T) {
 	if err := as.Register(ctx, "@alice:example.org"); err != nil {
 		t.Fatal(err)
 	}
-	for _, version := range []string{"11", "12"} {
-		t.Run(version, func(t *testing.T) {
-			key := federation.GenerateSigningKey()
+	var destinationKeys json.RawMessage
+	if _, err := c.MakeRequest(ctx, http.MethodGet, target+"/_matrix/key/v2/server", nil, &destinationKeys); err != nil {
+		t.Fatal(err)
+	}
+	key := federation.GenerateSigningKey()
+	key.ID = id.NewKeyID(id.KeyAlgorithmEd25519, rand.Text())
+	for _, tc := range []struct {
+		name, version string
+		prejoined     bool
+		relayLeft     bool
+	}{
+		{name: "fresh v11", version: "11"},
+		{name: "fresh v12", version: "12"},
+		{name: "already joined v11", version: "11", prejoined: true},
+		{name: "already joined v12", version: "12", prejoined: true},
+		{name: "relay left v11", version: "11", prejoined: true, relayLeft: true},
+		{name: "relay left v12", version: "12", prejoined: true, relayLeft: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			version := tc.version
 			roomID := fmt.Sprintf("!gap%s%d:example.org", version, time.Now().UnixNano())
 			data := &tuwunelRoomMetadata{RoomData: &relay.RoomData{Groups: map[int64]relay.Group{}, BeforeEventGroups: map[string]int64{}}, required: map[string]eventUse{}}
 			index := &tuwunelRoomIndex{events: map[string]json.RawMessage{}, timeline: map[string]bool{}}
@@ -134,6 +153,10 @@ func TestTuwunelDummyGapLive(t *testing.T) {
 			delete(data.BeforeEventGroups, oldPower)
 			data.Timeline = slices.DeleteFunc(data.Timeline, func(eid string) bool { return eid == oldPower })
 			data.required[oldPower] &^= timelineEvent
+			// More than one Continuwuity backfill page (100 events).
+			for i := range 250 {
+				add("m.room.message", nil, map[string]any{"msgtype": "m.text", "body": fmt.Sprintf("history %d", i)})
+			}
 			add("m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "before gap"})
 			dummy := add("org.matrix.dummy_event", nil, map[string]any{})
 			// Change a hashed field while retaining the stored event ID.
@@ -198,7 +221,7 @@ func TestTuwunelDummyGapLive(t *testing.T) {
 			if err := a.WriteRoomPDUs(roomID, data.RoomData); err != nil {
 				t.Fatal(err)
 			}
-			rl := relay.New("host.docker.internal:38321", "example.org", key, nil)
+			rl := relay.New("host.docker.internal:38321", "example.org", key, map[string][]json.RawMessage{"example.org": {destinationKeys}})
 			if err := rl.Trust(ctx, "example.org", target+"/_matrix/key/v2/server"); err != nil {
 				t.Fatal(err)
 			}
@@ -206,6 +229,22 @@ func TestTuwunelDummyGapLive(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer rl.Stop(context.Background())
+			if tc.prejoined {
+				if err := rl.AddRoom(roomID, version, *data.RoomData); err != nil {
+					t.Fatal(err)
+				}
+				if err := rl.Enter(roomID, alice); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := as.As(alice).JoinRoom(ctx, roomID, &mautrix.ReqJoinRoom{Via: []string{rl.Name}}); err != nil {
+					t.Fatal(err)
+				}
+				if tc.relayLeft {
+					if _, err := as.As(alice).SendStateEvent(ctx, id.RoomID(roomID), event.StateMember, rl.UserID(), map[string]string{"membership": "leave"}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
 			im := &Importer{RequireLossless: true, Archive: a, Dest: c, Admin: admin, Appservice: as, Migrated: map[string]bool{alice: true}}
 			reports, rest := im.RelayRooms(ctx, []*archive.ArchivedRoom{room}, rl)
 			if len(rest) != 0 || len(reports) != 1 {

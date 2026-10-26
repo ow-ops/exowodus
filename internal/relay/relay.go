@@ -54,8 +54,11 @@ type Relay struct {
 }
 
 func New(name, origin string, originKey *federation.SigningKey, cachedKeys map[string][]json.RawMessage) *Relay {
+	key := federation.GenerateSigningKey()
+	// Matrix signing key versions allow alphanumeric characters and underscores.
+	key.ID = id.NewKeyID(id.KeyAlgorithmEd25519, rand.Text())
 	return &Relay{
-		Name: name, key: federation.GenerateSigningKey(), origin: origin, originKey: originKey,
+		Name: name, key: key, origin: origin, originKey: originKey,
 		cachedKeys: cachedKeys, rooms: map[string]*room{},
 	}
 }
@@ -211,47 +214,6 @@ func (rl *Relay) checkEnter(r *room, inviter string) (*pdu.PDU, error) {
 }
 
 // Leave sends the relay's own signed leave, without requiring a local member to kick it.
-func (rl *Relay) Leave(ctx context.Context, roomID string) error {
-	if rl.sender == nil || rl.peer == "" {
-		return errors.New("relay destination is not configured")
-	}
-	r := rl.room(roomID)
-	if r == nil {
-		return fmt.Errorf("unknown room %s", roomID)
-	}
-	request, err := rl.leaveRequest(r)
-	if err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	return rl.sender.SendLeave(ctx, request)
-}
-
-func (rl *Relay) leaveRequest(r *room) (*federation.ReqSendLeave, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	p, err := r.template(rl.UserID(), "m.room.member", rl.UserID(), map[string]string{"membership": "leave"}, rl.Name)
-	if err != nil {
-		return nil, err
-	}
-	if err := authorizeEvent(r, p); err != nil {
-		return nil, err
-	}
-	if err := r.sign(p, rl.Name, rl.key); err != nil {
-		return nil, err
-	}
-	eventID, err := p.GetEventID(r.version)
-	if err != nil {
-		return nil, err
-	}
-	raw, err := federationPDU(r.events[string(eventID)].raw, string(r.version))
-	if err != nil {
-		return nil, err
-	}
-	return &federation.ReqSendLeave{RoomID: r.id, EventID: eventID, Event: raw, Via: rl.peer}, nil
-}
-
 // CheckAuthor checks a source member's state event without changing the room.
 func (rl *Relay) CheckAuthor(roomID, sender, typ, stateKey string, content any) error {
 	r := rl.room(roomID)
@@ -419,6 +381,7 @@ func (rl *Relay) handler() http.Handler {
 	fed := http.NewServeMux()
 	fed.HandleFunc("GET /_matrix/federation/v1/make_join/{roomID}/{userID}", rl.makeJoin)
 	fed.HandleFunc("PUT /_matrix/federation/v2/send_join/{roomID}/{eventID}", rl.sendJoin)
+	fed.HandleFunc("PUT /_matrix/federation/v2/invite/{roomID}/{eventID}", rl.invite)
 	fed.HandleFunc("GET /_matrix/federation/v1/backfill/{roomID}", rl.backfill)
 	fed.HandleFunc("GET /_matrix/federation/v1/event/{eventID}", rl.event)
 	fed.HandleFunc("GET /_matrix/federation/v1/state_ids/{roomID}", rl.stateIDs)
@@ -607,6 +570,11 @@ func (rl *Relay) backfill(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	from := r.URL.Query()["v"]
 	rl.withRoom(w, r, func(rm *room) (any, error) {
+		if !slices.ContainsFunc(from, rm.reachable) {
+			// Continuwuity asks from its earliest timeline event. Destination
+			// events created after the archive descend from its forward extremities.
+			from = rm.archiveHeads
+		}
 		return federation.RespBackfill{
 			Origin: rl.Name, OriginServerTS: jsontime.UnixMilliNow(),
 			PDUs: toPDUs(rm.pdus(rm.before(from, max(limit, 1), nil))),
@@ -708,7 +676,7 @@ func (rl *Relay) receive(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		rm.mu.Lock()
-		if eventID, err := p.GetEventID(rm.version); err == nil {
+		if eventID, err := EventID(p, rm.version); err == nil {
 			rm.add(string(eventID), p, json.RawMessage(raw))
 			results[eventID] = federation.PDUProcessingResult{}
 		}

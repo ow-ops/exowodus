@@ -269,7 +269,8 @@ Requirements:
 
 The relay stays in the room until all exported events are backfilled and room
 restoration succeeds. Incomplete backfill fails the import; retry with the same
-archive and relay configuration.
+archive and relay configuration. Retries check the relay's membership and rejoin
+it if room admission rules allow. Rooms created by earlier attempts are reused.
 
 Rooms with a version before 3, or whose event IDs cannot be recomputed from the
 exported events, fall back to replay.

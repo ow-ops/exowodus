@@ -56,7 +56,7 @@ func checkEventID(p relay.EventJSON, roomVersion string) error {
 		}
 		ev.Redacts = nil
 	}
-	eventID, err := ev.GetEventID(version)
+	eventID, err := relay.EventID(ev, version)
 	if err != nil {
 		return err
 	}

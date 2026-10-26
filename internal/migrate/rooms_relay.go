@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -130,21 +131,33 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 		}
 		return nil
 	}
-	if err := rl.Enter(room.RoomID, owner); err != nil {
-		return err
-	}
-	if handover {
-		if err := r.relayHandOver(rl, owner, members); err != nil {
-			return err
-		}
-	} else {
-		slog.Info("using trusted relay for backfill", "room", room.RoomID, "server", rl.Name)
-	}
-
 	joiner := r.mapUser(owner)
 	c := r.as(joiner)
-	if _, err := c.JoinRoom(ctx, room.RoomID, &mautrix.ReqJoinRoom{Via: []string{rl.Name}}); err != nil {
-		return fmt.Errorf("join through the relay: %w", err)
+	resumed, err := joinedOnDestination(ctx, c, room.RoomID, joiner)
+	if err != nil {
+		return err
+	}
+	if resumed {
+		// An earlier attempt already admitted the relay's events. Authoring
+		// them again would create events the destination never received.
+		slog.Info("resuming room already joined on the destination", "room", room.RoomID, "user", joiner)
+	} else {
+		if err := rl.Enter(room.RoomID, owner); err != nil {
+			return err
+		}
+		if handover {
+			if err := r.relayHandOver(rl, owner, members); err != nil {
+				return err
+			}
+		} else {
+			slog.Info("using trusted relay for backfill", "room", room.RoomID, "server", rl.Name)
+		}
+		if _, err := c.JoinRoom(ctx, room.RoomID, &mautrix.ReqJoinRoom{Via: []string{rl.Name}}); err != nil {
+			return fmt.Errorf("join through the relay: %w", err)
+		}
+	}
+	if err := ensureRelayJoined(ctx, c, room.RoomID, rl); err != nil {
+		return err
 	}
 	r.st.NewRoomID = room.RoomID
 	if err := r.save(); err != nil {
@@ -179,12 +192,9 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 		return err
 	}
 
-	if pl := rl.Content(room.RoomID, "m.room.power_levels", ""); handover && pl != nil {
-		if users, ok := pl["users"].(map[string]any); ok {
-			delete(users, rl.UserID())
-			if _, err := r.putState(ctx, joiner, "m.room.power_levels", "", pl, 0); err != nil {
-				rep.fail("power_levels", room.RoomID, err)
-			}
+	if handover {
+		if err := removeRelayPower(ctx, r, c, joiner, rl.UserID()); err != nil {
+			rep.fail("power_levels", room.RoomID, err)
 		}
 	}
 	if alias, err := decodeContent(r.final[relay.StateKey("m.room.canonical_alias", "")].Content); err == nil {
@@ -217,6 +227,71 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 	}
 	r.st.Done = true
 	return r.save()
+}
+
+// joinedOnDestination reports whether an earlier attempt already joined the room.
+func joinedOnDestination(ctx context.Context, c *mautrix.Client, roomID, userID string) (bool, error) {
+	var member event.MemberEventContent
+	err := c.StateEvent(ctx, id.RoomID(roomID), event.StateMember, userID, &member)
+	if errors.Is(err, mautrix.MForbidden) || errors.Is(err, mautrix.MNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check destination membership: %w", err)
+	}
+	return member.Membership == event.MembershipJoin, nil
+}
+
+// removeRelayPower edits the destination's current power levels, which may
+// include changes made after the relay's archived view.
+func removeRelayPower(ctx context.Context, r *replay, c *mautrix.Client, sender, relayUser string) error {
+	var raw json.RawMessage
+	if err := c.StateEvent(ctx, id.RoomID(r.room.RoomID), event.StatePowerLevels, "", &raw); err != nil {
+		return err
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var pl map[string]any
+	if err := dec.Decode(&pl); err != nil {
+		return err
+	}
+	users, ok := pl["users"].(map[string]any)
+	if _, granted := users[relayUser]; !ok || !granted {
+		return nil
+	}
+	delete(users, relayUser)
+	_, err := r.putState(ctx, sender, "m.room.power_levels", "", pl, 0)
+	return err
+}
+
+func ensureRelayJoined(ctx context.Context, c *mautrix.Client, roomID string, rl *relay.Relay) error {
+	var member event.MemberEventContent
+	err := c.StateEvent(ctx, id.RoomID(roomID), event.StateMember, rl.UserID(), &member)
+	if err == nil && member.Membership == event.MembershipJoin {
+		return nil
+	}
+	if err != nil && !errors.Is(err, mautrix.MNotFound) {
+		return fmt.Errorf("check relay membership: %w", err)
+	}
+	slog.Info("rejoining relay to destination room", "room", roomID, "server", rl.Name)
+	if err := rl.Join(ctx, roomID); err != nil {
+		if !errors.Is(err, mautrix.MForbidden) {
+			return fmt.Errorf("join relay to destination: %w", err)
+		}
+		if _, err := c.InviteUser(ctx, id.RoomID(roomID), &mautrix.ReqInviteUser{UserID: id.UserID(rl.UserID())}); err != nil {
+			return fmt.Errorf("invite relay to destination: %w", err)
+		}
+		if err := rl.Join(ctx, roomID); err != nil {
+			return fmt.Errorf("join invited relay to destination: %w", err)
+		}
+	}
+	if err := c.StateEvent(ctx, id.RoomID(roomID), event.StateMember, rl.UserID(), &member); err != nil {
+		return fmt.Errorf("verify relay membership: %w", err)
+	}
+	if member.Membership != event.MembershipJoin {
+		return errors.New("relay join did not update destination membership")
+	}
+	return nil
 }
 
 func verifyOriginalRoom(ctx context.Context, c *mautrix.Client, roomID string, events []json.RawMessage) error {

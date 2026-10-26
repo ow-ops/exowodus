@@ -142,20 +142,33 @@ func TestOrdinaryMemberRestoresRoomThroughTrustedRelay(t *testing.T) {
 		invite      int
 		public      bool
 		ignoreLeave bool
+		resume      bool
 	}{
 		{name: "ordinary invitation", rule: "invite"},
 		{name: "public join without invite power", rule: "public", invite: 50, public: true},
 		{name: "departure must be confirmed", rule: "invite", ignoreLeave: true},
+		{name: "resume remote-created room", rule: "invite", resume: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, rl := relayAuthFixture(t, "11", "@owner:remote.test", nil, []string{member}, map[string]any{"users": map[string]any{"@owner:remote.test": 100}, "invite": tc.invite}, tc.rule)
 			r.room.Public = tc.public
+			if tc.resume {
+				state, err := r.im.Archive.ReadRoomState(r.room.RoomID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				state.NewRoomID = r.room.RoomID
+				if err := r.im.Archive.WriteRoomState(r.room.RoomID, state); err != nil {
+					t.Fatal(err)
+				}
+			}
 			var original relay.RoomData
 			if _, err := r.im.Archive.ReadRoomPDUs(r.room.RoomID, &original); err != nil {
 				t.Fatal(err)
 			}
 			peerKey := federation.GenerateSigningKey()
-			left, reads, published := false, 0, 0
+			left, reads, published, joins := false, 0, 0, 0
+			joined := tc.resume
 			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch {
@@ -165,6 +178,8 @@ func TestOrdinaryMemberRestoresRoomThroughTrustedRelay(t *testing.T) {
 					if req.URL.Query().Get("user_id") != member {
 						t.Error("destination join used the wrong local member")
 					}
+					joins++
+					joined = true
 					fmt.Fprintf(w, `{"room_id":%q}`, r.room.RoomID)
 				case strings.HasSuffix(req.URL.Path, "/messages"):
 					reads++
@@ -174,6 +189,12 @@ func TestOrdinaryMemberRestoresRoomThroughTrustedRelay(t *testing.T) {
 						t.Error("membership lookup used a non-member instead of the joining user")
 					}
 					_ = json.NewEncoder(w).Encode(map[string]any{"joined": map[string]any{member: map[string]any{}, rl.UserID(): map[string]any{}}})
+				case strings.Contains(req.URL.Path, "/_matrix/federation/v1/make_leave/"):
+					_ = json.NewEncoder(w).Encode(map[string]any{"room_version": "11", "event": map[string]any{
+						"room_id": r.room.RoomID, "sender": rl.UserID(), "state_key": rl.UserID(), "type": "m.room.member",
+						"content": map[string]string{"membership": "leave"}, "depth": 9, "origin_server_ts": 1,
+						"prev_events": []string{"$destinationHead"}, "auth_events": []string{"$destinationMember"},
+					}})
 				case strings.Contains(req.URL.Path, "/_matrix/federation/v2/send_leave/"):
 					auth := federation.ParseXMatrixAuth(req.Header.Get("Authorization"))
 					if auth.Origin != rl.Name || auth.Destination != "example.org" || auth.Signature == "" {
@@ -181,6 +202,13 @@ func TestOrdinaryMemberRestoresRoomThroughTrustedRelay(t *testing.T) {
 					}
 					left = !tc.ignoreLeave
 					_, _ = w.Write([]byte(`{}`))
+				case req.Method == http.MethodGet && strings.Contains(req.URL.Path, "/state/m.room.member/"+member):
+					if !joined {
+						w.WriteHeader(http.StatusForbidden)
+						_, _ = w.Write([]byte(`{"errcode":"M_FORBIDDEN","error":"You don't have permission to view this room."}`))
+						return
+					}
+					_, _ = w.Write([]byte(`{"membership":"join"}`))
 				case req.Method == http.MethodGet && strings.Contains(req.URL.Path, "/state/m.room.member/"):
 					membership := "join"
 					if left {
@@ -214,6 +242,10 @@ func TestOrdinaryMemberRestoresRoomThroughTrustedRelay(t *testing.T) {
 			}
 			if len(rest) != 0 || len(reports) != 1 || len(reports[0].Failures) != 0 || !left || reads != 2 || (published == 1) != tc.public {
 				t.Fatalf("reports=%+v rest=%d left=%t reads=%d published=%d", reports, len(rest), left, reads, published)
+			}
+			// A resumed room must not be joined again through events the destination never received.
+			if wantJoins := map[bool]int{false: 1, true: 0}[tc.resume]; joins != wantJoins {
+				t.Fatalf("joins through the relay = %d, want %d", joins, wantJoins)
 			}
 			state, err := r.im.Archive.ReadRoomState(r.room.RoomID)
 			if err != nil || !state.Done || state.NewRoomID != r.room.RoomID {
@@ -283,5 +315,102 @@ func TestRelayInvitationChecksPowerBeforeMutation(t *testing.T) {
 	}
 	if rl.Content(r.room.RoomID, "m.room.member", rl.UserID()) != nil {
 		t.Fatal("failed invitation changed relay membership")
+	}
+}
+
+func TestRemoveRelayPowerEditsDestinationLevels(t *testing.T) {
+	const relayUser = "@exodus:relay.test"
+	for _, tc := range []struct {
+		name    string
+		current string
+		want    string
+	}{
+		// Levels changed on the destination after the archive must survive.
+		{name: "granted", current: `{"users":{"@alice:example.org":100,"@new:example.org":9007199254740991,"` + relayUser + `":1},"ban":50}`,
+			want: `{"ban":50,"users":{"@alice:example.org":100,"@new:example.org":9007199254740991}}`},
+		{name: "already removed", current: `{"users":{"@alice:example.org":100}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var put string
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch req.Method {
+				case http.MethodGet:
+					_, _ = w.Write([]byte(tc.current))
+				case http.MethodPut:
+					var body json.RawMessage
+					_ = json.NewDecoder(req.Body).Decode(&body)
+					put = string(body)
+					_, _ = w.Write([]byte(`{"event_id":"$levels"}`))
+				}
+			}))
+			defer api.Close()
+			r := &replay{room: &archive.ArchivedRoom{RoomID: "!room:example.org"}, st: &archive.RoomImportState{NewRoomID: "!room:example.org"}, im: &Importer{Appservice: &Appservice{client: mx.MustNew(api.URL, "as-token")}}}
+			if err := removeRelayPower(t.Context(), r, r.as("@alice:example.org"), "@alice:example.org", relayUser); err != nil {
+				t.Fatal(err)
+			}
+			if put != tc.want {
+				t.Fatalf("power levels sent = %s, want %s", put, tc.want)
+			}
+		})
+	}
+}
+
+func TestEnsureRelayJoinedInvitesWhenJoinIsForbidden(t *testing.T) {
+	const roomID, member = "!room:example.org", "@alice:example.org"
+	rl := relay.New("relay.test", "example.org", federation.GenerateSigningKey(), nil)
+	if err := rl.AddRoom(roomID, "11", relay.RoomData{}); err != nil {
+		t.Fatal(err)
+	}
+	peerKey := federation.GenerateSigningKey()
+	invited, joined, makeJoins := false, false, 0
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case req.URL.Path == "/_matrix/key/v2/server":
+			_ = json.NewEncoder(w).Encode(peerKey.GenerateKeyResponse("example.org", nil))
+		case strings.Contains(req.URL.Path, "/state/m.room.member/"):
+			if !joined {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"errcode":"M_NOT_FOUND","error":"no membership"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"membership":"join"}`))
+		case strings.Contains(req.URL.Path, "/make_join/"):
+			makeJoins++
+			if !invited {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"errcode":"M_FORBIDDEN","error":"not invited"}`))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"room_version": "11", "event": map[string]any{
+				"room_id": roomID, "sender": rl.UserID(), "state_key": rl.UserID(), "type": "m.room.member",
+				"content": map[string]string{"membership": "join"}, "depth": 9, "origin_server_ts": 1,
+				"prev_events": []string{"$invite"}, "auth_events": []string{"$invite"},
+			}})
+		case strings.HasSuffix(req.URL.Path, "/invite"):
+			if req.URL.Query().Get("user_id") != member {
+				t.Error("relay invitation used the wrong member")
+			}
+			invited = true
+			_, _ = w.Write([]byte(`{}`))
+		case strings.Contains(req.URL.Path, "/send_join/"):
+			joined = true
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			t.Errorf("unexpected request %s %s", req.Method, req.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer api.Close()
+	if err := rl.Trust(t.Context(), "example.org", api.URL+"/_matrix/key/v2/server"); err != nil {
+		t.Fatal(err)
+	}
+	c := mx.As(mx.MustNew(api.URL, "as-token"), member)
+	if err := ensureRelayJoined(t.Context(), c, roomID, rl); err != nil {
+		t.Fatal(err)
+	}
+	if !invited || !joined || makeJoins != 2 {
+		t.Fatalf("invited=%t joined=%t make_join=%d", invited, joined, makeJoins)
 	}
 }
