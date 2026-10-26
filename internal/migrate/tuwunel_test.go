@@ -18,6 +18,35 @@ import (
 	"exodus/internal/mx"
 )
 
+func TestTuwunelSchemaVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		row  []byte
+		want string
+	}{
+		{name: "supported", row: tuwunelSchemaRow},
+		{name: "missing", want: "no schema version"},
+		{name: "newer", row: binary.BigEndian.AppendUint64(nil, 18), want: "version 18 is unsupported"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			scans := map[string]string{"userid_password": "", "token_userdeviceid": "", "global": ""}
+			if tc.row != nil {
+				scans["global"] = fmt.Sprintf("0x%x ==> 0x%x\n", "version", tc.row)
+			}
+			for name, scan := range scans {
+				if err := os.WriteFile(filepath.Join(dir, name+".txt"), []byte(scan), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err := OpenTuwunelDump(t.Context(), dir)
+			if tc.want == "" && err != nil || tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+}
+
 func TestTuwunelDumpSessions(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name string, rows map[string][]byte) {

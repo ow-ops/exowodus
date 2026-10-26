@@ -64,7 +64,7 @@ func (e *Exporter) skipMissingMedia(mxc, path string, err error) bool {
 
 func (e *Exporter) ExportUser(ctx context.Context, s *Session) (*archive.User, error) {
 	log := slog.With("user", s.UserID)
-	u := &archive.User{UserID: s.UserID, Admin: s.Admin, Locked: s.Locked, Suspended: s.Suspended, ShadowBanned: s.ShadowBanned, Guest: s.Guest, ExternalIDs: s.ExternalIDs, AccountData: map[string]json.RawMessage{}}
+	u := &archive.User{UserID: s.UserID, Admin: s.Admin, Locked: s.Locked, Suspended: s.Suspended, ShadowBanned: s.ShadowBanned, Guest: s.Guest, Passwordless: s.Passwordless, ExternalIDs: s.ExternalIDs, AccountData: map[string]json.RawMessage{}}
 
 	profile, err := s.Client.GetProfile(ctx, id.UserID(s.UserID))
 	if err != nil && !mx.IsStatus(err, http.StatusNotFound) {

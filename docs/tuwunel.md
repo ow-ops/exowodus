@@ -89,6 +89,9 @@ mv "$OUT/id_appserviceregistrations.txt.part" "$OUT/id_appserviceregistrations.t
 
 Adding a scan changes the dump; use a new `--archive` directory.
 
+Export reads Tuwunel schema version 17, used from v1.5 through v1.9.4, from
+`global.txt` and refuses other versions.
+
 Keep the dump private: it contains password hashes, login tokens and the server
 signing key. Pending federation deliveries can be retained for proxy retry as
 described below. Exodus excludes
@@ -260,10 +263,15 @@ Registered bridge ghosts without login or device data are handled through their
 appservice registration. Existing archives are checked against the retained dump;
 user-name prefixes are not used to identify bridge accounts.
 
-Passwordless Tuwunel accounts can appear deactivated in its admin API while
-still having devices and valid tokens. If import refuses ID-only restoration
-for such an account, recover its missing account data from the **original
-database backup used for the dump**:
+Tuwunel's admin API reports every account with an empty password as
+deactivated. Export reads the dump instead: accounts with an empty password
+and live devices are exported as passwordless accounts, because deactivation
+removes all devices first.
+
+Archives exported by older Exodus versions may still list these accounts as
+deactivated. If import refuses ID-only restoration for such an account, export
+again to a new `--archive` directory, or recover its missing account data from
+the **original database backup used for the dump**:
 
 ```sh
 exodus repair-tuwunel-accounts --archive ./exodus-archive \

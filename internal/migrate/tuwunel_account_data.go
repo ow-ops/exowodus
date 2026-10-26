@@ -254,9 +254,10 @@ func recoverAccountBackup(d *TuwunelDump, user string) (*archive.KeyBackup, erro
 	var algorithm []byte
 	for key, raw := range d.maps["backupid_algorithm"] {
 		_, version, _ := strings.Cut(key, "\xff")
+		// Tuwunel's get_latest_backup_version also skips non-numeric versions.
 		n, err := strconv.ParseUint(version, 10, 64)
 		if err != nil {
-			return nil, errors.New("invalid key-backup version")
+			continue
 		}
 		if algorithm == nil || n > latest {
 			latest, algorithm = n, raw

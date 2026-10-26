@@ -102,6 +102,11 @@ func OpenTuwunelDump(ctx context.Context, dir string) (*TuwunelDump, error) {
 	if len(missing) != 0 {
 		slog.Info("optional Tuwunel maps omitted from export", "maps", missing)
 	}
+	if global := d.maps["global"]; global != nil {
+		if err := checkTuwunelSchema(global["version"]); err != nil {
+			return nil, err
+		}
+	}
 	if d.maps["senderkey_pusher"] != nil && d.maps["pushkey_deviceid"] == nil {
 		return nil, errors.New("Tuwunel pushers require pushkey_deviceid.txt")
 	}
@@ -111,6 +116,20 @@ func OpenTuwunelDump(ctx context.Context, dir string) (*TuwunelDump, error) {
 		}
 	}
 	return d, nil
+}
+
+// tuwunelSchemaVersion is DATABASE_VERSION in Tuwunel's migrations, unchanged
+// from v1.5 through v1.9.4. Other versions may store rows in other layouts.
+const tuwunelSchemaVersion = 17
+
+func checkTuwunelSchema(raw []byte) error {
+	if len(raw) != 8 {
+		return errors.New("Tuwunel dump has no schema version in global.txt; extract it from a database opened by Tuwunel")
+	}
+	if version := binary.BigEndian.Uint64(raw); version != tuwunelSchemaVersion {
+		return fmt.Errorf("Tuwunel schema version %d is unsupported; this Exodus reads version %d", version, tuwunelSchemaVersion)
+	}
+	return nil
 }
 
 func readTuwunelScan(ctx context.Context, path string) (map[string][]byte, error) {
@@ -247,6 +266,23 @@ func (d *TuwunelDump) CheckUserInventory(users map[string]bool, bot string, brid
 		}
 	}
 	return nil
+}
+
+// PasswordlessUsers returns accounts with an empty password and live devices.
+// Tuwunel's admin API reports every empty password as deactivated, but
+// deactivation removes all devices before clearing the password.
+func (d *TuwunelDump) PasswordlessUsers() (map[string]bool, error) {
+	users := map[string]bool{}
+	for key := range d.maps["userdeviceid_metadata"] {
+		user, _, _, err := tuwunelDeviceKey(key)
+		if err != nil {
+			return nil, fmt.Errorf("userdeviceid_metadata: %w", err)
+		}
+		if password, ok := d.passwords[user]; ok && len(password) == 0 {
+			users[user] = true
+		}
+	}
+	return users, nil
 }
 
 // Binary fields after the second separator may contain 0xff.

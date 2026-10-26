@@ -27,6 +27,7 @@ type Session struct {
 	Suspended    bool
 	ShadowBanned bool
 	Guest        bool
+	Passwordless bool
 	ExternalIDs  []archive.ExternalID
 	masUserID    string
 	close        func(context.Context) error
@@ -74,6 +75,8 @@ type SynapseUser struct {
 	ShadowBanned bool
 	Guest        bool
 	ExternalIDs  []archive.ExternalID
+	// Passwordless is set from a Tuwunel dump, never by the admin API.
+	Passwordless bool `json:",omitempty"`
 }
 
 type synapseUserDetails struct {
@@ -178,7 +181,7 @@ func Impersonate(ctx context.Context, admin *mautrix.Client, u SynapseUser, vali
 	}
 	c := mx.WithToken(admin, resp.AccessToken)
 	c.UserID = id.UserID(u.UserID)
-	return &Session{UserID: u.UserID, Client: c, Admin: u.Admin, Locked: u.Locked, Suspended: u.Suspended, ShadowBanned: u.ShadowBanned, Guest: u.Guest, ExternalIDs: u.ExternalIDs, close: logout(c)}, nil
+	return &Session{UserID: u.UserID, Client: c, Admin: u.Admin, Locked: u.Locked, Suspended: u.Suspended, ShadowBanned: u.ShadowBanned, Guest: u.Guest, Passwordless: u.Passwordless, ExternalIDs: u.ExternalIDs, close: logout(c)}, nil
 }
 
 // UnlockTemporarily is needed as Synapse refuses client API calls from

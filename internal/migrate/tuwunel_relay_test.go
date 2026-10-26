@@ -33,11 +33,14 @@ func collectTuwunelRoom(ctx context.Context, d *TuwunelDump, roomID string) (*re
 	return data.RoomData, nil
 }
 
+var tuwunelSchemaRow = binary.BigEndian.AppendUint64(nil, tuwunelSchemaVersion)
+
 func tuwunelRoomsFixture(rooms, messages int) *TuwunelDump {
 	d := &TuwunelDump{maps: map[string]map[string][]byte{}}
 	for _, name := range tuwunelRelayMaps {
 		d.maps[name] = map[string][]byte{}
 	}
+	d.maps["global"]["version"] = tuwunelSchemaRow
 	u64 := func(n int) string { return string(binary.BigEndian.AppendUint64(nil, uint64(n))) }
 	d.maps["shortstatekey_statekey"][u64(1)] = []byte("m.room.create\xff")
 	for i := 0; i < rooms; i++ {
@@ -321,6 +324,7 @@ func TestTuwunelHistoricalState(t *testing.T) {
 	for _, name := range tuwunelRelayMaps {
 		d.maps[name] = map[string][]byte{}
 	}
+	d.maps["global"]["version"] = tuwunelSchemaRow
 	d.maps["shorteventid_eventid"] = map[string][]byte{u64(1): []byte("$create"), u64(2): []byte("$first"), u64(3): []byte("$second"), u64(4): []byte("$message")}
 	d.maps["shortstatekey_statekey"] = map[string][]byte{u64(8): []byte("m.room.create\xff"), u64(9): []byte("m.room.topic\xff")}
 	d.maps["shortstatehash_statediff"][u64(10)] = append([]byte(u64(0)), pair(8, 1)...)

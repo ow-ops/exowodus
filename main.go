@@ -182,6 +182,20 @@ func (f *sourceFlags) open(ctx context.Context) (*source, error) {
 		s.users = slices.DeleteFunc(s.users, skip)
 		s.deactivated = slices.DeleteFunc(s.deactivated, skip)
 	}
+	if dump != nil {
+		passwordless, err := dump.PasswordlessUsers()
+		if err != nil {
+			return nil, err
+		}
+		s.deactivated = slices.DeleteFunc(s.deactivated, func(u migrate.SynapseUser) bool {
+			if !passwordless[u.UserID] {
+				return false
+			}
+			u.Deactivated, u.Passwordless = false, true
+			s.users = append(s.users, u)
+			return true
+		})
+	}
 	if f.requireLossless {
 		if err := dump.CheckUserInventory(s.userIDs(), "@"+f.serverUser+":"+s.serverName, bridgeUsers); err != nil {
 			return nil, err

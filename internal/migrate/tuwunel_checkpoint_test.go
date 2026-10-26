@@ -74,6 +74,7 @@ func checkpointFixture(t *testing.T) (*TuwunelDump, []json.RawMessage) {
 	for _, name := range tuwunelRelayMaps {
 		tables[name] = map[string][]byte{}
 	}
+	tables["global"]["version"] = tuwunelSchemaRow
 	tables["userid_password"] = map[string][]byte{}
 	tables["token_userdeviceid"] = map[string][]byte{}
 	tables["pduid_pdu"][u64(1)+u64(1)] = create

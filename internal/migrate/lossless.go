@@ -149,7 +149,7 @@ func (im *Importer) CheckLosslessImportContext(ctx context.Context, users []*arc
 				_, backupErr := os.Stat(filepath.Join(im.Archive.UserDir(u.UserID), "key_backup.json"))
 				hasBackup := !errors.Is(backupErr, os.ErrNotExist)
 				if err != nil || hasBackup || hasSecrets || im.protectedDeactivated[u.UserID] || len(u.Devices) > 0 || u.CrossSigning != nil || u.Dehydrated != nil {
-					failures = append(failures, fmt.Errorf("%s: deactivated account has login or device data; ID-only restoration refused; run repair-tuwunel-accounts with the original backup for passwordless Tuwunel accounts", u.UserID))
+					failures = append(failures, fmt.Errorf("%s: deactivated account has login or device data; ID-only restoration refused; for passwordless Tuwunel accounts, export again with this version or run repair-tuwunel-accounts", u.UserID))
 				}
 			}
 		}

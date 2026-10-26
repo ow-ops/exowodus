@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -72,6 +73,9 @@ func TestCanceledImportSavesReportWithoutFinalNetworkChecks(t *testing.T) {
 	}
 }
 
+// tuwunelGlobalScan holds Tuwunel schema version 17.
+const tuwunelGlobalScan = "0x76657273696f6e ==> 0x0000000000000011\n"
+
 func TestTuwunelSourceSkipsDumpBridgeGhosts(t *testing.T) {
 	dir := t.TempDir()
 	for _, table := range []string{
@@ -83,6 +87,9 @@ func TestTuwunelSourceSkipsDumpBridgeGhosts(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, table+".txt"), nil, 0600); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "global.txt"), []byte(tuwunelGlobalScan), 0600); err != nil {
+		t.Fatal(err)
 	}
 	passwords := fmt.Sprintf("0x%x ==> 0x\n0x%x ==> 0x\n", "@admin:example.org", "@ghost_old:example.org")
 	if err := os.WriteFile(filepath.Join(dir, "userid_password.txt"), []byte(passwords), 0600); err != nil {
@@ -220,6 +227,9 @@ func TestTuwunelStaleSnapshotCannotOmitJoinedRoom(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if err := os.WriteFile(filepath.Join(dir, "global.txt"), []byte(tuwunelGlobalScan), 0600); err != nil {
+		t.Fatal(err)
+	}
 	dump, err := migrate.OpenTuwunelDump(t.Context(), dir)
 	if err != nil {
 		t.Fatal(err)
@@ -254,6 +264,45 @@ func TestTuwunelStaleSnapshotCannotOmitJoinedRoom(t *testing.T) {
 	exp.HistoryAtCheckpoint = true
 	if err := exportRooms(t.Context(), exp, users, nil); err != nil || requested {
 		t.Fatalf("checkpoint export requested a newer room: %v", err)
+	}
+}
+
+func TestTuwunelSourceExportsPasswordlessUsersWithDevices(t *testing.T) {
+	dir := t.TempDir()
+	write := func(table, scan string) {
+		if err := os.WriteFile(filepath.Join(dir, table+".txt"), []byte(scan), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("userid_password", fmt.Sprintf("0x%x ==> 0x%x\n0x%x ==> 0x\n0x%x ==> 0x\n", "@admin:example.org", "$argon2id$x", "@bob:example.org", "@gone:example.org"))
+	write("token_userdeviceid", "")
+	write("userdeviceid_metadata", fmt.Sprintf("0x%x ==> 0x%x\n", "@bob:example.org\xffPHONE", `{"device_id":"PHONE"}`))
+	homeserver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/_matrix/client/v3/account/whoami":
+			_, _ = w.Write([]byte(`{"user_id":"@admin:example.org"}`))
+		case "/_synapse/admin/v2/users":
+			_, _ = w.Write([]byte(`{"users":[{"name":"@admin:example.org"},{"name":"@bob:example.org"},{"name":"@gone:example.org"}]}`))
+		case "/_synapse/admin/v2/users/@bob:example.org", "/_synapse/admin/v2/users/@gone:example.org":
+			_, _ = w.Write([]byte(`{"deactivated":true}`))
+		default:
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer homeserver.Close()
+	f := sourceFlags{kind: "tuwunel", serverUser: "conduit", tuwunelDump: dir, adminToken: "admin", url: homeserver.URL, users: []string{"@admin:example.org", "@bob:example.org", "@gone:example.org"}}
+	s, err := f.open(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if len(s.deactivated) != 1 || s.deactivated[0].UserID != "@gone:example.org" {
+		t.Fatalf("deactivated = %+v", s.deactivated)
+	}
+	i := slices.IndexFunc(s.users, func(u migrate.SynapseUser) bool { return u.UserID == "@bob:example.org" })
+	if i < 0 || !s.users[i].Passwordless || s.users[i].Deactivated {
+		t.Fatalf("users = %+v", s.users)
 	}
 }
 

@@ -540,3 +540,25 @@ func TestRegisteredAppserviceSenderStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestTuwunelTablesExistInV194(t *testing.T) {
+	families := tuwunel194Families(t)
+	tables := slices.Concat([]string{"userid_password", "token_userdeviceid", "userdeviceid_refresh"},
+		tuwunelExtraMaps, tuwunelRelayMaps, accountCheckpointTables, accountRecoveryTables)
+	docs, err := os.ReadFile("../../docs/tuwunel.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, script, _ := strings.Cut(string(docs), "for table in \\\n")
+	script, _, _ = strings.Cut(script, "\ndo\n")
+	scripted := strings.Fields(strings.ReplaceAll(script, "\\", ""))
+	if len(scripted) < 20 {
+		t.Fatal("extraction script not found in docs/tuwunel.md")
+	}
+	tables = append(tables, scripted...)
+	for _, table := range tables {
+		if !families[table] {
+			t.Errorf("%s is not a Tuwunel v1.9.4 column family", table)
+		}
+	}
+}
