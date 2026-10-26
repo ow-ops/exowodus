@@ -173,6 +173,12 @@ func (p *Proxy) addMedia(dir string, media []archive.Media) {
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Preflights carry no token; endpoint logic must not run for them.
+	if r.Method == http.MethodOptions {
+		setCORS(w.Header())
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	p.translateToken(r)
 
 	path := r.URL.Path
@@ -419,6 +425,7 @@ func setJSONBody(r *http.Request, v any) {
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
+	setCORS(w.Header())
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
 }
@@ -436,6 +443,7 @@ func serveFile(w http.ResponseWriter, r *http.Request, f mediaFile) {
 		return
 	}
 	setMediaHeaders(w.Header(), f)
+	setCORS(w.Header())
 	w.Header().Set("Cross-Origin-Resource-Policy", "cross-origin")
 	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; script-src 'none'; plugin-types application/pdf; style-src 'unsafe-inline'; object-src 'self';")
 	http.ServeContent(w, r, "", info.ModTime(), file)
@@ -581,7 +589,16 @@ func readBody(r *http.Request) ([]byte, error) {
 	return body, nil
 }
 
+// setCORS adds the headers the Matrix spec recommends for web clients.
+// Only responses the proxy writes need them; upstream responses have their own.
+func setCORS(h http.Header) {
+	h.Set("Access-Control-Allow-Origin", "*")
+	h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+	h.Set("Access-Control-Allow-Headers", "X-Requested-With, Content-Type, Authorization")
+}
+
 func writeError(w http.ResponseWriter, status int, code, msg string) {
+	setCORS(w.Header())
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"errcode": code, "error": msg})

@@ -152,6 +152,18 @@ func TestProxyServesDatabaseInventoriedMedia(t *testing.T) {
 	if response.Code != 200 || response.Body.String() != "original unowned bytes" {
 		t.Fatalf("archived media response = %d %s", response.Code, response.Body.String())
 	}
+	// Browsers preflight authenticated media without a token.
+	authenticated := "/_matrix/client/v1/media/download/example.org/orphan"
+	preflight := do(p, http.MethodOptions, authenticated, "", "")
+	missing := do(p, http.MethodGet, "/_matrix/media/v3/download/example.org/missing", "", "")
+	for name, rec := range map[string]*httptest.ResponseRecorder{"media": response, "preflight": preflight, "error": missing} {
+		if rec.Header().Get("Access-Control-Allow-Origin") != "*" || !strings.Contains(rec.Header().Get("Access-Control-Allow-Headers"), "Authorization") {
+			t.Fatalf("%s response lacks CORS headers: %v", name, rec.Header())
+		}
+	}
+	if preflight.Code != http.StatusNoContent || preflight.Body.Len() != 0 || missing.Code != http.StatusNotFound {
+		t.Fatalf("preflight=%d error=%d", preflight.Code, missing.Code)
+	}
 }
 
 // fakeUpstream answers whoami for "banned-token" and "user-token" and records other requests.
