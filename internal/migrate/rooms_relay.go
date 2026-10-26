@@ -156,6 +156,9 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 		} else {
 			slog.Info("using trusted relay for backfill", "room", room.RoomID, "server", rl.Name)
 		}
+		if err := rl.Announce(ctx, room.RoomID); err != nil {
+			slog.Warn("other servers did not accept the relay's events", "room", room.RoomID, "error", err)
+		}
 		if _, err := c.JoinRoom(ctx, room.RoomID, &mautrix.ReqJoinRoom{Via: []string{rl.Name}}); err != nil {
 			return fmt.Errorf("join through the relay: %w", err)
 		}

@@ -123,6 +123,8 @@ type room struct {
 	archiveIndex map[string]int
 	// offered events are served by the next backfills regardless of the anchor.
 	offered map[string]bool
+	// authored lists the events the relay signed, in order.
+	authored []string
 }
 
 func newRoom(roomID, version string, data RoomData) (*room, error) {
@@ -478,6 +480,7 @@ func (r *room) sign(p *pdu.PDU, server string, key *federation.SigningKey) error
 		return err
 	}
 	r.add(string(eventID), p, raw)
+	r.authored = append(r.authored, string(eventID))
 	return nil
 }
 

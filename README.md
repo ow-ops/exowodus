@@ -230,8 +230,10 @@ During the import, exodus runs a temporary federation server under that name
 
 1. The relay joins through an authorized invitation, or joins a public room
    directly when its join rules allow it.
-2. A migrated member joins through the relay, and Continuwuity backfills the
-   whole history from it.
+2. The relay sends the events it signed to the room's other servers, then a
+   migrated member joins through it and Continuwuity backfills the whole
+   history from it. Continuwuity does not serve events it received while
+   joining, so other servers can only get these from the relay.
 3. The relay sends its own signed leave after restoration succeeds.
 
 Use a server name such as `--relay-name relay.example.net`, without `https://`.
@@ -263,6 +265,9 @@ Requirements:
 - Add the relay to Continuwuity's `trusted_servers`, since it also serves your
   old server's key. With unchanged user IDs, this also permits backfill without
   changing room power levels. Private rooms still need an authorized inviter.
+- In federated rooms, other servers must reach the relay at its name with a
+  trusted certificate to verify its events. Otherwise they reject later events
+  from your server in those rooms.
 - Continuwuity must trust the public relay certificate. Use a reverse proxy with
   a trusted certificate, or provide one with `--relay-tls-cert` and
   `--relay-tls-key`. The relay's default certificate is self-signed.

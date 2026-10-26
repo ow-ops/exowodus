@@ -48,6 +48,7 @@ type Relay struct {
 	peer   string
 	auth   *federation.ServerAuth
 	sender *federation.Client
+	remote *federation.Client
 
 	mu    sync.Mutex
 	rooms map[string]*room
@@ -61,6 +62,7 @@ func New(name, origin string, originKey *federation.SigningKey, cachedKeys map[s
 	return &Relay{
 		Name: name, key: key, origin: origin, originKey: originKey,
 		cachedKeys: cachedKeys, rooms: map[string]*room{},
+		remote: federation.NewClient(name, key, federation.NewInMemoryCache(), exhttp.SensibleClientSettings),
 	}
 }
 
