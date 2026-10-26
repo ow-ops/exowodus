@@ -90,7 +90,7 @@ func TestVerifyOriginalRoomChecksContent(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"chunk":[` + tc.body + `]}`)) }))
 			defer srv.Close()
-			err := verifyOriginalRoom(t.Context(), mx.MustNew(srv.URL, "token"), "!room:example.org", []json.RawMessage{source})
+			err := verifyOriginalRoom(t.Context(), mx.MustNew(srv.URL, "token"), "!room:example.org", "11", []json.RawMessage{source})
 			if (err != nil) != tc.fails {
 				t.Fatalf("verification error = %v", err)
 			}

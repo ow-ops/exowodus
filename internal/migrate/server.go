@@ -430,7 +430,7 @@ func (im *Importer) fileReport(ctx context.Context, r archive.Report) error {
 		err := c.ReportEvent(ctx, id.RoomID(roomID), id.EventID(eventID), reason)
 		if mx.IsStatus(err, http.StatusNotFound) {
 			isEvent := func(ev *event.Event) bool { return string(ev.ID) == eventID }
-			if _, found, _ := paginateBack(ctx, c, roomID, isEvent); found {
+			if _, found, _ := paginateBack(ctx, c, roomID, isEvent, true); found {
 				err = c.ReportEvent(ctx, id.RoomID(roomID), id.EventID(eventID), reason)
 			}
 		}

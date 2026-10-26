@@ -5,18 +5,22 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
 	"maps"
 	"math"
+	"slices"
+	"strings"
 
 	"exodus/internal/archive"
 	"exodus/internal/relay"
 
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/federation/pdu"
 	"maunium.net/go/mautrix/id"
 )
 
@@ -131,7 +135,7 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 	}
 	if r.st.Done {
 		if im.RequireLossless {
-			return verifyOriginalRoomEvents(ctx, r.as(r.mapUser(owner)), room.RoomID, im.Archive.RoomEventsIter(room.RoomID))
+			return verifyOriginalRoomEvents(ctx, r.relayReaders(owner, members), room.RoomID, room.Version, im.Archive.RoomEventsIter(room.RoomID))
 		}
 		return nil
 	}
@@ -168,13 +172,14 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 		return err
 	}
 
-	backfilled, err := backfillRoomEvents(ctx, c, room.RoomID, im.Archive.RoomEventsIter(room.RoomID))
+	readers := r.relayReaders(owner, members)
+	backfilled, err := backfillRoomEvents(ctx, readers, room.RoomID, im.Archive.RoomEventsIter(room.RoomID))
 	if err != nil {
 		return fmt.Errorf("backfill: %w", err)
 	}
 	rep.Replayed = backfilled
 	if im.RequireLossless {
-		if err := verifyOriginalRoomEvents(ctx, c, room.RoomID, im.Archive.RoomEventsIter(room.RoomID)); err != nil {
+		if err := verifyOriginalRoomEvents(ctx, readers, room.RoomID, room.Version, im.Archive.RoomEventsIter(room.RoomID)); err != nil {
 			return err
 		}
 	}
@@ -231,6 +236,17 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 	}
 	r.st.Done = true
 	return r.save()
+}
+
+// relayReaders returns the joining member first, then the other migrated members.
+func (r *replay) relayReaders(owner string, members []string) []*mautrix.Client {
+	readers := []*mautrix.Client{r.as(r.mapUser(owner))}
+	for _, m := range members {
+		if m != owner {
+			readers = append(readers, r.as(r.mapUser(m)))
+		}
+	}
+	return readers
 }
 
 // joinMember restores an archived join, inviting the member first when the
@@ -313,12 +329,15 @@ func ensureRelayJoined(ctx context.Context, c *mautrix.Client, roomID string, rl
 	return nil
 }
 
-func verifyOriginalRoom(ctx context.Context, c *mautrix.Client, roomID string, events []json.RawMessage) error {
-	return verifyOriginalRoomEvents(ctx, c, roomID, roomEventSequence(events))
+func verifyOriginalRoom(ctx context.Context, c *mautrix.Client, roomID, version string, events []json.RawMessage) error {
+	return verifyOriginalRoomEvents(ctx, []*mautrix.Client{c}, roomID, version, roomEventSequence(events))
 }
 
-func verifyOriginalRoomEvents(ctx context.Context, c *mautrix.Client, roomID string, events iter.Seq2[json.RawMessage, error]) error {
-	expected := map[string][sha256.Size]byte{}
+// originalFingerprints holds an event's fields as exported, and as redacted.
+type originalFingerprints struct{ full, redacted [sha256.Size]byte }
+
+func verifyOriginalRoomEvents(ctx context.Context, readers []*mautrix.Client, roomID, version string, events iter.Seq2[json.RawMessage, error]) error {
+	expected := map[string]originalFingerprints{}
 	for raw, err := range events {
 		if err != nil {
 			return err
@@ -333,20 +352,24 @@ func verifyOriginalRoomEvents(ctx context.Context, c *mautrix.Client, roomID str
 		if _, duplicate := expected[ev.EventID]; ev.EventID == "" || duplicate {
 			return errors.New("missing or duplicate exported event ID")
 		}
-		fingerprint, err := originalEventFingerprint(raw)
-		if err != nil {
+		var want originalFingerprints
+		if want.full, err = originalEventFingerprint(raw); err != nil {
 			return err
 		}
-		expected[ev.EventID] = fingerprint
+		if want.redacted, err = redactedEventFingerprint(raw, version); err != nil {
+			return err
+		}
+		expected[ev.EventID] = want
 	}
 	if len(expected) == 0 {
 		return errors.New("room has no exported events")
 	}
 	var mismatch error
-	_, _, err := paginateBack(ctx, c, roomID, func(ev *event.Event) bool {
+	done := func() bool { return mismatch != nil || len(expected) == 0 }
+	_, err := readRoom(ctx, readers, roomID, func(ev *event.Event) bool {
 		want, ok := expected[string(ev.ID)]
 		if !ok {
-			return len(expected) == 0
+			return done()
 		}
 		raw, marshalErr := json.Marshal(ev)
 		if marshalErr != nil {
@@ -354,13 +377,16 @@ func verifyOriginalRoomEvents(ctx context.Context, c *mautrix.Client, roomID str
 			return true
 		}
 		got, fieldErr := originalEventFingerprint(raw)
-		if fieldErr != nil || want != got {
+		// A checkpoint export omits later redactions that other servers in
+		// the room can still deliver.
+		redacted := ev.Unsigned.RedactedBecause != nil && got == want.redacted
+		if fieldErr != nil || got != want.full && !redacted {
 			mismatch = fmt.Errorf("original event %s differs on the destination", ev.ID)
 			return true
 		}
 		delete(expected, string(ev.ID))
-		return len(expected) == 0
-	})
+		return done()
+	}, done)
 	if err != nil {
 		return err
 	}
@@ -368,9 +394,33 @@ func verifyOriginalRoomEvents(ctx context.Context, c *mautrix.Client, roomID str
 		return mismatch
 	}
 	if len(expected) != 0 {
-		return fmt.Errorf("%d original events absent on destination", len(expected))
+		missing := map[string]bool{}
+		for eventID := range expected {
+			missing[eventID] = true
+		}
+		return missingEventsError("original events absent on destination", missing)
 	}
 	return nil
+}
+
+// redactedEventFingerprint applies the room version's redaction rules to content.
+func redactedEventFingerprint(raw json.RawMessage, version string) ([sha256.Size]byte, error) {
+	var event map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &event); err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	var typ string
+	if err := json.Unmarshal(event["type"], &typ); err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	if content, ok := event["content"]; ok {
+		event["content"] = json.RawMessage(pdu.RedactContent(typ, jsontext.Value(content), id.RoomVersion(version)))
+	}
+	redacted, err := json.Marshal(event)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	return originalEventFingerprint(redacted)
 }
 
 func originalEventFingerprint(raw json.RawMessage) ([sha256.Size]byte, error) {
@@ -488,7 +538,7 @@ func (r *replay) relayMembers() (string, []string) {
 
 // paginateBack makes Continuwuity backfill until found or the room's start.
 // It returns the number of events seen.
-func paginateBack(ctx context.Context, c *mautrix.Client, roomID string, found func(*event.Event) bool) (int, bool, error) {
+func paginateBack(ctx context.Context, c *mautrix.Client, roomID string, found func(*event.Event) bool, retryEmpty bool) (int, bool, error) {
 	var total, empty int
 	from := ""
 	for range maxBackfillPages {
@@ -505,7 +555,7 @@ func paginateBack(ctx context.Context, c *mautrix.Client, roomID string, found f
 			return total, true, nil
 		}
 		if len(page.Chunk) == 0 {
-			if empty++; empty > maxEmptyBackfillPages {
+			if empty++; !retryEmpty || empty > maxEmptyBackfillPages {
 				break
 			}
 			slog.Info("backfill returned no older events; asking again", "room", roomID, "attempt", empty)
@@ -522,10 +572,41 @@ func paginateBack(ctx context.Context, c *mautrix.Client, roomID string, found f
 
 // backfillRoom requires both the create event and every exported timeline event.
 func backfillRoom(ctx context.Context, c *mautrix.Client, roomID string, events []json.RawMessage) (int, error) {
-	return backfillRoomEvents(ctx, c, roomID, roomEventSequence(events))
+	return backfillRoomEvents(ctx, []*mautrix.Client{c}, roomID, roomEventSequence(events))
 }
 
-func backfillRoomEvents(ctx context.Context, c *mautrix.Client, roomID string, events iter.Seq2[json.RawMessage, error]) (int, error) {
+// readRoom pages back as each reader until done. The first reader triggers
+// backfill; the others see events that history visibility hides from it.
+// It returns the number of events the first reader saw.
+func readRoom(ctx context.Context, readers []*mautrix.Client, roomID string, found func(*event.Event) bool, done func() bool) (int, error) {
+	var seen int
+	for i, c := range readers {
+		count, _, err := paginateBack(ctx, c, roomID, found, i == 0)
+		if i == 0 {
+			seen = count
+		}
+		if errors.Is(err, mautrix.MForbidden) && i > 0 {
+			continue
+		}
+		if err != nil {
+			return seen, err
+		}
+		if done() {
+			break
+		}
+	}
+	return seen, nil
+}
+
+func missingEventsError(prefix string, missing map[string]bool) error {
+	ids := slices.Sorted(maps.Keys(missing))
+	if len(ids) > 5 {
+		ids = ids[:5]
+	}
+	return fmt.Errorf("%s, %d exported events missing (first: %s)", prefix, len(missing), strings.Join(ids, ", "))
+}
+
+func backfillRoomEvents(ctx context.Context, readers []*mautrix.Client, roomID string, events iter.Seq2[json.RawMessage, error]) (int, error) {
 	missing := map[string]bool{}
 	for raw, err := range events {
 		if err != nil {
@@ -547,16 +628,17 @@ func backfillRoomEvents(ctx context.Context, c *mautrix.Client, roomID string, e
 		return 0, errors.New("room has no exported events")
 	}
 	reachedCreate := false
-	count, _, err := paginateBack(ctx, c, roomID, func(ev *event.Event) bool {
+	done := func() bool { return reachedCreate && len(missing) == 0 }
+	count, err := readRoom(ctx, readers, roomID, func(ev *event.Event) bool {
 		delete(missing, string(ev.ID))
 		reachedCreate = reachedCreate || ev.Type == event.StateCreate
-		return reachedCreate && len(missing) == 0
-	})
+		return done()
+	}, done)
 	if err != nil {
 		return count, err
 	}
 	if !reachedCreate || len(missing) > 0 {
-		return count, fmt.Errorf("incomplete backfill: reached create event: %t, %d exported events missing", reachedCreate, len(missing))
+		return count, missingEventsError(fmt.Sprintf("incomplete backfill: reached create event: %t", reachedCreate), missing)
 	}
 	return count, nil
 }

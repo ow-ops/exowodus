@@ -49,7 +49,7 @@ func TestTuwunelOriginalEventsLive(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := verifyOriginalRoom(t.Context(), c, room.RoomID, events); err != nil {
+		if err := verifyOriginalRoom(t.Context(), c, room.RoomID, room.Version, events); err != nil {
 			t.Fatal(err)
 		}
 		t.Logf("verified all %d original events in %s", len(events), room.RoomID)

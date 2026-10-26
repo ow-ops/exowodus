@@ -13,7 +13,9 @@ import (
 	"testing"
 
 	"exodus/internal/mx"
+
 	"exodus/internal/relay"
+	"maunium.net/go/mautrix"
 )
 
 func TestOriginalEventFingerprintPreservesFields(t *testing.T) {
@@ -58,10 +60,10 @@ func TestRelayTimelineReadErrorsStopBeforeRequests(t *testing.T) {
 			yield(nil, failure)
 		}
 	}
-	if err := verifyOriginalRoomEvents(t.Context(), c, "!room:example.org", events); !errors.Is(err, failure) {
+	if err := verifyOriginalRoomEvents(t.Context(), []*mautrix.Client{c}, "!room:example.org", "11", events); !errors.Is(err, failure) {
 		t.Fatal(err)
 	}
-	if _, err := backfillRoomEvents(t.Context(), c, "!room:example.org", events); !errors.Is(err, failure) {
+	if _, err := backfillRoomEvents(t.Context(), []*mautrix.Client{c}, "!room:example.org", events); !errors.Is(err, failure) {
 		t.Fatal(err)
 	}
 	if requests != 0 {
@@ -169,7 +171,7 @@ func TestOriginalRoomVerificationKeepsFingerprints(t *testing.T) {
 			}
 		}
 	}
-	err := verifyOriginalRoomEvents(t.Context(), mx.MustNew(api.URL, "token"), "!room:example.org", stream)
+	err := verifyOriginalRoomEvents(t.Context(), []*mautrix.Client{mx.MustNew(api.URL, "token")}, "!room:example.org", "11", stream)
 	if err == nil || !strings.Contains(err.Error(), "original events absent") {
 		t.Fatal("missing destination events were accepted")
 	}
@@ -215,6 +217,73 @@ func TestRelayBackfillRetriesEmptyPages(t *testing.T) {
 			}
 			if want := map[bool]int{false: tc.empty + 2, true: maxEmptyBackfillPages + 2}[tc.wantErr]; requests != want {
 				t.Fatalf("requests = %d, want %d", requests, want)
+			}
+		})
+	}
+}
+
+func TestRelayVerificationReadsAsEveryMember(t *testing.T) {
+	create := json.RawMessage(`{"event_id":"$create","type":"m.room.create","sender":"@a:example.org","content":{}}`)
+	early := json.RawMessage(`{"event_id":"$early","type":"m.room.message","sender":"@b:example.org","content":{"body":"before a joined"}}`)
+	late := json.RawMessage(`{"event_id":"$late","type":"m.room.message","sender":"@a:example.org","content":{"body":"after"}}`)
+	// History visibility hides $early from the first reader only.
+	visible := map[string][]json.RawMessage{"Bearer first": {late, create}, "Bearer second": {late, early, create}}
+	for _, tc := range []struct {
+		name    string
+		second  string
+		wantErr string
+	}{
+		{name: "second member sees hidden events", second: "second"},
+		{name: "second member not joined", second: "forbidden", wantErr: "$early"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				chunk, ok := visible[r.Header.Get("Authorization")]
+				if !ok {
+					w.WriteHeader(http.StatusForbidden)
+					_, _ = w.Write([]byte(`{"errcode":"M_FORBIDDEN","error":"You don't have permission to view this room."}`))
+					return
+				}
+				if r.URL.Query().Get("from") != "" {
+					chunk = nil
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"chunk": chunk, "end": "oldest"})
+			}))
+			defer api.Close()
+			readers := []*mautrix.Client{mx.MustNew(api.URL, "first"), mx.MustNew(api.URL, tc.second)}
+			events := []json.RawMessage{create, early, late}
+			_, backfillErr := backfillRoomEvents(t.Context(), readers, "!room:example.org", roomEventSequence(events))
+			verifyErr := verifyOriginalRoomEvents(t.Context(), readers, "!room:example.org", "11", roomEventSequence(events))
+			for _, err := range []error{backfillErr, verifyErr} {
+				if tc.wantErr == "" && err != nil || tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+					t.Fatalf("err = %v, want %q", err, tc.wantErr)
+				}
+			}
+		})
+	}
+}
+
+func TestRelayVerificationAcceptsLaterRedactions(t *testing.T) {
+	archived := json.RawMessage(`{"event_id":"$m","type":"m.room.member","sender":"@a:example.org","state_key":"@a:example.org","origin_server_ts":5,"content":{"membership":"join","displayname":"A"}}`)
+	for _, tc := range []struct {
+		name, destination string
+		ok                bool
+	}{
+		{name: "unchanged", destination: `{"event_id":"$m","type":"m.room.member","sender":"@a:example.org","state_key":"@a:example.org","origin_server_ts":5,"content":{"membership":"join","displayname":"A"}}`, ok: true},
+		{name: "redacted later", destination: `{"event_id":"$m","type":"m.room.member","sender":"@a:example.org","state_key":"@a:example.org","origin_server_ts":5,"content":{"membership":"join"},"unsigned":{"redacted_because":{"event_id":"$r","type":"m.room.redaction","sender":"@a:example.org","content":{}}}}`, ok: true},
+		{name: "stripped without redaction", destination: `{"event_id":"$m","type":"m.room.member","sender":"@a:example.org","state_key":"@a:example.org","origin_server_ts":5,"content":{"membership":"join"}}`},
+		{name: "redacted but altered", destination: `{"event_id":"$m","type":"m.room.member","sender":"@a:example.org","state_key":"@a:example.org","origin_server_ts":5,"content":{"membership":"leave"},"unsigned":{"redacted_because":{"event_id":"$r","type":"m.room.redaction","sender":"@a:example.org","content":{}}}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"chunk":[%s]}`, tc.destination)
+			}))
+			defer api.Close()
+			err := verifyOriginalRoom(t.Context(), mx.MustNew(api.URL, "token"), "!room:example.org", "11", []json.RawMessage{archived})
+			if (err == nil) != tc.ok {
+				t.Fatalf("err = %v", err)
 			}
 		})
 	}

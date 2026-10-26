@@ -275,7 +275,9 @@ it if room admission rules allow. Rooms created by earlier attempts are reused.
 In federated rooms Continuwuity may ask another server for history first; an
 empty answer is retried up to 20 times before backfill fails. Members missing
 from the destination's room state are invited by the room's most powerful
-migrated member, then joined.
+migrated member, then joined. History is checked as each migrated member, since
+history visibility can hide events from one of them. An archived event that was
+redacted later on another server matches its redacted form.
 
 Rooms with a version before 3, or whose event IDs cannot be recomputed from the
 exported events, fall back to replay.
