@@ -159,3 +159,32 @@ func TestFileRoomServesSameEvents(t *testing.T) {
 		t.Fatal("room file left open")
 	}
 }
+
+func TestBackfillServesOfferedEventsOnce(t *testing.T) {
+	const roomID = "!room:example.org"
+	data := RoomData{Extremities: []string{"$b"}}
+	for depth, e := range []struct{ id, prev string }{{"$create", ""}, {"$a", "$create"}, {"$b", "$a"}} {
+		prev := []string{}
+		if e.prev != "" {
+			prev = append(prev, e.prev)
+		}
+		raw, _ := json.Marshal(map[string]any{"event_id": e.id, "room_id": roomID, "type": "m.room.message", "sender": "@alice:example.org", "content": map[string]any{}, "prev_events": prev, "depth": depth + 1})
+		data.Events = append(data.Events, EventJSON{EventID: e.id, PDU: raw})
+	}
+	rl := New("relay.test", "example.org", federation.GenerateSigningKey(), nil)
+	if err := rl.AddRoom(roomID, "11", data); err != nil {
+		t.Fatal(err)
+	}
+	rl.OfferEvents(roomID, []string{"$a", "$b", "$unknown"})
+	rm := rl.room(roomID)
+	// The destination already reached the create event.
+	if got := rm.backfill([]string{"$create"}, 1); !slices.Equal(got, []string{"$b"}) {
+		t.Fatalf("first offered page %v", got)
+	}
+	if got := rm.backfill([]string{"$b"}, 10); !slices.Equal(got, []string{"$a"}) {
+		t.Fatalf("second offered page %v", got)
+	}
+	if got := rm.backfill([]string{"$create"}, 10); !slices.Equal(got, []string{"$create"}) {
+		t.Fatalf("offered events served again: %v", got)
+	}
+}

@@ -121,6 +121,8 @@ type room struct {
 	// archiveOrder and archiveIndex are built on the first backfill.
 	archiveOrder []string
 	archiveIndex map[string]int
+	// offered events are served by the next backfills regardless of the anchor.
+	offered map[string]bool
 }
 
 func newRoom(roomID, version string, data RoomData) (*room, error) {
@@ -545,6 +547,22 @@ func (r *room) archived() ([]string, map[string]int) {
 // lead back to the archive heads, after which the archive order continues.
 func (r *room) backfill(from []string, limit int) []string {
 	order, index := r.archived()
+	if len(r.offered) > 0 {
+		var ids []string
+		for _, eventID := range order {
+			if len(ids) == limit {
+				break
+			}
+			if r.offered[eventID] {
+				ids = append(ids, eventID)
+				delete(r.offered, eventID)
+			}
+		}
+		if len(ids) > 0 {
+			return ids
+		}
+		r.offered = nil
+	}
 	start := -1
 	for _, eventID := range from {
 		if i, ok := index[eventID]; ok && (start < 0 || i < start) {

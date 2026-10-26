@@ -281,6 +281,11 @@ redacted later on another server matches its redacted form. An event the source
 stored with emptied content matches its original content when that content
 reproduces the archived content hash.
 
+Continuwuity only backfills events older than the earliest one it has. If an
+earlier attempt reached a room's create event but missed events, import offers
+them to Continuwuity directly; they then appear before the create event in the
+room's timeline.
+
 Rooms with a version before 3, or whose event IDs cannot be recomputed from the
 exported events, fall back to replay.
 

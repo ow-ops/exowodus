@@ -170,6 +170,12 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 
 	readers := r.relayReaders(owner, members)
 	backfilled, err := backfillRoomEvents(ctx, readers, room.RoomID, im.Archive.RoomEventsIter(room.RoomID))
+	var incomplete *incompleteBackfillError
+	if errors.As(err, &incomplete) && incomplete.reachedCreate {
+		slog.Warn("offering skipped events before the room's create event", "room", room.RoomID, "events", len(incomplete.missing))
+		rl.OfferEvents(room.RoomID, slices.Collect(maps.Keys(incomplete.missing)))
+		backfilled, err = backfillRoomEvents(ctx, readers, room.RoomID, im.Archive.RoomEventsIter(room.RoomID))
+	}
 	if err != nil {
 		return fmt.Errorf("backfill: %w", err)
 	}
@@ -643,6 +649,15 @@ func missingEventsError(prefix string, missing map[string]bool) error {
 	return fmt.Errorf("%s, %d exported events missing (first: %s)", prefix, len(missing), strings.Join(ids, ", "))
 }
 
+type incompleteBackfillError struct {
+	reachedCreate bool
+	missing       map[string]bool
+}
+
+func (e *incompleteBackfillError) Error() string {
+	return missingEventsError(fmt.Sprintf("incomplete backfill: reached create event: %t", e.reachedCreate), e.missing).Error()
+}
+
 func backfillRoomEvents(ctx context.Context, readers []*mautrix.Client, roomID string, events iter.Seq2[json.RawMessage, error]) (int, error) {
 	missing := map[string]bool{}
 	for raw, err := range events {
@@ -675,7 +690,7 @@ func backfillRoomEvents(ctx context.Context, readers []*mautrix.Client, roomID s
 		return count, err
 	}
 	if !reachedCreate || len(missing) > 0 {
-		return count, missingEventsError(fmt.Sprintf("incomplete backfill: reached create event: %t", reachedCreate), missing)
+		return count, &incompleteBackfillError{reachedCreate: reachedCreate, missing: missing}
 	}
 	return count, nil
 }

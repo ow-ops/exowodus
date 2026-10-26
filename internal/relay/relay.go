@@ -148,6 +148,23 @@ func (rl *Relay) AddRoomFile(roomID, version, path string) error {
 	return nil
 }
 
+// OfferEvents makes the next backfills of the room return these archived
+// events, which Continuwuity places before its earliest event in the timeline.
+func (rl *Relay) OfferEvents(roomID string, eventIDs []string) {
+	r := rl.room(roomID)
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.offered = map[string]bool{}
+	for _, eventID := range eventIDs {
+		if _, ok := r.events[eventID]; ok {
+			r.offered[eventID] = true
+		}
+	}
+}
+
 // RemoveRoom releases the room after an import attempt.
 func (rl *Relay) RemoveRoom(roomID string) {
 	rl.mu.Lock()

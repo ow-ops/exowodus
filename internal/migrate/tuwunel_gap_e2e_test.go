@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -62,6 +63,7 @@ func TestTuwunelDummyGapLive(t *testing.T) {
 		name, version string
 		prejoined     bool
 		relayLeft     bool
+		gap           bool
 	}{
 		{name: "fresh v11", version: "11"},
 		{name: "fresh v12", version: "12"},
@@ -69,6 +71,9 @@ func TestTuwunelDummyGapLive(t *testing.T) {
 		{name: "already joined v12", version: "12", prejoined: true},
 		{name: "relay left v11", version: "11", prejoined: true, relayLeft: true},
 		{name: "relay left v12", version: "12", prejoined: true, relayLeft: true},
+		// An earlier attempt backfilled down to the create event but skipped a branch.
+		{name: "gap below earliest v11", version: "11", prejoined: true, gap: true},
+		{name: "gap below earliest v12", version: "12", prejoined: true, gap: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			version := tc.version
@@ -79,6 +84,7 @@ func TestTuwunelDummyGapLive(t *testing.T) {
 			var auth []id.EventID
 			var previous id.EventID
 			var merge []id.EventID
+			var skipped string
 			depth := int64(0)
 			add := func(typ string, stateKey *string, content any) string {
 				t.Helper()
@@ -164,6 +170,9 @@ func TestTuwunelDummyGapLive(t *testing.T) {
 					left := add("m.room.message", nil, map[string]any{"msgtype": "m.text", "body": fmt.Sprintf("left %d", i)})
 					previous = fork
 					right := add("m.room.message", nil, map[string]any{"msgtype": "m.text", "body": fmt.Sprintf("right %d", i)})
+					if skipped == "" {
+						skipped = right
+					}
 					merge = []id.EventID{id.EventID(left), id.EventID(right)}
 				}
 				add("m.room.message", nil, map[string]any{"msgtype": "m.text", "body": fmt.Sprintf("history %d", i)})
@@ -241,7 +250,11 @@ func TestTuwunelDummyGapLive(t *testing.T) {
 			}
 			defer rl.Stop(context.Background())
 			if tc.prejoined {
-				if err := rl.AddRoom(roomID, version, *data.RoomData); err != nil {
+				served := *data.RoomData
+				if tc.gap {
+					served.Events = slices.DeleteFunc(slices.Clone(served.Events), func(e relay.EventJSON) bool { return e.EventID == skipped })
+				}
+				if err := rl.AddRoom(roomID, version, served); err != nil {
 					t.Fatal(err)
 				}
 				if err := rl.Enter(roomID, alice); err != nil {
@@ -253,6 +266,13 @@ func TestTuwunelDummyGapLive(t *testing.T) {
 				if tc.relayLeft {
 					if _, err := as.As(alice).SendStateEvent(ctx, id.RoomID(roomID), event.StateMember, rl.UserID(), map[string]string{"membership": "leave"}); err != nil {
 						t.Fatal(err)
+					}
+				}
+				if tc.gap {
+					_, err := backfillRoomEvents(ctx, []*mautrix.Client{as.As(alice)}, roomID, a.RoomEventsIter(roomID))
+					var incomplete *incompleteBackfillError
+					if !errors.As(err, &incomplete) || !incomplete.reachedCreate || len(incomplete.missing) != 1 || !incomplete.missing[skipped] {
+						t.Fatalf("earlier attempt did not leave the expected gap: %v", err)
 					}
 				}
 			}
