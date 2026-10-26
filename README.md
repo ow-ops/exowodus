@@ -228,19 +228,20 @@ PDUs, the source signing key and `import --to-admin-token`.
 During the import, exodus runs a temporary federation server under that name
 (`--relay-listen`, default `:8448`) that serves the exported events:
 
-1. An original member invites the relay's member, signed with your old server
-   key, and the relay joins.
+1. The relay joins through an authorized invitation, or joins a public room
+   directly when its join rules allow it.
 2. A migrated member joins through the relay, and Continuwuity backfills the
    whole history from it.
-3. The migrated member removes the relay's member, leaving the room only on
-   Continuwuity.
+3. The relay sends its own signed leave after restoration succeeds.
 
 Use a server name such as `--relay-name relay.example.net`, without `https://`.
 The listener uses HTTPS, including behind a reverse proxy. Point the proxy at
-`https://<reachable-host>:8448` and configure backend certificate trust. When the
-proxy is in Docker and Exodus runs on the host, use the host's reachable address.
-Exodus does not serve `/.well-known/matrix/server`; provide federation delegation
-separately if the public relay is served on port 443 rather than 8448.
+`https://<reachable-host>:8448` and configure backend certificate trust. With a
+proxy on a Docker bridge network and Exodus on the host, use the host's LAN
+address and `--relay-listen 0.0.0.0:8448`. `127.0.0.1` points inside the container.
+For public port 443, use `--relay-name relay.example.net:443` or provide federation
+delegation separately. Exodus does not serve `/.well-known/matrix/server`.
+See the [Traefik example](docs/tuwunel.md#relay-behind-traefik).
 
 While import is running, test the local listener and public route:
 
@@ -252,14 +253,19 @@ curl -fsS https://relay.example.net/_matrix/key/v2/server
 `-k` is only for diagnosing the local self-signed listener. Both responses should
 identify the configured relay server name.
 
+Exodus checks that Continuwuity can reach the relay before importing accounts or
+rooms. A failed check stops import and appears in `import-report.json`. Room
+permissions can still block individual rooms.
+
 Requirements:
 
 - Continuwuity must reach the relay over federation.
 - Add the relay to Continuwuity's `trusted_servers`, since it also serves your
-  old server's key.
-- The relay uses a self-signed certificate unless you pass `--relay-tls-cert`
-  and `--relay-tls-key`. Continuwuity only accepts a self-signed one with
-  `allow_invalid_tls_certificates_yes_i_know_what_the_fuck_i_am_doing_with_this_and_i_know_this_is_insecure`.
+  old server's key. With unchanged user IDs, this also permits backfill without
+  changing room power levels. Private rooms still need an authorized inviter.
+- Continuwuity must trust the public relay certificate. Use a reverse proxy with
+  a trusted certificate, or provide one with `--relay-tls-cert` and
+  `--relay-tls-key`. The relay's default certificate is self-signed.
 
 The relay stays in the room until all exported events are backfilled and room
 restoration succeeds. Incomplete backfill fails the import; retry with the same

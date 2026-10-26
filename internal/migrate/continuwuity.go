@@ -3,8 +3,10 @@ package migrate
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
@@ -70,6 +72,8 @@ func (a *ContinuwuityAdmin) EnsureUserAdmin(ctx context.Context, user *mautrix.C
 }
 
 func (a *ContinuwuityAdmin) Run(ctx context.Context, command string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
+	defer cancel()
 	sent, err := a.client.SendMessageEvent(ctx, a.room, event.EventMessage,
 		&event.MessageEventContent{MsgType: event.MsgText, Body: command},
 		mautrix.ReqSendEvent{TransactionID: "exodus." + rand.Text()})
@@ -77,8 +81,6 @@ func (a *ContinuwuityAdmin) Run(ctx context.Context, command string) (string, er
 		return "", err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
-	defer cancel()
 	for {
 		page, err := a.client.Messages(ctx, a.room, "", "", mautrix.DirectionBackward, nil, 50)
 		if err != nil {
@@ -104,6 +106,27 @@ func (a *ContinuwuityAdmin) Run(ctx context.Context, command string) (string, er
 		case <-time.After(300 * time.Millisecond):
 		}
 	}
+}
+
+// CheckRelay tests federation resolution, routing and TLS from the destination.
+func (a *ContinuwuityAdmin) CheckRelay(ctx context.Context, server string) error {
+	slog.Info("checking relay connectivity", "server", server)
+	out, err := a.Run(ctx, "!admin debug ping "+server)
+	if err != nil {
+		return fmt.Errorf("destination cannot reach relay %s: %w", server, err)
+	}
+	_, body, ok := strings.Cut(out, "```json")
+	if !ok {
+		return fmt.Errorf("destination relay check returned no version JSON: %s", out)
+	}
+	body, _, ok = strings.Cut(body, "```")
+	var version struct {
+		Name string `json:"name"`
+	}
+	if !ok || json.Unmarshal([]byte(body), &version) != nil || version.Name != "exodus relay" {
+		return fmt.Errorf("destination reached a different service for relay %s; check federation delegation and reverse proxy routing", server)
+	}
+	return nil
 }
 
 func firstLine(s string) string {

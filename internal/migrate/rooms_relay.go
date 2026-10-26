@@ -104,12 +104,21 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 	if owner == "" {
 		return errors.New("no migrated member is in the room")
 	}
+	handover := false
+	for _, member := range members {
+		if r.mapUser(member) != member {
+			handover = true
+			break
+		}
+	}
 	if !r.st.Done {
 		if err := rl.CheckEnter(room.RoomID, owner); err != nil {
 			return fmt.Errorf("cannot invite the relay as %s: %w", owner, err)
 		}
-		if _, err := r.relayHandOverContent(rl, owner, members); err != nil {
-			return err
+		if handover {
+			if _, err := r.relayHandOverContent(rl, owner, members); err != nil {
+				return err
+			}
 		}
 	}
 	if err := r.registerGhosts(ctx); err != nil {
@@ -124,8 +133,12 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 	if err := rl.Enter(room.RoomID, owner); err != nil {
 		return err
 	}
-	if err := r.relayHandOver(rl, owner, members); err != nil {
-		return err
+	if handover {
+		if err := r.relayHandOver(rl, owner, members); err != nil {
+			return err
+		}
+	} else {
+		slog.Info("using trusted relay for backfill", "room", room.RoomID, "server", rl.Name)
 	}
 
 	joiner := r.mapUser(owner)
@@ -150,6 +163,7 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 	}
 
 	before := len(rep.Failures)
+	r.owner = joiner
 	if err := r.loadJoined(ctx); err != nil {
 		return err
 	}
@@ -165,7 +179,7 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 		return err
 	}
 
-	if pl := rl.Content(room.RoomID, "m.room.power_levels", ""); pl != nil {
+	if pl := rl.Content(room.RoomID, "m.room.power_levels", ""); handover && pl != nil {
 		if users, ok := pl["users"].(map[string]any); ok {
 			delete(users, rl.UserID())
 			if _, err := r.putState(ctx, joiner, "m.room.power_levels", "", pl, 0); err != nil {
@@ -177,7 +191,11 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 		r.createAliases(ctx, joiner, alias)
 	}
 	if room.Public {
-		if err := publishRoom(ctx, c, room.RoomID); err != nil {
+		publisher := c
+		if im.Admin != nil {
+			publisher = im.Admin.client
+		}
+		if err := publishRoom(ctx, publisher, room.RoomID); err != nil {
 			rep.fail("directory", room.RoomID, err)
 		}
 	}
@@ -186,8 +204,15 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 	}
 	// Remove the relay only after history and all room restoration succeeded.
 	if r.joined[rl.UserID()] {
-		if _, err := r.putState(ctx, joiner, "m.room.member", rl.UserID(), map[string]string{"membership": "leave"}, 0); err != nil {
+		if err := rl.Leave(ctx, room.RoomID); err != nil {
 			return fmt.Errorf("remove relay member: %w", err)
+		}
+		var member event.MemberEventContent
+		if err := c.StateEvent(ctx, id.RoomID(room.RoomID), event.StateMember, rl.UserID(), &member); err != nil {
+			return fmt.Errorf("verify relay departure: %w", err)
+		}
+		if member.Membership != event.MembershipLeave {
+			return errors.New("relay departure did not update destination membership")
 		}
 	}
 	r.st.Done = true

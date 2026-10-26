@@ -624,6 +624,9 @@ after replacing Synapse with Continuwuity on the same server name.`,
 					defer cancel()
 					_ = rl.Stop(stopCtx)
 				}()
+				if err := im.Admin.CheckRelay(ctx, relayOpts.name); err != nil {
+					return importPreflightFailure(a, fmt.Errorf("relay preflight: %w", err))
+				}
 			}
 			var reports []*migrate.Report
 			var jobs []*migrate.UserJob
@@ -928,32 +931,57 @@ func registerAppservice(ctx context.Context, im *migrate.Importer) (unregister f
 		return nil, err
 	}
 	return func() {
+		slog.Info("unregistering migration appservice")
 		if err := im.Appservice.Unregister(context.WithoutCancel(ctx), im.Admin); err != nil {
 			slog.Error("could not unregister the exodus appservice", "err", err)
 		}
 	}, nil
 }
 
-// Reports are filed before accounts are locked or suspended.
 func finishImport(ctx context.Context, out io.Writer, im *migrate.Importer, a *archive.Archive, users []*archive.User, reports []*migrate.Report, rooms []*migrate.RoomReport) error {
-	reports = retryJoins(ctx, im, users, reports)
-	notes, serverFailures := im.ImportServer(ctx)
-	failures := slices.Concat(im.RestoreInvites(ctx, users), im.RestoreKnocks(ctx, users), serverFailures)
-	if im.RequireLossless {
+	var notes []string
+	var failures []migrate.Failure
+	if ctx.Err() == nil {
+		reports = retryJoins(ctx, im, users, reports)
+	}
+	if ctx.Err() == nil {
+		slog.Info("restoring server data")
+		notes, failures = im.ImportServer(ctx)
+	}
+	if ctx.Err() == nil {
+		slog.Info("restoring pending invites")
+		failures = append(failures, im.RestoreInvites(ctx, users)...)
+	}
+	if ctx.Err() == nil {
+		slog.Info("restoring pending knocks")
+		failures = append(failures, im.RestoreKnocks(ctx, users)...)
+	}
+	if ctx.Err() == nil && im.RequireLossless {
+		slog.Info("verifying destination sessions")
 		failures = append(failures, im.VerifySessions(ctx, users)...)
 	}
-	if migrationFailures(reports, rooms, failures) == nil && len(reports) == len(users) {
+	if ctx.Err() == nil && migrationFailures(reports, rooms, failures) == nil && len(reports) == len(users) {
+		slog.Info("applying account status")
 		failures = append(failures, im.ApplyStatus(ctx, users)...)
 	} else {
 		notes = append(notes, "Account locks, suspensions and deactivations are deferred until migration succeeds.")
 	}
-	printSummary(out, a, users, reports, failures, notes)
+	if ctx.Err() != nil {
+		notes = append(notes, "Import was interrupted. Final checks may be unfinished; rerun with the same archive.")
+	}
+	complete := ctx.Err() == nil && migrationFailures(reports, rooms, failures) == nil && len(reports) == len(users)
+	slog.Info("writing import report")
 	reportErr := a.WriteImportReport(struct {
+		Complete bool                  `json:"complete"`
 		Users    []*migrate.Report     `json:"users"`
 		Rooms    []*migrate.RoomReport `json:"rooms,omitempty"`
 		Failures []migrate.Failure     `json:"failures,omitempty"`
 		Notes    []string              `json:"notes,omitempty"`
-	}{Users: reports, Rooms: rooms, Failures: failures, Notes: notes})
+	}{Complete: complete, Users: reports, Rooms: rooms, Failures: failures, Notes: notes})
+	if reportErr == nil {
+		slog.Info("import report written", "complete", complete)
+	}
+	printSummary(out, a, users, reports, failures, notes)
 	return errors.Join(ctx.Err(), reportErr, migrationFailures(reports, rooms, failures))
 }
 
@@ -981,6 +1009,9 @@ func retryJoins(ctx context.Context, im *migrate.Importer, users []*archive.User
 		byID[u.UserID] = u
 	}
 	for i, r := range reports {
+		if ctx.Err() != nil {
+			break
+		}
 		if !slices.ContainsFunc(r.Failures, func(f migrate.Failure) bool { return f.Step == "join" }) {
 			continue
 		}

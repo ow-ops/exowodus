@@ -16,7 +16,7 @@ import (
 	"maunium.net/go/mautrix/federation"
 )
 
-func relayAuthFixture(t *testing.T, version, creator string, additional, members []string, powerLevels map[string]any) (*replay, *relay.Relay) {
+func relayAuthFixture(t *testing.T, version, creator string, additional, members []string, powerLevels map[string]any, joinRules ...string) (*replay, *relay.Relay) {
 	t.Helper()
 	a, err := archive.Create(t.TempDir(), "example.org")
 	if err != nil {
@@ -34,7 +34,7 @@ func relayAuthFixture(t *testing.T, version, creator string, additional, members
 	data := relay.RoomData{CurrentState: map[string]string{}}
 	add := func(eventID, sender, typ, stateKey string, content any) {
 		t.Helper()
-		raw, err := json.Marshal(map[string]any{"event_id": eventID, "room_id": roomID, "sender": sender, "type": typ, "state_key": stateKey, "content": content})
+		raw, err := json.Marshal(map[string]any{"event_id": eventID, "room_id": roomID, "sender": sender, "type": typ, "state_key": stateKey, "content": content, "origin_server_ts": 1})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -54,6 +54,9 @@ func relayAuthFixture(t *testing.T, version, creator string, additional, members
 	}
 	if powerLevels != nil {
 		add("$power", creator, "m.room.power_levels", "", powerLevels)
+	}
+	if len(joinRules) > 0 {
+		add("$joinrules", creator, "m.room.join_rules", "", map[string]string{"join_rule": joinRules[0]})
 	}
 	if err := a.WriteRoom(r.room); err != nil {
 		t.Fatal(err)
@@ -95,12 +98,132 @@ func TestRelayHandoverRequiresAuthorizedLocalMember(t *testing.T) {
 	r.room.Ghosts = []string{"@ghost:example.org"}
 	r.im.Appservice.client = mx.MustNew(api.URL, "as-token")
 	reports, rest := r.im.RelayRooms(t.Context(), []*archive.ArchivedRoom{r.room}, rl)
-	if requests != 0 || len(rest) != 0 || len(reports) != 1 || len(reports[0].Failures) != 1 {
-		t.Fatal("unsupported relay handover reached the destination or fell back to replay")
+	if requests == 0 || len(rest) != 0 || len(reports) != 1 || len(reports[0].Failures) != 1 {
+		t.Fatal("same-name migration did not attempt trusted relay backfill or fell back to replay")
 	}
 	state, err := r.im.Archive.ReadRoomState(r.room.RoomID)
 	if err != nil || state.Done || state.NewRoomID != "" {
 		t.Fatal("unsupported relay handover advanced the checkpoint")
+	}
+}
+
+func TestPublicRelayJoinDoesNotRequireInvitePower(t *testing.T) {
+	const member = "@alice:example.org"
+	for _, rule := range []string{"public", "invite", "knock", "restricted"} {
+		t.Run(rule, func(t *testing.T) {
+			r, rl := relayAuthFixture(t, "11", "@owner:remote.test", nil, []string{member}, map[string]any{"invite": 50}, rule)
+			err := rl.CheckEnter(r.room.RoomID, member)
+			if rule != "public" {
+				if err == nil || rl.Enter(r.room.RoomID, member) == nil {
+					t.Fatal("relay bypassed room admission rules")
+				}
+				if rl.Content(r.room.RoomID, "m.room.member", rl.UserID()) != nil {
+					t.Fatal("rejected admission changed relay membership")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := rl.Enter(r.room.RoomID, member); err != nil {
+				t.Fatal(err)
+			}
+			if rl.Content(r.room.RoomID, "m.room.member", rl.UserID())["membership"] != "join" {
+				t.Fatal("relay did not join the public room")
+			}
+		})
+	}
+}
+
+func TestOrdinaryMemberRestoresRoomThroughTrustedRelay(t *testing.T) {
+	const member = "@alice:example.org"
+	for _, tc := range []struct {
+		name, rule  string
+		invite      int
+		public      bool
+		ignoreLeave bool
+	}{
+		{name: "ordinary invitation", rule: "invite"},
+		{name: "public join without invite power", rule: "public", invite: 50, public: true},
+		{name: "departure must be confirmed", rule: "invite", ignoreLeave: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, rl := relayAuthFixture(t, "11", "@owner:remote.test", nil, []string{member}, map[string]any{"users": map[string]any{"@owner:remote.test": 100}, "invite": tc.invite}, tc.rule)
+			r.room.Public = tc.public
+			var original relay.RoomData
+			if _, err := r.im.Archive.ReadRoomPDUs(r.room.RoomID, &original); err != nil {
+				t.Fatal(err)
+			}
+			peerKey := federation.GenerateSigningKey()
+			left, reads, published := false, 0, 0
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case req.URL.Path == "/_matrix/key/v2/server":
+					_ = json.NewEncoder(w).Encode(peerKey.GenerateKeyResponse("example.org", nil))
+				case req.Method == http.MethodPost && strings.Contains(req.URL.Path, "/join/"):
+					if req.URL.Query().Get("user_id") != member {
+						t.Error("destination join used the wrong local member")
+					}
+					fmt.Fprintf(w, `{"room_id":%q}`, r.room.RoomID)
+				case strings.HasSuffix(req.URL.Path, "/messages"):
+					reads++
+					_ = json.NewEncoder(w).Encode(map[string]any{"chunk": r.room.State, "end": ""})
+				case strings.HasSuffix(req.URL.Path, "/joined_members"):
+					if req.URL.Query().Get("user_id") != member {
+						t.Error("membership lookup used a non-member instead of the joining user")
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"joined": map[string]any{member: map[string]any{}, rl.UserID(): map[string]any{}}})
+				case strings.Contains(req.URL.Path, "/_matrix/federation/v2/send_leave/"):
+					auth := federation.ParseXMatrixAuth(req.Header.Get("Authorization"))
+					if auth.Origin != rl.Name || auth.Destination != "example.org" || auth.Signature == "" {
+						t.Error("departure did not use the relay's federation identity")
+					}
+					left = !tc.ignoreLeave
+					_, _ = w.Write([]byte(`{}`))
+				case req.Method == http.MethodGet && strings.Contains(req.URL.Path, "/state/m.room.member/"):
+					membership := "join"
+					if left {
+						membership = "leave"
+					}
+					fmt.Fprintf(w, `{"membership":%q}`, membership)
+				case strings.Contains(req.URL.Path, "/directory/list/room/"):
+					if req.Header.Get("Authorization") != "Bearer admin-token" {
+						t.Error("room publication did not use the server administrator")
+					}
+					published++
+					_, _ = w.Write([]byte(`{}`))
+				default:
+					t.Errorf("unexpected mutation or request: %s %s", req.Method, req.URL.Path)
+					w.WriteHeader(400)
+				}
+			}))
+			defer api.Close()
+			r.im.Appservice.client = mx.MustNew(api.URL, "as-token")
+			r.im.Admin = &ContinuwuityAdmin{client: mx.MustNew(api.URL, "admin-token"), bot: "@conduit:example.org", room: "!admins:example.org"}
+			if err := rl.Trust(t.Context(), "example.org", api.URL+"/_matrix/key/v2/server"); err != nil {
+				t.Fatal(err)
+			}
+			reports, rest := r.im.RelayRooms(t.Context(), []*archive.ArchivedRoom{r.room}, rl)
+			if tc.ignoreLeave {
+				state, err := r.im.Archive.ReadRoomState(r.room.RoomID)
+				if err != nil || state.Done || len(reports) != 1 || len(reports[0].Failures) != 1 || !strings.Contains(reports[0].Failures[0].Error, "departure did not update") {
+					t.Fatalf("unconfirmed departure state=%+v reports=%+v error=%v", state, reports, err)
+				}
+				return
+			}
+			if len(rest) != 0 || len(reports) != 1 || len(reports[0].Failures) != 0 || !left || reads != 2 || (published == 1) != tc.public {
+				t.Fatalf("reports=%+v rest=%d left=%t reads=%d published=%d", reports, len(rest), left, reads, published)
+			}
+			state, err := r.im.Archive.ReadRoomState(r.room.RoomID)
+			if err != nil || !state.Done || state.NewRoomID != r.room.RoomID {
+				t.Fatalf("room state=%+v error=%v", state, err)
+			}
+			var after relay.RoomData
+			if _, err := r.im.Archive.ReadRoomPDUs(r.room.RoomID, &after); err != nil || !reflect.DeepEqual(original, after) {
+				t.Fatal("relay import changed the archived original events")
+			}
+		})
 	}
 }
 

@@ -3,12 +3,61 @@ package migrate
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"exodus/internal/archive"
+	"exodus/internal/mx"
 )
+
+func TestServerImportKeepsNativeAdminAlias(t *testing.T) {
+	const sourceRoom, nativeRoom = "!source:example.org", "!native:example.org"
+	for _, tc := range []struct {
+		name, alias, existing string
+		fails, note           bool
+	}{
+		{name: "native admin alias", alias: "#admins:example.org", existing: nativeRoom, note: true},
+		{name: "already restored", alias: "#room:example.org", existing: sourceRoom},
+		{name: "unrelated alias conflict", alias: "#room:example.org", existing: "!other:example.org", fails: true},
+		{name: "admin alias changed elsewhere", alias: "#admins:example.org", existing: "!other:example.org", fails: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, err := archive.Create(t.TempDir(), "example.org")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := a.WriteServer(&archive.Server{Aliases: map[string]string{tc.alias: sourceRoom}}); err != nil {
+				t.Fatal(err)
+			}
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.Method {
+				case http.MethodPut:
+					w.WriteHeader(http.StatusConflict)
+					_, _ = w.Write([]byte(`{"errcode":"M_UNKNOWN","error":"Alias already exists."}`))
+				case http.MethodGet:
+					_ = json.NewEncoder(w).Encode(map[string]any{"room_id": tc.existing, "servers": []string{"example.org"}})
+				default:
+					t.Errorf("unexpected alias mutation: %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(400)
+				}
+			}))
+			defer api.Close()
+			im := &Importer{Archive: a, RequireLossless: true, Admin: &ContinuwuityAdmin{client: mx.MustNew(api.URL, "token"), room: nativeRoom, bot: "@conduit:example.org"}}
+			notes, failures := im.ImportServer(t.Context())
+			if (len(failures) > 0) != tc.fails || strings.Contains(strings.Join(notes, "\n"), "Kept #admins:") != tc.note {
+				t.Fatalf("failures=%+v notes=%v", failures, notes)
+			}
+			original, err := a.ReadServer()
+			if err != nil || original.Aliases[tc.alias] != sourceRoom {
+				t.Fatal("native alias handling changed archived server data")
+			}
+		})
+	}
+}
 
 func TestRemoteToDeviceMessagesRetainedForProxy(t *testing.T) {
 	a, err := archive.Create(t.TempDir(), "example.org")

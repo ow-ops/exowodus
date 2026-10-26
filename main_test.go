@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,59 @@ import (
 	"exodus/internal/migrate"
 	"exodus/internal/mx"
 )
+
+type reportCheckingWriter struct {
+	t     *testing.T
+	path  string
+	wrote bool
+}
+
+func (w *reportCheckingWriter) Write(p []byte) (int, error) {
+	w.t.Helper()
+	if _, err := os.Stat(w.path); err != nil {
+		w.t.Errorf("summary printed before report was saved: %v", err)
+	}
+	w.wrote = true
+	return len(p), nil
+}
+
+func TestCanceledImportSavesReportWithoutFinalNetworkChecks(t *testing.T) {
+	a, err := archive.Create(t.TempDir(), "example.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("canceled finalization sent %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(400)
+	}))
+	defer api.Close()
+	im := &migrate.Importer{Archive: a, Dest: mx.MustNew(api.URL, ""), RequireLossless: true}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	user := &archive.User{UserID: "@alice:example.org", Locked: true}
+	reports := []*migrate.Report{{SourceUserID: user.UserID, DestUserID: user.UserID, Failures: []migrate.Failure{{Step: "room", Error: "relay unavailable"}}}}
+	out := &reportCheckingWriter{t: t, path: filepath.Join(a.Dir, "import-report.json")}
+	err = finishImport(ctx, out, im, a, []*archive.User{user}, reports, nil)
+	if !errors.Is(err, context.Canceled) || !out.wrote {
+		t.Fatalf("error=%v summary printed=%t", err, out.wrote)
+	}
+	raw, err := os.ReadFile(out.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report struct {
+		Complete bool              `json:"complete"`
+		Users    []*migrate.Report `json:"users"`
+		Failures []migrate.Failure `json:"failures"`
+		Notes    []string          `json:"notes"`
+	}
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Complete || len(report.Users) != 1 || len(report.Users[0].Failures) != 1 || len(report.Failures) != 0 || !strings.Contains(strings.Join(report.Notes, "\n"), "interrupted") {
+		t.Fatalf("canceled report=%+v", report)
+	}
+}
 
 func TestTuwunelSourceSkipsDumpBridgeGhosts(t *testing.T) {
 	dir := t.TempDir()

@@ -16,14 +16,24 @@ import (
 	"exodus/internal/relay"
 )
 
-func (im *Importer) VerifySessions(ctx context.Context, users []*archive.User) []Failure {
+func (im *Importer) VerifySessions(ctx context.Context, users []*archive.User) (failures []Failure) {
+	defer func() {
+		if err := ctx.Err(); err != nil {
+			failures = append(failures, Failure{Step: "sessions", Error: "session verification interrupted: " + err.Error()})
+		}
+	}()
+	if ctx.Err() != nil {
+		return nil
+	}
 	sessions, err := im.Archive.Sessions()
 	if err != nil {
 		return []Failure{{Step: "sessions", Error: err.Error()}}
 	}
-	var failures []Failure
 	checked := map[string]error{}
 	for _, user := range users {
+		if ctx.Err() != nil {
+			break
+		}
 		if user.Deactivated && im.DeactivatedIDOnly {
 			continue
 		}
@@ -42,6 +52,9 @@ func (im *Importer) VerifySessions(ctx context.Context, users []*archive.User) [
 			continue
 		}
 		for _, token := range secrets.Tokens {
+			if ctx.Err() != nil {
+				return failures
+			}
 			session, ok := sessions[token.Token]
 			target := user.UserID + "/" + token.DeviceID
 			if !ok || session.UserID != user.UserID || session.DeviceID != token.DeviceID || session.Refresh != token.Refresh || session.Token == "" {
@@ -56,13 +69,16 @@ func (im *Importer) VerifySessions(ctx context.Context, users []*archive.User) [
 			key := target + "\x00" + session.Token
 			if _, ok := checked[key]; !ok {
 				who, err := mx.WithToken(im.Dest, session.Token).Whoami(ctx)
+				if ctx.Err() != nil {
+					return failures
+				}
 				if err == nil && (string(who.UserID) != user.UserID || string(who.DeviceID) != token.DeviceID) {
 					err = errors.New("destination session belongs to a different user or device")
 				}
 				checked[key] = err
 			}
 			if err := checked[key]; err != nil {
-				failures = append(failures, Failure{Step: "sessions", Target: target, Error: "destination session verification failed"})
+				failures = append(failures, Failure{Step: "sessions", Target: target, Error: fmt.Sprintf("destination session verification failed: %v", err)})
 			}
 		}
 	}

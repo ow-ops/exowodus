@@ -44,8 +44,9 @@ type Relay struct {
 	// cachedKeys are other servers' key responses, by server name.
 	cachedKeys map[string][]json.RawMessage
 	// peer is the only server allowed to make federation requests.
-	peer string
-	auth *federation.ServerAuth
+	peer   string
+	auth   *federation.ServerAuth
+	sender *federation.Client
 
 	mu    sync.Mutex
 	rooms map[string]*room
@@ -61,6 +62,8 @@ func New(name, origin string, originKey *federation.SigningKey, cachedKeys map[s
 
 // Trust restricts federation requests to peer, whose key is fetched from keyURL.
 func (rl *Relay) Trust(ctx context.Context, peer, keyURL string) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, keyURL, nil)
 	if err != nil {
 		return err
@@ -86,9 +89,28 @@ func (rl *Relay) Trust(ctx context.Context, peer, keyURL string) error {
 	cache := federation.NewInMemoryCache()
 	cache.StoreKeys(&keys)
 	client := federation.NewClient(rl.Name, rl.key, federation.NewInMemoryCache(), exhttp.SensibleClientSettings)
+	client.HTTP.Transport = peerTransport{peer: peer, scheme: req.URL.Scheme, host: req.URL.Host}
 	rl.peer = peer
 	rl.auth = federation.NewServerAuth(client, cache, func(federation.XMatrixAuth) string { return rl.Name })
+	rl.sender = client
 	return nil
+}
+
+// peerTransport sends signed requests to the destination URL already verified by Trust.
+type peerTransport struct{ peer, scheme, host string }
+
+func (t peerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Scheme != "matrix-federation" || req.URL.Host != t.peer {
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
+		return nil, errors.New("relay request is not addressed to its destination")
+	}
+	forward := req.Clone(req.Context())
+	target := *req.URL
+	target.Scheme, target.Host = t.scheme, t.host
+	forward.URL, forward.Host = &target, t.host
+	return http.DefaultTransport.RoundTrip(forward)
 }
 
 func (rl *Relay) UserID() string { return "@exodus:" + rl.Name }
@@ -111,7 +133,7 @@ func (rl *Relay) RemoveRoom(roomID string) {
 	rl.mu.Unlock()
 }
 
-// Enter invites the relay's member as inviter, signed with the source key, then joins.
+// Enter joins the relay through a source member's invitation or a permitted public join.
 func (rl *Relay) Enter(roomID, inviter string) error {
 	r := rl.room(roomID)
 	if r == nil {
@@ -119,11 +141,14 @@ func (rl *Relay) Enter(roomID, inviter string) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	invite, err := rl.checkEnter(r, inviter)
-	if err != nil || invite == nil {
+	entry, err := rl.checkEnter(r, inviter)
+	if err != nil || entry == nil {
 		return err
 	}
-	if err := r.sign(invite, rl.origin, rl.originKey); err != nil {
+	if entry.Sender == id.UserID(rl.UserID()) {
+		return r.sign(entry, rl.Name, rl.key)
+	}
+	if err := r.sign(entry, rl.origin, rl.originKey); err != nil {
 		return err
 	}
 	join, err := r.template(rl.UserID(), "m.room.member", rl.UserID(), map[string]string{"membership": "join"}, rl.Name)
@@ -136,7 +161,7 @@ func (rl *Relay) Enter(roomID, inviter string) error {
 	return r.sign(join, rl.Name, rl.key)
 }
 
-// CheckEnter checks the relay's invitation without changing the room.
+// CheckEnter checks room admission without changing the room.
 func (rl *Relay) CheckEnter(roomID, inviter string) error {
 	r := rl.room(roomID)
 	if r == nil {
@@ -173,7 +198,58 @@ func (rl *Relay) checkEnter(r *room, inviter string) (*pdu.PDU, error) {
 			return nil, errors.New("room disables federation; the relay cannot join")
 		}
 	}
-	return rl.checkedEvent(r, inviter, "m.room.member", rl.UserID(), map[string]string{"membership": "invite"})
+	invite, err := rl.checkedEvent(r, inviter, "m.room.member", rl.UserID(), map[string]string{"membership": "invite"})
+	if err == nil {
+		return invite, nil
+	}
+	// A public room may allow joining even when this member cannot invite.
+	join, joinErr := r.template(rl.UserID(), "m.room.member", rl.UserID(), map[string]string{"membership": "join"}, rl.Name)
+	if joinErr == nil && authorizeEvent(r, join) == nil {
+		return join, nil
+	}
+	return nil, err
+}
+
+// Leave sends the relay's own signed leave, without requiring a local member to kick it.
+func (rl *Relay) Leave(ctx context.Context, roomID string) error {
+	if rl.sender == nil || rl.peer == "" {
+		return errors.New("relay destination is not configured")
+	}
+	r := rl.room(roomID)
+	if r == nil {
+		return fmt.Errorf("unknown room %s", roomID)
+	}
+	request, err := rl.leaveRequest(r)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	return rl.sender.SendLeave(ctx, request)
+}
+
+func (rl *Relay) leaveRequest(r *room) (*federation.ReqSendLeave, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, err := r.template(rl.UserID(), "m.room.member", rl.UserID(), map[string]string{"membership": "leave"}, rl.Name)
+	if err != nil {
+		return nil, err
+	}
+	if err := authorizeEvent(r, p); err != nil {
+		return nil, err
+	}
+	if err := r.sign(p, rl.Name, rl.key); err != nil {
+		return nil, err
+	}
+	eventID, err := p.GetEventID(r.version)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := federationPDU(r.events[string(eventID)].raw, string(r.version))
+	if err != nil {
+		return nil, err
+	}
+	return &federation.ReqSendLeave{RoomID: r.id, EventID: eventID, Event: raw, Via: rl.peer}, nil
 }
 
 // CheckAuthor checks a source member's state event without changing the room.

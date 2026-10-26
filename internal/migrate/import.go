@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
@@ -347,7 +348,14 @@ func (im *Importer) addPendingPassword(destID string, p archive.PendingPassword)
 }
 
 func (im *Importer) Close(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	slog.Info("closing migration sessions")
 	for sourceUser, a := range im.sessions {
+		if ctx.Err() != nil {
+			slog.Warn("migration session cleanup interrupted", "err", ctx.Err())
+			break
+		}
 		if !a.ephemeral {
 			continue
 		}
@@ -684,11 +692,17 @@ func LinkSSO(ctx context.Context, a *archive.Archive, admin *ContinuwuityAdmin) 
 func (im *Importer) RestoreInvites(ctx context.Context, users []*archive.User) []Failure {
 	var failures []Failure
 	for _, u := range users {
+		if ctx.Err() != nil {
+			break
+		}
 		acct, ok := im.sessions[u.UserID]
 		if !ok {
 			continue
 		}
 		for _, inv := range u.Invites {
+			if ctx.Err() != nil {
+				return failures
+			}
 			if im.roomLeftInArchive(inv.RoomID) {
 				continue
 			}
@@ -702,6 +716,9 @@ func (im *Importer) RestoreInvites(ctx context.Context, users []*archive.User) [
 				continue
 			}
 			_, err := inviter.client.InviteUser(ctx, id.RoomID(inv.RoomID), &mautrix.ReqInviteUser{UserID: id.UserID(acct.id)})
+			if ctx.Err() != nil {
+				return failures
+			}
 			if err != nil {
 				failures = append(failures, Failure{Step: "invite", Target: inv.RoomID,
 					Error: fmt.Sprintf("pending invite from %s to %s not restored: %v", inv.Inviter, acct.id, err)})
@@ -714,6 +731,9 @@ func (im *Importer) RestoreInvites(ctx context.Context, users []*archive.User) [
 func (im *Importer) RestoreKnocks(ctx context.Context, users []*archive.User) []Failure {
 	var failures []Failure
 	for _, u := range users {
+		if ctx.Err() != nil {
+			break
+		}
 		acct, ok := im.sessions[u.UserID]
 		if !ok || len(u.Knocks) == 0 {
 			continue
@@ -727,6 +747,9 @@ func (im *Importer) RestoreKnocks(ctx context.Context, users []*archive.User) []
 			state.Knocks = map[string]bool{}
 		}
 		for _, k := range u.Knocks {
+			if ctx.Err() != nil {
+				return failures
+			}
 			if im.roomLeftInArchive(k.RoomID) {
 				continue
 			}
@@ -738,6 +761,9 @@ func (im *Importer) RestoreKnocks(ctx context.Context, users []*archive.User) []
 				via = append([]string{server}, via...)
 			}
 			if _, err := acct.client.KnockRoom(ctx, k.RoomID, &mautrix.ReqKnockRoom{Via: via, Reason: k.Reason}); err != nil {
+				if ctx.Err() != nil {
+					return failures
+				}
 				failures = append(failures, Failure{Step: "knock", Target: k.RoomID,
 					Error: fmt.Sprintf("pending knock of %s not restored: %v", acct.id, err)})
 				continue

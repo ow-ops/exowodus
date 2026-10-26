@@ -182,6 +182,9 @@ func (im *Importer) ImportServer(ctx context.Context) ([]string, []Failure) {
 	server := im.Admin.ServerName()
 	sameServer := server == im.Archive.Manifest.ServerName
 	for _, alias := range slices.Sorted(maps.Keys(srv.Aliases)) {
+		if ctx.Err() != nil {
+			return notes, failures
+		}
 		if archiveOnly[srv.Aliases[alias]] || im.Archive.IsRoomSkipped(srv.Aliases[alias]) {
 			continue
 		}
@@ -194,10 +197,21 @@ func (im *Importer) ImportServer(ctx context.Context) ([]string, []Failure) {
 		}
 		room := im.mapRoom(srv.Aliases[alias])
 		_, err := im.Admin.client.CreateAlias(ctx, id.RoomAlias(target), id.RoomID(room))
+		if ctx.Err() != nil {
+			return notes, failures
+		}
 		if im.RequireLossless && err != nil {
 			if mx.IsStatus(err, http.StatusConflict) {
 				existing, resolveErr := im.Admin.client.ResolveAlias(ctx, id.RoomAlias(target))
-				if resolveErr == nil && string(existing.RoomID) == room {
+				if resolveErr != nil {
+					failures = append(failures, Failure{Step: "alias", Target: target, Error: fmt.Sprintf("check existing alias: %v", resolveErr)})
+					continue
+				}
+				if string(existing.RoomID) == room {
+					continue
+				}
+				if target == "#admins:"+server && existing.RoomID == im.Admin.room {
+					notes = append(notes, fmt.Sprintf("Kept %s for Continuwuity's admin room %s; source admin room: %s.", target, im.Admin.room, room))
 					continue
 				}
 			}
@@ -209,6 +223,9 @@ func (im *Importer) ImportServer(ctx context.Context) ([]string, []Failure) {
 		}
 	}
 	for _, room := range srv.BlockedRooms {
+		if ctx.Err() != nil {
+			return notes, failures
+		}
 		if _, err := im.Admin.Run(ctx, "!admin rooms moderation ban-room "+room); err != nil {
 			failures = append(failures, Failure{Step: "blocked_room", Target: room, Error: err.Error()})
 		}
@@ -218,6 +235,9 @@ func (im *Importer) ImportServer(ctx context.Context) ([]string, []Failure) {
 		return nil, append(failures, Failure{Step: "server", Error: err.Error()})
 	}
 	for _, t := range srv.RegistrationTokens {
+		if ctx.Err() != nil {
+			return notes, failures
+		}
 		if newToken, ok := state.Tokens[t.Token]; ok {
 			notes = append(notes, fmt.Sprintf("registration token %s is now %s", t.Token, newToken))
 			continue
@@ -241,6 +261,9 @@ func (im *Importer) ImportServer(ctx context.Context) ([]string, []Failure) {
 		notes = append(notes, fmt.Sprintf("registration token %s is now %s", t.Token, newToken))
 	}
 	for _, r := range srv.Reports {
+		if ctx.Err() != nil {
+			return notes, failures
+		}
 		if im.Archive.IsRoomSkipped(r.RoomID) {
 			continue
 		}

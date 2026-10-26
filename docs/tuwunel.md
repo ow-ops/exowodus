@@ -303,6 +303,16 @@ Failed backfill, knock and read-marker steps appear in `import-report.json`.
 Rerun import with the same archive and relay settings to retry. Keep the archive
 and proxy running to serve existing logins and original media URLs.
 
+Import logs each final step: server data, pending invites, session verification
+and report writing. Canceling at this stage skips remaining checks and saves an
+incomplete report. Unchecked sessions are not reported as invalid. Session cleanup
+has a 30-second limit. The relay stops when import exits, so test it while import
+is running.
+
+Continuwuity keeps its existing `#admins` alias. The report records the source
+admin room ID; its history follows the normal room import path. Other alias
+conflicts remain failures.
+
 Import loads one relay room at a time and releases it after each attempt.
 Verification streams the archived messages, and key backups upload one session
 at a time. The largest room and its historical state still need RAM;
@@ -347,6 +357,58 @@ response. It saves acknowledgements under `proxy-inbox/` and retries unacknowled
 messages after a restart. Run one proxy process per archive and keep that directory
 with the archive. Both classic sync and sliding sync are supported. Use the updated
 binary for import and proxy; existing archives do not need a new export.
+
+## Relay behind Traefik
+
+When Traefik runs on a Docker bridge network and Exodus runs on the host,
+`127.0.0.1` points inside the Traefik container. Use the Pi's LAN address for
+the upstream. Merge this into Traefik's dynamic file configuration, replacing
+`PI_LAN_IP` and the example domain:
+
+```yaml
+http:
+  routers:
+    relay:
+      entryPoints:
+        - websecure
+      rule: Host(`relay.example.net`)
+      service: relay
+  services:
+    relay:
+      loadBalancer:
+        serversTransport: relay
+        servers:
+          - url: "https://PI_LAN_IP:8448"
+  serversTransports:
+    relay:
+      insecureSkipVerify: true
+```
+
+The relay transport skips verification of Exodus's default self-signed backend
+certificate. Public HTTPS still uses Traefik's trusted certificate. This setting
+applies only to the relay service; see [Traefik's transport documentation](https://doc.traefik.io/traefik/reference/routing-configuration/http/load-balancing/serverstransport).
+
+For public port 443, use `--relay-name relay.example.net:443` and
+`--relay-listen 0.0.0.0:8448`. The explicit port avoids requiring
+`/.well-known/matrix/server`, which Exodus does not serve. Add the relay name and
+port to Continuwuity's existing `trusted_servers` list in `[global]`:
+
+```toml
+trusted_servers = ["matrix.org", "relay.example.net:443"]
+```
+
+Keep existing trusted servers. Apply the configuration, then start import. While
+import runs, this must return keys with `server_name` set to `relay.example.net:443`:
+
+```sh
+curl -fsS https://relay.example.net/_matrix/key/v2/server
+```
+
+Unchanged user IDs use this trusted relay for backfill without a power-level
+change. Room admission rules still apply: the relay must have a valid invitation
+or be allowed to join directly. Rooms with federation disabled cannot use the
+relay. The relay leaves through its own signed federation event after history
+verification and membership restoration.
 
 ## Pending federation deliveries
 
