@@ -73,16 +73,12 @@ func RestoreMedia(ctx context.Context, a *archive.Archive, database, ldb string)
 		if load.rows.Len() == 0 {
 			continue
 		}
-		cmd := exec.CommandContext(ctx, ldb, append(args, "--column_family="+load.family, "load", "--hex")...)
-		cmd.Stdin = load.rows
-		output := &ldbOutput{}
-		cmd.Stdout, cmd.Stderr = output, output
-		if err := cmd.Run(); err != nil {
+		if err := runLDB(ctx, ldb, append(args, "--column_family="+load.family, "load", "--hex"), load.rows); err != nil {
 			if load.family == "mediaid_file" {
 				// Without their rows the copied files are unreachable.
 				removeFiles(written)
 			}
-			return 0, kept, fmt.Errorf("write %s: %w; stop Continuwuity and use a compatible ldb version", load.family, ldbCommandError(err, output.data))
+			return 0, kept, fmt.Errorf("write %s: %w", load.family, err)
 		}
 	}
 	return restored, kept, nil
@@ -141,7 +137,21 @@ func continuwuityMediaKey(mxc, filename, contentType string) []byte {
 }
 
 func existingMedia(ctx context.Context, ldb string, args []string) (map[string]bool, error) {
-	cmd := exec.CommandContext(ctx, ldb, append(args, "--column_family=mediaid_file", "scan", "--hex")...)
+	rows, err := ldbScan(ctx, ldb, args, "mediaid_file")
+	if err != nil {
+		return nil, err
+	}
+	existing := map[string]bool{}
+	for key := range rows {
+		mxc, _, _ := strings.Cut(key, "\xff")
+		existing[mxc] = true
+	}
+	return existing, nil
+}
+
+// ldbScan reads a column family as raw keys and values.
+func ldbScan(ctx context.Context, ldb string, args []string, family string) (map[string]string, error) {
+	cmd := exec.CommandContext(ctx, ldb, append(args, "--column_family="+family, "scan", "--hex")...)
 	stderr := &ldbOutput{}
 	cmd.Stderr = stderr
 	out, err := cmd.StdoutPipe()
@@ -151,23 +161,23 @@ func existingMedia(ctx context.Context, ldb string, args []string) (map[string]b
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	existing := map[string]bool{}
+	rows := map[string]string{}
 	scanner := bufio.NewScanner(out)
 	scanner.Buffer(nil, 1<<20)
 	for scanner.Scan() {
-		key, _, ok := strings.Cut(strings.TrimSpace(scanner.Text()), " ==> ")
-		raw, decodeErr := hex.DecodeString(strings.TrimPrefix(key, "0x"))
-		if !ok || decodeErr != nil {
+		hexKey, hexValue, ok := strings.Cut(strings.TrimSpace(scanner.Text()), " ==> ")
+		key, keyErr := hex.DecodeString(strings.TrimPrefix(hexKey, "0x"))
+		value, valueErr := hex.DecodeString(strings.TrimPrefix(hexValue, "0x"))
+		if !ok || keyErr != nil || valueErr != nil {
 			continue
 		}
-		mxc, _, _ := bytes.Cut(raw, []byte{0xff})
-		existing[string(mxc)] = true
+		rows[string(key)] = string(value)
 	}
 	scanErr := scanner.Err()
 	if err := cmd.Wait(); err != nil {
-		return nil, fmt.Errorf("read existing media: %w; stop Continuwuity and use a compatible ldb version", ldbCommandError(err, stderr.data))
+		return nil, fmt.Errorf("read %s: %w; stop Continuwuity and use a compatible ldb version", family, ldbCommandError(err, stderr.data))
 	}
-	return existing, scanErr
+	return rows, scanErr
 }
 
 func removeFiles(paths []string) {

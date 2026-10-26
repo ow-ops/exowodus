@@ -463,6 +463,19 @@ Continuwuity already has unchanged; rerunning it is safe. Remote media is not
 restored. `ldb` must come from the RocksDB version Continuwuity uses (11.x for
 Continuwuity 26.9); older tools can read the database but cannot write to it.
 
+Old access tokens and passwords also work only through the proxy. To keep
+clients logged in without it, stop Continuwuity and the proxy and run:
+
+```sh
+exodus restore-sessions --archive ./exodus-archive \
+  --database /path/to/continuwuity-database --ldb /absolute/path/to/ldb
+```
+
+Each device gets its Tuwunel access token back and the token import created for
+it stops working. Users log in with their Tuwunel password again. Devices whose
+token changed since the import, guests and refresh tokens are left to the
+proxy; the command reports how many. Rerunning it is safe.
+
 To accept these metadata limitations, import with:
 
 ```sh
