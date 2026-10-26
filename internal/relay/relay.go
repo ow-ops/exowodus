@@ -19,6 +19,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"os"
 	"slices"
 	"strconv"
 	"sync"
@@ -129,11 +130,35 @@ func (rl *Relay) AddRoom(roomID, version string, data RoomData) error {
 	return nil
 }
 
-// RemoveRoom releases the in-memory room after an import attempt.
+// AddRoomFile loads a room archived as RoomData JSON, keeping archived event
+// bodies in the file until they are served. RemoveRoom closes the file.
+func (rl *Relay) AddRoomFile(roomID, version, path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	r, err := readRoomFile(roomID, version, f)
+	if err != nil {
+		f.Close()
+		return err
+	}
+	rl.mu.Lock()
+	rl.rooms[roomID] = r
+	rl.mu.Unlock()
+	return nil
+}
+
+// RemoveRoom releases the room after an import attempt.
 func (rl *Relay) RemoveRoom(roomID string) {
 	rl.mu.Lock()
+	r := rl.rooms[roomID]
 	delete(rl.rooms, roomID)
 	rl.mu.Unlock()
+	if r != nil && r.source != nil {
+		r.mu.Lock()
+		r.source.Close()
+		r.mu.Unlock()
+	}
 }
 
 // Enter joins the relay through a source member's invitation or a permitted public join.
@@ -181,7 +206,11 @@ func (rl *Relay) checkEnter(r *room, inviter string) (*pdu.PDU, error) {
 		var member struct {
 			Content struct{ Membership string } `json:"content"`
 		}
-		if err := json.Unmarshal(ev.raw, &member); err != nil {
+		raw, err := r.eventJSON(ev)
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(raw, &member); err != nil {
 			return nil, err
 		}
 		if member.Content.Membership == "join" {
@@ -194,7 +223,11 @@ func (rl *Relay) checkEnter(r *room, inviter string) (*pdu.PDU, error) {
 				Federate *bool `json:"m.federate"`
 			} `json:"content"`
 		}
-		if err := json.Unmarshal(ev.raw, &create); err != nil {
+		raw, err := r.eventJSON(ev)
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(raw, &create); err != nil {
 			return nil, err
 		}
 		if create.Content.Federate != nil && !*create.Content.Federate {
@@ -263,7 +296,11 @@ func authorizeEvent(r *room, p *pdu.PDU) error {
 			if !ok {
 				return nil, fmt.Errorf("missing auth event %s", eventID)
 			}
-			parsed, err := ParsePDU(stored.raw)
+			raw, err := r.eventJSON(stored)
+			if err != nil {
+				return nil, err
+			}
+			parsed, err := ParsePDU(raw)
 			if err != nil {
 				return nil, err
 			}
@@ -291,7 +328,11 @@ func (rl *Relay) Content(roomID, typ, stateKey string) map[string]any {
 	var stored struct {
 		Content map[string]any `json:"content"`
 	}
-	dec := json.NewDecoder(bytes.NewReader(ev.raw))
+	raw, err := r.eventJSON(ev)
+	if err != nil {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	if dec.Decode(&stored) != nil {
 		return nil
@@ -505,14 +546,6 @@ func (rl *Relay) withRoom(w http.ResponseWriter, r *http.Request, fn func(*room)
 	writeJSON(w, resp)
 }
 
-func toPDUs(raw []json.RawMessage) []federation.PDU {
-	out := make([]federation.PDU, len(raw))
-	for i, p := range raw {
-		out[i] = federation.PDU(p)
-	}
-	return out
-}
-
 func toEventIDs(ids []string) []id.EventID {
 	out := make([]id.EventID, len(ids))
 	for i, e := range ids {
@@ -555,11 +588,18 @@ func (rl *Relay) sendJoin(w http.ResponseWriter, r *http.Request) {
 		for _, a := range p.AuthEvents {
 			auth = append(auth, string(a))
 		}
-		chain := rm.authChain(append(state, auth...))
+		statePDUs, err := rm.pdus(state)
+		if err != nil {
+			return nil, err
+		}
+		chainPDUs, err := rm.pdus(rm.authChain(append(state, auth...)))
+		if err != nil {
+			return nil, err
+		}
 		rm.add(eventID, p, raw)
 		return federation.RespSendJoin{
-			State:         toPDUs(rm.pdus(state)),
-			AuthChain:     toPDUs(rm.pdus(chain)),
+			State:         statePDUs,
+			AuthChain:     chainPDUs,
 			Event:         raw,
 			ServersInRoom: []string{rl.Name},
 		}, nil
@@ -570,10 +610,11 @@ func (rl *Relay) backfill(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	from := r.URL.Query()["v"]
 	rl.withRoom(w, r, func(rm *room) (any, error) {
-		return federation.RespBackfill{
-			Origin: rl.Name, OriginServerTS: jsontime.UnixMilliNow(),
-			PDUs: toPDUs(rm.pdus(rm.backfill(from, max(limit, 1)))),
-		}, nil
+		pdus, err := rm.pdus(rm.backfill(from, max(limit, 1)))
+		if err != nil {
+			return nil, err
+		}
+		return federation.RespBackfill{Origin: rl.Name, OriginServerTS: jsontime.UnixMilliNow(), PDUs: pdus}, nil
 	})
 }
 
@@ -588,9 +629,18 @@ func (rl *Relay) event(w http.ResponseWriter, r *http.Request) {
 	for _, rm := range rooms {
 		rm.mu.Lock()
 		ev, ok := rm.events[eventID]
-		rm.mu.Unlock()
+		var raw json.RawMessage
+		var err error
 		if ok {
-			writeJSON(w, federation.RespBackfill{Origin: rl.Name, OriginServerTS: jsontime.UnixMilliNow(), PDUs: []federation.PDU{federation.PDU(ev.raw)}})
+			raw, err = rm.eventJSON(ev)
+		}
+		rm.mu.Unlock()
+		if err != nil {
+			mautrix.MUnknown.WithMessage("%v", err).Write(w)
+			return
+		}
+		if ok {
+			writeJSON(w, federation.RespBackfill{Origin: rl.Name, OriginServerTS: jsontime.UnixMilliNow(), PDUs: []federation.PDU{federation.PDU(raw)}})
 			return
 		}
 	}
@@ -617,14 +667,26 @@ func (rl *Relay) state(w http.ResponseWriter, r *http.Request) {
 			return nil, err
 		}
 		state := stateIDs(before)
-		return federation.RespGetState{PDUs: toPDUs(rm.pdus(state)), AuthChain: toPDUs(rm.pdus(rm.authChain(state)))}, nil
+		statePDUs, err := rm.pdus(state)
+		if err != nil {
+			return nil, err
+		}
+		chainPDUs, err := rm.pdus(rm.authChain(state))
+		if err != nil {
+			return nil, err
+		}
+		return federation.RespGetState{PDUs: statePDUs, AuthChain: chainPDUs}, nil
 	})
 }
 
 func (rl *Relay) eventAuth(w http.ResponseWriter, r *http.Request) {
 	eventID := r.PathValue("eventID")
 	rl.withRoom(w, r, func(rm *room) (any, error) {
-		return federation.RespGetEventAuthChain{AuthChain: toPDUs(rm.pdus(rm.authChain([]string{eventID})))}, nil
+		chain, err := rm.pdus(rm.authChain([]string{eventID}))
+		if err != nil {
+			return nil, err
+		}
+		return federation.RespGetEventAuthChain{AuthChain: chain}, nil
 	})
 }
 
@@ -649,7 +711,11 @@ func (rl *Relay) missingEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		ids := rm.before(from, max(req.Limit, 10), func(eventID string) bool { return stop[eventID] })
 		slices.Reverse(ids)
-		return federation.RespGetMissingEvents{Events: toPDUs(rm.pdus(ids))}, nil
+		events, err := rm.pdus(ids)
+		if err != nil {
+			return nil, err
+		}
+		return federation.RespGetMissingEvents{Events: events}, nil
 	})
 }
 

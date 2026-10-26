@@ -502,6 +502,11 @@ func (a *Archive) WriteRoomPDUs(roomID string, pdus any) error {
 }
 
 // ReadRoomPDUs returns false when no events were exported.
+// RoomPDUsPath is the file ReadRoomPDUs reads.
+func (a *Archive) RoomPDUsPath(roomID string) string {
+	return filepath.Join(a.RoomDir(roomID), "pdus.json")
+}
+
 func (a *Archive) ReadRoomPDUs(roomID string, v any) (bool, error) {
 	err := readJSON(filepath.Join(a.RoomDir(roomID), "pdus.json"), v)
 	if errors.Is(err, fs.ErrNotExist) {

@@ -120,7 +120,7 @@ func TestCachedEventKeepsFederationPayload(t *testing.T) {
 	if got := rl.Content(roomID, "m.room.topic", ""); got["topic"] != "after join" {
 		t.Fatal("new event content was not retained")
 	}
-	if got := r.pdus([]string{"$added"}); len(got) != 1 || !bytes.Equal(got[0], added) {
+	if got, err := r.pdus([]string{"$added"}); err != nil || len(got) != 1 || !bytes.Equal(got[0], added) {
 		t.Fatal("new event wire bytes changed")
 	}
 }

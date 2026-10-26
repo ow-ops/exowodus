@@ -8,6 +8,7 @@ import (
 	"encoding/json/jsontext"
 	"errors"
 	"fmt"
+	"io/fs"
 	"iter"
 	"log/slog"
 	"maps"
@@ -59,12 +60,8 @@ func (im *Importer) RelayRooms(ctx context.Context, rooms []*archive.ArchivedRoo
 			reports = append(reports, rep)
 			continue
 		}
-		var data relay.RoomData
-		ok, err := im.Archive.ReadRoomPDUs(room.RoomID, &data)
-		if err != nil {
-			slog.Warn("could not read the room's events, replaying it", "room", room.RoomID, "err", err)
-		}
-		if !ok {
+		err := rl.AddRoomFile(room.RoomID, room.Version, im.Archive.RoomPDUsPath(room.RoomID))
+		if errors.Is(err, fs.ErrNotExist) {
 			if im.RequireLossless {
 				rep := &RoomReport{RoomID: room.RoomID}
 				rep.fail("lossless", room.RoomID, errors.New("original PDUs unavailable; replay refused"))
@@ -75,7 +72,7 @@ func (im *Importer) RelayRooms(ctx context.Context, rooms []*archive.ArchivedRoo
 			rest = append(rest, room)
 			continue
 		}
-		if err := rl.AddRoom(room.RoomID, room.Version, data); err != nil {
+		if err != nil {
 			if im.RequireLossless {
 				rep := &RoomReport{RoomID: room.RoomID}
 				rep.fail("lossless", room.RoomID, err)
@@ -87,7 +84,6 @@ func (im *Importer) RelayRooms(ctx context.Context, rooms []*archive.ArchivedRoo
 			rest = append(rest, room)
 			continue
 		}
-		data = relay.RoomData{}
 		rep := &RoomReport{RoomID: room.RoomID, NewRoomID: room.RoomID, KeptRoomID: true}
 		reports = append(reports, rep)
 		slog.Info("moving room through the relay", "room", room.RoomID)

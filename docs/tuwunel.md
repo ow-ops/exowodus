@@ -327,9 +327,10 @@ admin room ID; its history follows the normal room import path. Other alias
 conflicts remain failures.
 
 Import loads one relay room at a time and releases it after each attempt.
-Verification streams the archived messages, and key backups upload one session
-at a time. The largest room and its historical state still need RAM;
-Continuwuity uses memory separately.
+Event bodies stay in the archive and are read when served; the relay keeps
+about 300 bytes per event plus the room's state. Verification streams the
+archived messages, and key backups upload one session at a time. Continuwuity
+uses memory separately: backfilling a large room can use more than Exodus does.
 
 Key backups are restored after rooms. Import reuses the current destination
 backup when its algorithm and encryption key match the archive. It retains the

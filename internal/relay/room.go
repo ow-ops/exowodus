@@ -1,12 +1,17 @@
 package relay
 
 import (
+	"bufio"
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
+	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
+	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -75,9 +80,11 @@ func ParsePDU(raw []byte) (*pdu.PDU, error) {
 type event struct {
 	meta eventMetadata
 	raw  json.RawMessage
+	// Archived events loaded from a file keep only their position in it.
+	offset, size int64
 }
 
-// Payloads remain in raw; only fields needed to traverse the room are cached.
+// Payloads remain in raw or on disk; only fields needed to traverse the room are cached.
 type eventMetadata struct {
 	Type       string
 	StateKey   *string
@@ -98,6 +105,7 @@ type room struct {
 	version id.RoomVersion
 
 	mu               sync.Mutex
+	source           *os.File
 	events           map[string]event
 	groupOf          map[string]int64
 	beforeGroupOf    map[string]int64
@@ -116,27 +124,104 @@ type room struct {
 }
 
 func newRoom(roomID, version string, data RoomData) (*room, error) {
+	events := map[string]event{}
+	for _, e := range data.Events {
+		wire, p, err := parseArchivedEvent(e, version)
+		if err != nil {
+			return nil, err
+		}
+		events[e.EventID] = cacheEvent(p, wire)
+	}
+	return buildRoom(roomID, version, data, events)
+}
+
+// readRoomFile reads a room archived as RoomData JSON. Event bodies stay in
+// the file; each event records where its element starts and ends.
+func readRoomFile(roomID, version string, f *os.File) (*room, error) {
+	dec := jsontext.NewDecoder(bufio.NewReader(f))
+	if tok, err := dec.ReadToken(); err != nil || tok.Kind() != '{' {
+		return nil, errors.New("room PDUs must be a JSON object")
+	}
+	fields := map[string]jsontext.Value{}
+	events := map[string]event{}
+	for dec.PeekKind() != '}' {
+		token, err := dec.ReadToken()
+		if err != nil {
+			return nil, err
+		}
+		name := token.String()
+		if name != "events" {
+			value, err := dec.ReadValue()
+			if err != nil {
+				return nil, err
+			}
+			fields[name] = bytes.Clone(value)
+			continue
+		}
+		if tok, err := dec.ReadToken(); err != nil || tok.Kind() != '[' {
+			return nil, errors.New("room PDUs events must be an array")
+		}
+		for dec.PeekKind() != ']' {
+			value, err := dec.ReadValue()
+			if err != nil {
+				return nil, err
+			}
+			var e EventJSON
+			if err := json.Unmarshal(value, &e); err != nil {
+				return nil, err
+			}
+			_, p, err := parseArchivedEvent(e, version)
+			if err != nil {
+				return nil, err
+			}
+			ev := cacheEvent(p, nil)
+			ev.size = int64(len(value))
+			ev.offset = dec.InputOffset() - ev.size
+			events[e.EventID] = ev
+		}
+		if _, err := dec.ReadToken(); err != nil {
+			return nil, err
+		}
+	}
+	encoded, err := json.Marshal(fields)
+	if err != nil {
+		return nil, err
+	}
+	var data RoomData
+	if err := json.Unmarshal(encoded, &data); err != nil {
+		return nil, err
+	}
+	r, err := buildRoom(roomID, version, data, events)
+	if err != nil {
+		return nil, err
+	}
+	r.source = f
+	return r, nil
+}
+
+func parseArchivedEvent(e EventJSON, version string) (json.RawMessage, *pdu.PDU, error) {
+	wire, err := federationPDU(e.PDU, version)
+	if err != nil {
+		return nil, nil, fmt.Errorf("event %s: %w", e.EventID, err)
+	}
+	p, err := ParsePDU(wire)
+	if err != nil {
+		return nil, nil, fmt.Errorf("event %s: %w", e.EventID, err)
+	}
+	return wire, p, nil
+}
+
+func buildRoom(roomID, version string, data RoomData, events map[string]event) (*room, error) {
 	if !SupportsVersion(version) {
 		return nil, fmt.Errorf("room version %q is not supported", version)
 	}
-	r := &room{id: id.RoomID(roomID), version: id.RoomVersion(version), events: map[string]event{},
+	r := &room{id: id.RoomID(roomID), version: id.RoomVersion(version), events: events,
 		groupOf: data.EventGroups, groups: data.Groups,
 		beforeGroupOf:    data.BeforeEventGroups,
 		stateUnavailable: map[string]bool{},
 		extra:            map[string]map[string]string{}, current: maps.Clone(data.CurrentState),
 		extremities: slices.Clone(data.Extremities), archiveHeads: slices.Clone(data.Extremities),
 		omittedParents: data.OmittedParents}
-	for _, e := range data.Events {
-		wire, err := federationPDU(e.PDU, version)
-		if err != nil {
-			return nil, fmt.Errorf("event %s: %w", e.EventID, err)
-		}
-		p, err := ParsePDU(wire)
-		if err != nil {
-			return nil, fmt.Errorf("event %s: %w", e.EventID, err)
-		}
-		r.events[e.EventID] = cacheEvent(p, wire)
-	}
 	for _, eventID := range data.StateUnavailable {
 		if _, ok := r.events[eventID]; !ok {
 			return nil, fmt.Errorf("event %s with unavailable state is missing", eventID)
@@ -501,14 +586,35 @@ func (r *room) before(from []string, limit int, stop func(string) bool) []string
 	return out
 }
 
-func (r *room) pdus(ids []string) []json.RawMessage {
-	out := make([]json.RawMessage, 0, len(ids))
+// eventJSON returns an event's federation JSON, reading archived events from disk.
+func (r *room) eventJSON(ev event) (json.RawMessage, error) {
+	if ev.raw != nil || r.source == nil {
+		return ev.raw, nil
+	}
+	buf := make([]byte, ev.size)
+	if _, err := r.source.ReadAt(buf, ev.offset); err != nil {
+		return nil, err
+	}
+	var e EventJSON
+	if err := json.Unmarshal(buf, &e); err != nil {
+		return nil, err
+	}
+	wire, _, err := parseArchivedEvent(e, string(r.version))
+	return wire, err
+}
+
+func (r *room) pdus(ids []string) ([]federation.PDU, error) {
+	out := make([]federation.PDU, 0, len(ids))
 	for _, eid := range ids {
 		if ev, ok := r.events[eid]; ok {
-			out = append(out, ev.raw)
+			raw, err := r.eventJSON(ev)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, federation.PDU(raw))
 		}
 	}
-	return out
+	return out, nil
 }
 
 func stateIDs(state map[string]string) []string {
