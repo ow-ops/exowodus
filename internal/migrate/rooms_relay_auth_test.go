@@ -414,3 +414,59 @@ func TestEnsureRelayJoinedInvitesWhenJoinIsForbidden(t *testing.T) {
 		t.Fatalf("invited=%t joined=%t make_join=%d", invited, joined, makeJoins)
 	}
 }
+
+func TestJoinMemberInvitesWhenMembershipIsMissing(t *testing.T) {
+	const roomID, owner, ghost = "!room:example.org", "@owner:example.org", "@discord_1:example.org"
+	for _, tc := range []struct {
+		name                   string
+		firstJoin, invite      int
+		wantErr                bool
+		wantJoins, wantInvites int
+	}{
+		{name: "already allowed", firstJoin: http.StatusOK, wantJoins: 1},
+		{name: "invited then joined", firstJoin: http.StatusForbidden, invite: http.StatusOK, wantJoins: 2, wantInvites: 1},
+		{name: "inviter lacks power", firstJoin: http.StatusForbidden, invite: http.StatusForbidden, wantErr: true, wantJoins: 1, wantInvites: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			joins, invites := 0, 0
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				forbid := func() {
+					w.WriteHeader(http.StatusForbidden)
+					_, _ = w.Write([]byte(`{"errcode":"M_FORBIDDEN","error":"Event is not authorized."}`))
+				}
+				switch {
+				case strings.HasSuffix(req.URL.Path, "/join"):
+					if req.URL.Query().Get("user_id") != ghost {
+						t.Error("join used the wrong user")
+					}
+					joins++
+					if joins == 1 && tc.firstJoin == http.StatusForbidden {
+						forbid()
+						return
+					}
+					fmt.Fprintf(w, `{"room_id":%q}`, roomID)
+				case strings.HasSuffix(req.URL.Path, "/invite"):
+					if req.URL.Query().Get("user_id") != owner {
+						t.Error("invitation was not sent by the room owner")
+					}
+					invites++
+					if tc.invite == http.StatusForbidden {
+						forbid()
+						return
+					}
+					_, _ = w.Write([]byte(`{}`))
+				default:
+					t.Errorf("unexpected request %s %s", req.Method, req.URL.Path)
+				}
+			}))
+			defer api.Close()
+			as := &Appservice{client: mx.MustNew(api.URL, "as-token")}
+			r := &replay{room: &archive.ArchivedRoom{RoomID: roomID}, im: &Importer{Appservice: as}}
+			err := r.joinMember(t.Context(), r.as(owner), ghost)
+			if (err != nil) != tc.wantErr || joins != tc.wantJoins || invites != tc.wantInvites {
+				t.Fatalf("err=%v joins=%d invites=%d", err, joins, invites)
+			}
+		})
+	}
+}

@@ -144,6 +144,11 @@ func TestRelayMembershipUsesDestinationTemplates(t *testing.T) {
 				if !slices.Equal(p.PrevEvents, []id.EventID{"$destinationHead"}) || !slices.Equal(p.AuthEvents, []id.EventID{"$destinationPower", "$destinationMember"}) {
 					t.Fatalf("membership references prev=%v auth=%v", p.PrevEvents, p.AuthEvents)
 				}
+				// Continuwuity drops joins timestamped before the room's first
+				// event, so a slower relay clock must not replace the template's.
+				if p.OriginServerTS != 1 {
+					t.Fatalf("template timestamp replaced: %d", p.OriginServerTS)
+				}
 			}
 			if rl.Content(roomID, "m.room.member", rl.UserID())["membership"] != "leave" {
 				t.Fatal("accepted leave missing from the relay's room")

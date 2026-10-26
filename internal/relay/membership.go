@@ -65,7 +65,6 @@ func (rl *Relay) changeMembership(ctx context.Context, roomID, membership string
 	if p.RoomID != rm.id || p.Type != "m.room.member" || p.Sender != id.UserID(rl.UserID()) || p.StateKey == nil || *p.StateKey != rl.UserID() || member.Membership != membership {
 		return fmt.Errorf("destination returned an invalid relay %s template", membership)
 	}
-	p.OriginServerTS = time.Now().UnixMilli()
 	p.Hashes, p.Signatures = nil, nil
 	if err := p.Sign(rm.version, rl.Name, rl.key.ID, rl.key.Priv); err != nil {
 		return err

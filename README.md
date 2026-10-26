@@ -272,6 +272,11 @@ restoration succeeds. Incomplete backfill fails the import; retry with the same
 archive and relay configuration. Retries check the relay's membership and rejoin
 it if room admission rules allow. Rooms created by earlier attempts are reused.
 
+In federated rooms Continuwuity may ask another server for history first; an
+empty answer is retried up to 20 times before backfill fails. Members missing
+from the destination's room state are invited by the room's most powerful
+migrated member, then joined.
+
 Rooms with a version before 3, or whose event IDs cannot be recomputed from the
 exported events, fall back to replay.
 

@@ -22,6 +22,10 @@ import (
 
 const maxBackfillPages = 100000
 
+// Continuwuity asks one backfill server per request, picked from an unordered
+// set; in federated rooms it may pick a server without the history.
+const maxEmptyBackfillPages = 20
+
 // RelayRooms has Continuwuity backfill the original rooms from the relay. It
 // returns the rooms that cannot be relayed.
 func (im *Importer) RelayRooms(ctx context.Context, rooms []*archive.ArchivedRoom, rl *relay.Relay) ([]*RoomReport, []*archive.ArchivedRoom) {
@@ -182,7 +186,7 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 	}
 	for _, m := range members {
 		if newID := r.mapUser(m); !r.joined[newID] {
-			if _, err := r.as(newID).JoinRoomByID(ctx, id.RoomID(room.RoomID)); err != nil {
+			if err := r.joinMember(ctx, c, newID); err != nil {
 				rep.fail("membership", newID, err)
 			}
 		}
@@ -227,6 +231,21 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 	}
 	r.st.Done = true
 	return r.save()
+}
+
+// joinMember restores an archived join, inviting the member first when the
+// destination's room state has no membership for it.
+func (r *replay) joinMember(ctx context.Context, inviter *mautrix.Client, userID string) error {
+	roomID := id.RoomID(r.room.RoomID)
+	_, err := r.as(userID).JoinRoomByID(ctx, roomID)
+	if !errors.Is(err, mautrix.MForbidden) {
+		return err
+	}
+	if _, inviteErr := inviter.InviteUser(ctx, roomID, &mautrix.ReqInviteUser{UserID: id.UserID(userID)}); inviteErr != nil {
+		return fmt.Errorf("%w; invitation by %s: %w", err, inviter.UserID, inviteErr)
+	}
+	_, err = r.as(userID).JoinRoomByID(ctx, roomID)
+	return err
 }
 
 // joinedOnDestination reports whether an earlier attempt already joined the room.
@@ -470,7 +489,7 @@ func (r *replay) relayMembers() (string, []string) {
 // paginateBack makes Continuwuity backfill until found or the room's start.
 // It returns the number of events seen.
 func paginateBack(ctx context.Context, c *mautrix.Client, roomID string, found func(*event.Event) bool) (int, bool, error) {
-	var total int
+	var total, empty int
 	from := ""
 	for range maxBackfillPages {
 		page, err := c.Messages(ctx, id.RoomID(roomID), from, "", mautrix.DirectionBackward, nil, 500)
@@ -485,7 +504,15 @@ func paginateBack(ctx context.Context, c *mautrix.Client, roomID string, found f
 		if complete {
 			return total, true, nil
 		}
-		if page.End == "" || page.End == from || len(page.Chunk) == 0 {
+		if len(page.Chunk) == 0 {
+			if empty++; empty > maxEmptyBackfillPages {
+				break
+			}
+			slog.Info("backfill returned no older events; asking again", "room", roomID, "attempt", empty)
+			continue
+		}
+		empty = 0
+		if page.End == "" || page.End == from {
 			break
 		}
 		from = page.End

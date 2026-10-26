@@ -178,3 +178,44 @@ func TestOriginalRoomVerificationKeepsFingerprints(t *testing.T) {
 	}
 	t.Logf("verification live heap growth for 32 MiB of event bodies: %d bytes", growth)
 }
+
+func TestRelayBackfillRetriesEmptyPages(t *testing.T) {
+	create := json.RawMessage(`{"event_id":"$create","type":"m.room.create","content":{}}`)
+	message := json.RawMessage(`{"event_id":"$message","type":"m.room.message","content":{"body":"original"}}`)
+	for _, tc := range []struct {
+		name    string
+		empty   int
+		wantErr bool
+	}{
+		// Continuwuity answered from another server, then from the relay.
+		{name: "relay chosen after empty pages", empty: 3},
+		{name: "history never arrives", empty: maxEmptyBackfillPages + 1, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requests := 0
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				w.Header().Set("Content-Type", "application/json")
+				from := r.URL.Query().Get("from")
+				switch {
+				case requests == 1:
+					_ = json.NewEncoder(w).Encode(map[string]any{"chunk": []json.RawMessage{message}, "end": "oldest"})
+				case from != "oldest":
+					t.Errorf("retry did not repeat the oldest position: %q", from)
+				case requests-1 <= tc.empty:
+					_ = json.NewEncoder(w).Encode(map[string]any{"chunk": []json.RawMessage{}})
+				default:
+					_ = json.NewEncoder(w).Encode(map[string]any{"chunk": []json.RawMessage{create}, "end": "start"})
+				}
+			}))
+			defer api.Close()
+			_, err := backfillRoom(t.Context(), mx.MustNew(api.URL, "token"), "!room:example.org", []json.RawMessage{create, message})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("backfill error=%v after %d requests", err, requests)
+			}
+			if want := map[bool]int{false: tc.empty + 2, true: maxEmptyBackfillPages + 2}[tc.wantErr]; requests != want {
+				t.Fatalf("requests = %d, want %d", requests, want)
+			}
+		})
+	}
+}
