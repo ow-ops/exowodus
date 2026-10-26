@@ -450,6 +450,19 @@ Run the command as the database owner. A read-only `get` can succeed even when
 that user cannot write the database directory. If the database is owned by root,
 use `sudo` with absolute paths for the executable, archive, database and `--ldb`.
 
+Old messages keep their original `mxc://` links, which Continuwuity does not
+know after import. To serve them without the proxy, stop Continuwuity and run:
+
+```sh
+exodus restore-media --archive ./exodus-archive \
+  --database /path/to/continuwuity-database --ldb /absolute/path/to/ldb
+```
+
+It stores each archived local upload under its original ID and leaves IDs
+Continuwuity already has unchanged; rerunning it is safe. Remote media is not
+restored. `ldb` must come from the RocksDB version Continuwuity uses (11.x for
+Continuwuity 26.9); older tools can read the database but cannot write to it.
+
 To accept these metadata limitations, import with:
 
 ```sh
