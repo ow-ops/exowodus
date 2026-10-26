@@ -2,6 +2,8 @@ package migrate
 
 import (
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,9 +15,12 @@ import (
 	"testing"
 
 	"exodus/internal/mx"
-
 	"exodus/internal/relay"
+
 	"maunium.net/go/mautrix"
+	"maunium.net/go/mautrix/federation"
+	"maunium.net/go/mautrix/federation/pdu"
+	"maunium.net/go/mautrix/id"
 )
 
 func TestOriginalEventFingerprintPreservesFields(t *testing.T) {
@@ -282,6 +287,52 @@ func TestRelayVerificationAcceptsLaterRedactions(t *testing.T) {
 			}))
 			defer api.Close()
 			err := verifyOriginalRoom(t.Context(), mx.MustNew(api.URL, "token"), "!room:example.org", "11", []json.RawMessage{archived})
+			if (err == nil) != tc.ok {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+}
+
+func TestRelayVerificationAcceptsOriginalOfEmptiedEvent(t *testing.T) {
+	key := federation.GenerateSigningKey()
+	original := json.RawMessage(`{"m.relates_to":{"event_id":"$target","key":"👍️","rel_type":"m.annotation"}}`)
+	p := &pdu.PDU{RoomID: "!room:example.org", Sender: "@a:example.org", Type: "m.reaction", Content: jsontext.Value(original), Depth: 3, OriginServerTS: 7, PrevEvents: []id.EventID{"$prev"}, AuthEvents: []id.EventID{"$auth"}}
+	if err := p.Sign("11", "example.org", key.ID, key.Priv); err != nil {
+		t.Fatal(err)
+	}
+	eventID, err := p.GetEventID("11")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The source stored the event with emptied content but its original hash.
+	p.Content = jsontext.Value(`{}`)
+	encoded, err := jsonv2.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var archived map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &archived); err != nil {
+		t.Fatal(err)
+	}
+	archived["event_id"], _ = json.Marshal(eventID)
+	raw, _ := json.Marshal(archived)
+	for _, tc := range []struct {
+		name, content string
+		ts            int
+		ok            bool
+	}{
+		{name: "original content", content: string(original), ts: 7, ok: true},
+		{name: "altered content", content: `{"m.relates_to":{"event_id":"$target","key":"👎","rel_type":"m.annotation"}}`, ts: 7},
+		{name: "other timestamp", content: string(original), ts: 8},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"chunk":[{"event_id":%q,"type":"m.reaction","sender":"@a:example.org","origin_server_ts":%d,"content":%s}]}`, eventID, tc.ts, tc.content)
+			}))
+			defer api.Close()
+			err := verifyOriginalRoom(t.Context(), mx.MustNew(api.URL, "token"), "!room:example.org", "11", []json.RawMessage{raw})
 			if (err == nil) != tc.ok {
 				t.Fatalf("err = %v", err)
 			}

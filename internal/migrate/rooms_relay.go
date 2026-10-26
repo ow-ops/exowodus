@@ -379,8 +379,11 @@ func verifyOriginalRoomEvents(ctx context.Context, readers []*mautrix.Client, ro
 		got, fieldErr := originalEventFingerprint(raw)
 		// A checkpoint export omits later redactions that other servers in
 		// the room can still deliver.
-		redacted := ev.Unsigned.RedactedBecause != nil && got == want.redacted
-		if fieldErr != nil || got != want.full && !redacted {
+		accepted := got == want.full || ev.Unsigned.RedactedBecause != nil && got == want.redacted
+		if fieldErr == nil && !accepted {
+			accepted, fieldErr = restoresOriginalContent(events, string(ev.ID), ev.Content.VeryRaw, got)
+		}
+		if fieldErr != nil || !accepted {
 			mismatch = fmt.Errorf("original event %s differs on the destination", ev.ID)
 			return true
 		}
@@ -401,6 +404,44 @@ func verifyOriginalRoomEvents(ctx context.Context, readers []*mautrix.Client, ro
 		return missingEventsError("original events absent on destination", missing)
 	}
 	return nil
+}
+
+// restoresOriginalContent reports whether the destination holds the original
+// content of an archived event that the source had emptied: its other fields
+// match and the content reproduces the archived content hash.
+func restoresOriginalContent(events iter.Seq2[json.RawMessage, error], eventID string, content json.RawMessage, got [sha256.Size]byte) (bool, error) {
+	for raw, err := range events {
+		if err != nil {
+			return false, err
+		}
+		var archived map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &archived); err != nil {
+			return false, err
+		}
+		var archivedID string
+		if err := json.Unmarshal(archived["event_id"], &archivedID); err != nil || archivedID != eventID {
+			continue
+		}
+		archived["content"] = content
+		candidate, err := json.Marshal(archived)
+		if err != nil {
+			return false, err
+		}
+		if fingerprint, err := originalEventFingerprint(candidate); err != nil || fingerprint != got {
+			return false, err
+		}
+		delete(archived, "event_id")
+		delete(archived, "unsigned")
+		if candidate, err = json.Marshal(archived); err != nil {
+			return false, err
+		}
+		p, err := relay.ParsePDU(candidate)
+		if err != nil {
+			return false, err
+		}
+		return p.Hashes != nil && p.VerifyContentHash(), nil
+	}
+	return false, nil
 }
 
 // redactedEventFingerprint applies the room version's redaction rules to content.
