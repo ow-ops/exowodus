@@ -65,7 +65,7 @@ Replacing Synapse on the same server name:
 		},
 	}
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable debug logging")
-	root.AddCommand(newExportCmd(), newImportCmd(), newMigrateCmd(), newProxyCmd(), newLinkSSOCmd(), newRestoreSigningKeyCmd(), newRestoreMediaCmd(), newRestoreSessionsCmd(), newFinishCmd(), newRepairTuwunelAccountsCmd(), newRecoverLoginCmd())
+	root.AddCommand(newExportCmd(), newImportCmd(), newMigrateCmd(), newProxyCmd(), newLinkSSOCmd(), newRestoreSigningKeyCmd(), newRestoreMediaCmd(), newRestoreSessionsCmd(), newFinishCmd(), newResetImportCmd(), newRepairTuwunelAccountsCmd(), newRecoverLoginCmd())
 	return root
 }
 

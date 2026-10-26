@@ -498,3 +498,17 @@ one transaction at a time, with up to 50 entries and a 512 KiB batch target. A
 larger individual event is sent alone. Failed destinations back off independently.
 Network retries keep the same transaction ID, and PDU processing errors retain
 the batch for retry. Logs report the remaining delivery count.
+
+## Starting over
+
+To import the same archive into a new, empty Continuwuity database, stop the
+proxy and run:
+
+```sh
+exodus reset-import --archive ./exodus-archive
+```
+
+It moves import progress, generated passwords, sessions and `finish` backups to
+`exodus-archive/reset-<time>/`; export data stays. Then run import and `finish`
+again. Other servers keep the events the previous destination sent, so rooms
+shared with them may reference events the new destination cannot fetch.
