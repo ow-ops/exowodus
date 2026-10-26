@@ -78,13 +78,16 @@ func TestTuwunelDummyGapLive(t *testing.T) {
 			state := map[string]string{}
 			var auth []id.EventID
 			var previous id.EventID
+			var merge []id.EventID
 			depth := int64(0)
 			add := func(typ string, stateKey *string, content any) string {
 				t.Helper()
 				depth++
 				raw, _ := json.Marshal(content)
 				p := &pdu.PDU{RoomID: id.RoomID(roomID), Sender: "@alice:example.org", Type: typ, StateKey: stateKey, Content: raw, AuthEvents: slices.Clone(auth), PrevEvents: []id.EventID{}, Depth: depth, OriginServerTS: time.Now().UnixMilli()}
-				if previous != "" {
+				if merge != nil {
+					p.PrevEvents, merge = merge, nil
+				} else if previous != "" {
 					p.PrevEvents = []id.EventID{previous}
 				}
 				if typ == "m.room.create" && version == "12" {
@@ -153,8 +156,16 @@ func TestTuwunelDummyGapLive(t *testing.T) {
 			delete(data.BeforeEventGroups, oldPower)
 			data.Timeline = slices.DeleteFunc(data.Timeline, func(eid string) bool { return eid == oldPower })
 			data.required[oldPower] &^= timelineEvent
-			// More than one Continuwuity backfill page (100 events).
+			// More than one Continuwuity backfill page (100 events), with
+			// branches that a later event merges, as dummy events do.
 			for i := range 250 {
+				if i%5 == 4 {
+					fork := previous
+					left := add("m.room.message", nil, map[string]any{"msgtype": "m.text", "body": fmt.Sprintf("left %d", i)})
+					previous = fork
+					right := add("m.room.message", nil, map[string]any{"msgtype": "m.text", "body": fmt.Sprintf("right %d", i)})
+					merge = []id.EventID{id.EventID(left), id.EventID(right)}
+				}
 				add("m.room.message", nil, map[string]any{"msgtype": "m.text", "body": fmt.Sprintf("history %d", i)})
 			}
 			add("m.room.message", nil, map[string]any{"msgtype": "m.text", "body": "before gap"})

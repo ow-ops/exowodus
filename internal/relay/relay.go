@@ -570,14 +570,9 @@ func (rl *Relay) backfill(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	from := r.URL.Query()["v"]
 	rl.withRoom(w, r, func(rm *room) (any, error) {
-		if !slices.ContainsFunc(from, rm.reachable) {
-			// Continuwuity asks from its earliest timeline event. Destination
-			// events created after the archive descend from its forward extremities.
-			from = rm.archiveHeads
-		}
 		return federation.RespBackfill{
 			Origin: rl.Name, OriginServerTS: jsontime.UnixMilliNow(),
-			PDUs: toPDUs(rm.pdus(rm.before(from, max(limit, 1), nil))),
+			PDUs: toPDUs(rm.pdus(rm.backfill(from, max(limit, 1)))),
 		}, nil
 	})
 }
@@ -652,7 +647,7 @@ func (rl *Relay) missingEvents(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		ids := rm.before(from, max(req.Limit, 10), stop)
+		ids := rm.before(from, max(req.Limit, 10), func(eventID string) bool { return stop[eventID] })
 		slices.Reverse(ids)
 		return federation.RespGetMissingEvents{Events: toPDUs(rm.pdus(ids))}, nil
 	})

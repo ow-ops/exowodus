@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
@@ -8,6 +9,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -108,6 +110,9 @@ type room struct {
 	// follow events the relay authors or receives.
 	archiveHeads   []string
 	omittedParents map[string][]string
+	// archiveOrder and archiveIndex are built on the first backfill.
+	archiveOrder []string
+	archiveIndex map[string]int
 }
 
 func newRoom(roomID, version string, data RoomData) (*room, error) {
@@ -411,22 +416,75 @@ func (r *room) authChain(ids []string) []string {
 	return chain
 }
 
-// reachable reports whether backfill can walk back from the event.
-func (r *room) reachable(eventID string) bool {
-	_, known := r.events[eventID]
-	_, omitted := r.omittedParents[eventID]
-	return known || omitted
+// archived lists the events reachable from the archive heads, newest first.
+// Backfill resumes from a position in this order: walking back from the last
+// event served would skip branches that a page ended in the middle of.
+func (r *room) archived() ([]string, map[string]int) {
+	if r.archiveIndex != nil {
+		return r.archiveOrder, r.archiveIndex
+	}
+	seen := map[string]bool{}
+	queue := slices.Clone(r.archiveHeads)
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if seen[cur] {
+			continue
+		}
+		seen[cur] = true
+		ev, ok := r.events[cur]
+		if !ok {
+			queue = append(queue, r.omittedParents[cur]...)
+			continue
+		}
+		r.archiveOrder = append(r.archiveOrder, cur)
+		for _, p := range ev.meta.PrevEvents {
+			queue = append(queue, string(p))
+		}
+	}
+	// Parents always have a lower depth than their children.
+	slices.SortFunc(r.archiveOrder, func(a, b string) int {
+		if d := cmp.Compare(r.events[b].meta.Depth, r.events[a].meta.Depth); d != 0 {
+			return d
+		}
+		return strings.Compare(a, b)
+	})
+	r.archiveIndex = make(map[string]int, len(r.archiveOrder))
+	for i, eventID := range r.archiveOrder {
+		r.archiveIndex[eventID] = i
+	}
+	return r.archiveOrder, r.archiveIndex
+}
+
+// backfill serves events preceding and including from. Destination events
+// lead back to the archive heads, after which the archive order continues.
+func (r *room) backfill(from []string, limit int) []string {
+	order, index := r.archived()
+	start := -1
+	for _, eventID := range from {
+		if i, ok := index[eventID]; ok && (start < 0 || i < start) {
+			start = i
+		}
+	}
+	if start >= 0 {
+		return order[start:min(len(order), start+limit)]
+	}
+	ids := r.before(from, limit, func(eventID string) bool {
+		_, archived := index[eventID]
+		return archived
+	})
+	return append(ids, order[:min(len(order), limit-len(ids))]...)
 }
 
 // before walks prev events backwards from the given events, including them.
-func (r *room) before(from []string, limit int, stop map[string]bool) []string {
+func (r *room) before(from []string, limit int, stop func(string) bool) []string {
 	seen := map[string]bool{}
 	var out []string
 	queue := slices.Clone(from)
 	for len(queue) > 0 && len(out) < limit {
 		cur := queue[0]
 		queue = queue[1:]
-		if seen[cur] || stop[cur] {
+		if seen[cur] || stop != nil && stop(cur) {
 			continue
 		}
 		seen[cur] = true

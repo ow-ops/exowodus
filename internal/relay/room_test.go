@@ -28,7 +28,7 @@ func TestBackfillAcrossOmittedEvents(t *testing.T) {
 	if got := r.before([]string{"$gap"}, 1, nil); !slices.Equal(got, []string{"$old"}) {
 		t.Fatalf("omitted event consumed backfill limit: %v", got)
 	}
-	if got := r.before([]string{"$gap"}, 10, map[string]bool{"$gap": true}); len(got) != 0 {
+	if got := r.before([]string{"$gap"}, 10, func(eventID string) bool { return eventID == "$gap" }); len(got) != 0 {
 		t.Fatalf("crossed stop event: %v", got)
 	}
 	rl := &Relay{Name: "relay.example.org", rooms: map[string]*room{"!room:example.org": r}}
