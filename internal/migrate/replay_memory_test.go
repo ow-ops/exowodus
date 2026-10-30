@@ -1,12 +1,15 @@
 package migrate
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"maunium.net/go/mautrix"
 
 	"exowodus/internal/mx"
 )
@@ -76,5 +79,40 @@ func TestReplayReloadsFinalStateAfterCreatingAllRooms(t *testing.T) {
 		if err != nil || !state.Done || state.Replayed != 3 {
 			t.Fatal("reloading final state changed replay progress")
 		}
+	}
+}
+
+func TestReplayKeepsOriginalRoomIDWhenDestinationUnavailable(t *testing.T) {
+	a, rooms := relayFailureFixture(t)
+	for _, room := range rooms {
+		room.Ghosts = nil
+		if err := a.WriteRoom(room); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var withoutID int
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if _, ok := body["room_id"]; !ok {
+			withoutID++
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer api.Close()
+	c := mx.MustNew(api.URL, "as-token")
+	im := &Importer{Archive: a, Appservice: &Appservice{Bot: "@exodus:example.org", client: c}, Migrated: map[string]bool{"@alice:example.org": true}}
+	headers, err := a.RoomHeaders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.WithValue(t.Context(), mautrix.MaxAttemptsContextKey, 1)
+	for _, report := range im.ReplayRooms(ctx, headers) {
+		if len(report.Failures) == 0 {
+			t.Fatal("room creation failure not reported")
+		}
+	}
+	if withoutID != 0 {
+		t.Fatalf("recreated %d rooms under a new ID after a transient failure", withoutID)
 	}
 }

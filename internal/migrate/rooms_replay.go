@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 
+	"go.mau.fi/util/retryafter"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
@@ -413,7 +414,8 @@ func (r *replay) createRoom(ctx context.Context) error {
 		// Created by an interrupted run before its ID was saved.
 		resp.RoomID, err = r.room.RoomID, nil
 	}
-	if err != nil && body["room_id"] != nil {
+	// The room may exist after a transient failure; a later run resumes it.
+	if status := mx.Status(err); err != nil && body["room_id"] != nil && status != 0 && !retryafter.Should(status, true) {
 		slog.Warn("could not recreate the room under its original ID", "room", r.room.RoomID, "err", err)
 		delete(body, "room_id")
 		err = send()
