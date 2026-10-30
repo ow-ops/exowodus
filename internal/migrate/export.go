@@ -21,6 +21,7 @@ import (
 
 	"exodus/internal/archive"
 	"exodus/internal/mx"
+	"exodus/internal/progress"
 )
 
 const maxVia = 5
@@ -212,23 +213,28 @@ func (e *Exporter) ExportUser(ctx context.Context, s *Session) (*archive.User, e
 		return nil, err
 	}
 
+	log.Info("exporting device and cross-signing keys")
 	if u.CrossSigning, u.Devices, err = exportKeys(ctx, s.Client, s.UserID, s.close != nil); s.optional(err) != nil {
 		return nil, fmt.Errorf("keys: %w", err)
 	}
+	log.Info("checking dehydrated device")
 	if u.Dehydrated, err = exportDehydrated(ctx, s.Client, s.UserID); s.optional(err) != nil {
 		return nil, fmt.Errorf("dehydrated device: %w", err)
 	}
 	if u.Dehydrated != nil {
 		u.Devices = slices.DeleteFunc(u.Devices, func(d archive.Device) bool { return d.ID == u.Dehydrated.DeviceID })
 	}
+	log.Info("reading presence")
 	if presence, err := s.Client.GetPresence(ctx, id.UserID(s.UserID)); err == nil {
 		u.StatusMsg = presence.StatusMsg
 	}
 	delete(members, s.UserID)
+	log.Info("exporting verifications", "users", len(members))
 	if u.Verified, err = exportVerifications(ctx, s.Client, s.UserID, u.CrossSigning, slices.Sorted(maps.Keys(members))); s.optional(err) != nil {
 		return nil, fmt.Errorf("verifications: %w", err)
 	}
 	if e.DB != nil || e.MASDB != nil || e.TuwunelDump != nil {
+		log.Info("exporting passwords and sessions")
 		secrets := &archive.Secrets{}
 		if e.TuwunelDump != nil {
 			if secrets, err = e.TuwunelDump.Secrets(s.UserID); err != nil {
@@ -249,6 +255,7 @@ func (e *Exporter) ExportUser(ctx context.Context, s *Session) (*archive.User, e
 			return nil, err
 		}
 	}
+	log.Info("exporting key backup")
 	kb, err := exportKeyBackup(ctx, s.Client)
 	if s.optional(err) != nil {
 		return nil, fmt.Errorf("key backup: %w", err)
@@ -392,7 +399,8 @@ func (e *Exporter) exportMedia(ctx context.Context, s *Session, avatar string) (
 	log := slog.With("user", s.UserID)
 	log.Info("exporting media", "count", len(wanted))
 	var out []archive.Media
-	for _, m := range wanted {
+	for i, m := range wanted {
+		progress.Count(ctx, "Media files", i, len(wanted))
 		server, mediaID, err := mx.ParseMXC(m.MXC)
 		if err != nil {
 			return nil, fmt.Errorf("media %s: %w", m.MXC, err)
@@ -422,5 +430,6 @@ func (e *Exporter) exportMedia(ctx context.Context, s *Session, avatar string) (
 		m.Filename = cmp.Or(m.Filename, name)
 		out = append(out, m)
 	}
+	progress.Count(ctx, "Media files", len(wanted), len(wanted))
 	return out, nil
 }

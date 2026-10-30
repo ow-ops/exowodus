@@ -5,12 +5,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"exodus/internal/archive"
+	"exodus/internal/progress"
 )
 
 // RestoreSessions writes the source access tokens and Tuwunel password hashes
@@ -18,6 +20,7 @@ import (
 // still uses the token import created for it. Restored entries are removed
 // from the archive, so the proxy passes the old tokens through.
 func RestoreSessions(ctx context.Context, a *archive.Archive, database, ldb string) (tokens, passwords, kept int, err error) {
+	slog.Info("restoring passwords and sessions")
 	if _, err := os.Stat(filepath.Join(database, "CURRENT")); err != nil {
 		return 0, 0, 0, errors.New("--database must name an existing, stopped Continuwuity RocksDB database")
 	}
@@ -48,7 +51,10 @@ func RestoreSessions(ctx context.Context, a *archive.Archive, database, ldb stri
 	}
 	var forward, reverse, passwordRows bytes.Buffer
 	var stale, expiring, restored []string
+	checked := 0
 	for old, s := range sessions {
+		progress.Count(ctx, "Sessions checked", checked, len(sessions))
+		checked++
 		if !restorableSession(old, s) {
 			continue
 		}
@@ -68,6 +74,7 @@ func RestoreSessions(ctx context.Context, a *archive.Archive, database, ldb stri
 		}
 		restored = append(restored, old)
 	}
+	progress.Count(ctx, "Sessions checked", len(sessions), len(sessions))
 	var restoredPasswords []string
 	for user, p := range pending {
 		if p.Scheme != archive.SchemeTuwunel || !strings.HasPrefix(p.Hash, "$argon2id$") {
@@ -129,6 +136,7 @@ func restorableSession(old string, s archive.Session) bool {
 }
 
 func runLDB(ctx context.Context, ldb string, args []string, stdin *bytes.Buffer) error {
+	slog.Info("updating destination database")
 	cmd := exec.CommandContext(ctx, ldb, args...)
 	if stdin != nil {
 		cmd.Stdin = stdin

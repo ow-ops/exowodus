@@ -436,6 +436,9 @@ func TestTuwunelSourceValidation(t *testing.T) {
 		{kind: "unknown"}, {kind: "tuwunel", db: "database"},
 		{kind: "tuwunel", signingKey: "key"}, {kind: "synapse", tuwunelDump: "dump"},
 		{kind: "tuwunel", tuwunelDump: "dump", masURL: "https://mas.example.org"},
+		{kind: "synapse", masClientID: "client"},
+		{kind: "synapse", masClientSecret: "secret"},
+		{kind: "synapse", masClientID: "client", masClientSecret: "secret"},
 	} {
 		if _, err := f.open(t.Context()); err == nil {
 			t.Fatalf("invalid flags accepted: %+v", f)

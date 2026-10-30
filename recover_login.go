@@ -12,6 +12,7 @@ import (
 	"exodus/internal/archive"
 	"exodus/internal/migrate"
 	"exodus/internal/mx"
+	"exodus/internal/progress"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -39,7 +40,9 @@ Stop any running import before using this command.`,
 			if err != nil {
 				return err
 			}
+			resume := progress.Pause(cmd.Context())
 			password, err := readRecoveryPassword(cmd.Context(), cmd.InOrStdin(), cmd.ErrOrStderr())
+			resume()
 			if err != nil {
 				return err
 			}

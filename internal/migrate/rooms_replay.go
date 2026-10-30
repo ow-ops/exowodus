@@ -20,6 +20,7 @@ import (
 
 	"exodus/internal/archive"
 	"exodus/internal/mx"
+	"exodus/internal/progress"
 	"exodus/internal/relay"
 )
 
@@ -744,7 +745,8 @@ func (im *Importer) ReplayRooms(ctx context.Context, rooms []*archive.ArchivedRo
 		report *RoomReport
 	}
 	var pending []pendingReplay
-	for _, room := range rooms {
+	for i, room := range rooms {
+		progress.Count(ctx, "Rooms replayed", i, len(rooms))
 		if ctx.Err() != nil {
 			break
 		}
@@ -769,6 +771,9 @@ func (im *Importer) ReplayRooms(ctx context.Context, rooms []*archive.ArchivedRo
 		}
 		pending = append(pending, pendingReplay{room, rep})
 	}
+	if ctx.Err() == nil {
+		progress.Count(ctx, "Rooms replayed", len(rooms), len(rooms))
+	}
 
 	if im.ghosts == nil {
 		im.ghosts = map[string]bool{}
@@ -776,10 +781,12 @@ func (im *Importer) ReplayRooms(ctx context.Context, rooms []*archive.ArchivedRo
 	if im.eventMaps == nil {
 		im.eventMaps = map[string]map[string]string{}
 	}
-	for _, job := range pending {
+	for i, job := range pending {
 		if ctx.Err() != nil {
 			break
 		}
+		progress.Count(ctx, "Finalize rooms", i, len(pending))
+		slog.Info("finalizing room", "room", job.room.RoomID)
 		r, err := im.loadReplay(ctx, job.room, job.report, false)
 		if err == nil {
 			err = r.loadJoined(ctx)
@@ -801,6 +808,9 @@ func (im *Importer) ReplayRooms(ctx context.Context, rooms []*archive.ArchivedRo
 				im.ghosts[r.mapUser(g)] = true
 			}
 		}
+	}
+	if ctx.Err() == nil {
+		progress.Count(ctx, "Finalize rooms", len(pending), len(pending))
 	}
 	return reports
 }

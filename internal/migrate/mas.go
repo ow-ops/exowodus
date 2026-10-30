@@ -3,6 +3,7 @@ package migrate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 // MAS personal sessions are used instead.
 type MAS struct {
 	client *mautrix.Client
+	auth   *masClientCredentials
 }
 
 // NewMAS needs a token with the urn:mas:admin scope.
@@ -30,8 +32,27 @@ func NewMAS(baseURL, token string) (*MAS, error) {
 }
 
 func (m *MAS) do(ctx context.Context, method string, query map[string]string, body, out any, path ...any) error {
-	_, err := m.client.MakeRequest(ctx, method, m.client.BuildURLWithQuery(mautrix.BaseURLPath(append([]any{"api", "admin", "v1"}, path...)), query), body, out)
-	return err
+	u := m.client.BuildURLWithQuery(mautrix.BaseURLPath(append([]any{"api", "admin", "v1"}, path...)), query)
+	if m.auth == nil {
+		_, err := m.client.MakeRequest(ctx, method, u, body, out)
+		if mx.IsStatus(err, http.StatusUnauthorized) {
+			return fmt.Errorf("MAS admin token expired or was rejected; use --from-mas-client-id and --from-mas-client-secret for automatic renewal: %w", err)
+		}
+		return err
+	}
+	var rejected string
+	for range 2 {
+		token, err := m.auth.token(ctx, m.client, rejected)
+		if err != nil {
+			return err
+		}
+		_, err = m.client.MakeFullRequest(ctx, mautrix.FullRequest{Method: method, URL: u, RequestJSON: body, ResponseJSON: out, Headers: http.Header{"Authorization": {"Bearer " + token}}})
+		if !mx.IsStatus(err, http.StatusUnauthorized) {
+			return err
+		}
+		rejected = token
+	}
+	return errors.New("MAS rejected the renewed admin token; check the client credentials and urn:mas:admin scope")
 }
 
 func (m *MAS) userID(ctx context.Context, userID string) (string, error) {

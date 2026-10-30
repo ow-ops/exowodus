@@ -17,6 +17,8 @@ import (
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/id"
+
+	"exodus/internal/progress"
 )
 
 // mautrix does not define this auth stage.
@@ -29,6 +31,11 @@ func New(baseURL, token string) (*mautrix.Client, error) {
 	}
 	c.Log = zerolog.Nop()
 	c.DefaultHTTPRetries = 5
+	c.RequestHook = func(req *http.Request) {
+		progress.Request(req)
+		slog.DebugContext(req.Context(), "Matrix request", "method", req.Method, "host", req.URL.Host, "path", req.URL.EscapedPath())
+	}
+	c.ResponseHook = func(req *http.Request, _ *http.Response, _ error, _ time.Duration) { progress.Response(req) }
 	return c, nil
 }
 
@@ -226,7 +233,8 @@ func Download(ctx context.Context, c *mautrix.Client, mxc, path string) (content
 			_ = os.Remove(tmp)
 		}
 	}()
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	size, err := io.Copy(f, progress.Reader(ctx, resp.Body, resp.ContentLength, "Download"))
+	if err != nil {
 		f.Close()
 		return "", "", err
 	}
@@ -236,6 +244,7 @@ func Download(ctx context.Context, c *mautrix.Client, mxc, path string) (content
 	if err := os.Rename(tmp, path); err != nil {
 		return "", "", err
 	}
+	slog.Info("received source media", "mxc", mxc, "size", size)
 	if _, params, err := mime.ParseMediaType(resp.Header.Get("Content-Disposition")); err == nil {
 		filename = params["filename"]
 	}
@@ -255,7 +264,7 @@ func Upload(ctx context.Context, c *mautrix.Client, path, contentType, filename 
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
-	resp, err := c.UploadMedia(ctx, mautrix.ReqUploadMedia{Content: f, ContentLength: info.Size(), ContentType: contentType, FileName: filename})
+	resp, err := c.UploadMedia(ctx, mautrix.ReqUploadMedia{Content: progress.Reader(ctx, f, info.Size(), "Upload"), ContentLength: info.Size(), ContentType: contentType, FileName: filename})
 	if err != nil {
 		return "", err
 	}

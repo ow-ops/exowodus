@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"exodus/internal/archive"
+	"exodus/internal/progress"
 	"exodus/internal/relay"
 
 	"maunium.net/go/mautrix"
@@ -45,10 +46,11 @@ func (im *Importer) RelayRooms(ctx context.Context, rooms []*archive.ArchivedRoo
 	}
 	var reports []*RoomReport
 	var rest []*archive.ArchivedRoom
-	for _, room := range rooms {
+	for i, room := range rooms {
 		if ctx.Err() != nil {
 			break
 		}
+		progress.Count(ctx, "Rooms checked for relay", i, len(rooms))
 		if im.Archive.IsRoomSkipped(room.RoomID) {
 			continue
 		}
@@ -94,6 +96,9 @@ func (im *Importer) RelayRooms(ctx context.Context, rooms []*archive.ArchivedRoo
 		}
 		delete(im.roomFailures, room.RoomID)
 		im.rooms[room.RoomID] = room.RoomID
+	}
+	if ctx.Err() == nil {
+		progress.Count(ctx, "Rooms checked for relay", len(rooms), len(rooms))
 	}
 	return reports, rest
 }

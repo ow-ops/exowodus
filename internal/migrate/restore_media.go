@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"os"
 	"os/exec"
@@ -18,6 +19,7 @@ import (
 
 	"exodus/internal/archive"
 	"exodus/internal/mx"
+	"exodus/internal/progress"
 )
 
 type archivedMedia struct {
@@ -29,6 +31,7 @@ type archivedMedia struct {
 // stopped Continuwuity database, so old links work without the proxy.
 // Media IDs Continuwuity already has are left unchanged.
 func RestoreMedia(ctx context.Context, a *archive.Archive, database, ldb string) (restored, kept int, err error) {
+	slog.Info("restoring archived media")
 	if _, err := os.Stat(filepath.Join(database, "CURRENT")); err != nil {
 		return 0, 0, errors.New("--database must name an existing, stopped Continuwuity RocksDB database")
 	}
@@ -47,7 +50,8 @@ func RestoreMedia(ctx context.Context, a *archive.Archive, database, ldb string)
 	}
 	var files, owners bytes.Buffer
 	var written []string
-	for _, m := range media {
+	for i, m := range media {
+		progress.Count(ctx, "Media files", i, len(media))
 		if existing[m.MXC] {
 			kept++
 			continue
@@ -66,6 +70,7 @@ func RestoreMedia(ctx context.Context, a *archive.Archive, database, ldb string)
 		}
 		restored++
 	}
+	progress.Count(ctx, "Media files", len(media), len(media))
 	for _, load := range []struct {
 		family string
 		rows   *bytes.Buffer
@@ -151,6 +156,7 @@ func existingMedia(ctx context.Context, ldb string, args []string) (map[string]b
 
 // ldbScan reads a column family as raw keys and values.
 func ldbScan(ctx context.Context, ldb string, args []string, family string) (map[string]string, error) {
+	slog.Info("reading database table", "table", family)
 	cmd := exec.CommandContext(ctx, ldb, append(args, "--column_family="+family, "scan", "--hex")...)
 	stderr := &ldbOutput{}
 	cmd.Stderr = stderr

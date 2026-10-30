@@ -24,6 +24,7 @@ import (
 	"exodus/internal/archive"
 	"exodus/internal/migrate"
 	"exodus/internal/mx"
+	"exodus/internal/progress"
 	"exodus/internal/proxy"
 	"exodus/internal/relay"
 )
@@ -41,6 +42,7 @@ func main() {
 
 func newRootCmd() *cobra.Command {
 	var verbose bool
+	var progressMode string
 	root := &cobra.Command{
 		Use:   "exodus",
 		Short: "Migrate Matrix accounts from Synapse or Tuwunel to Continuwuity",
@@ -56,16 +58,22 @@ Replacing Synapse on the same server name:
   (stop Synapse, start Continuwuity on the same server name)
   exodus import --to https://example.com --registration-token ...`,
 		SilenceUsage: true,
-		PersistentPreRun: func(*cobra.Command, []string) {
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			if progressMode != "auto" && progressMode != "plain" && progressMode != "tty" {
+				return errors.New("--progress must be auto, plain or tty")
+			}
 			level := slog.LevelInfo
 			if verbose {
 				level = slog.LevelDebug
 			}
-			slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+			slog.SetDefault(slog.New(slog.NewTextHandler(cmd.ErrOrStderr(), &slog.HandlerOptions{Level: level})))
+			return nil
 		},
 	}
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable debug logging")
+	root.PersistentFlags().StringVar(&progressMode, "progress", "auto", "progress display: auto, plain or tty")
 	root.AddCommand(newExportCmd(), newImportCmd(), newMigrateCmd(), newProxyCmd(), newLinkSSOCmd(), newRestoreSigningKeyCmd(), newRestoreMediaCmd(), newRestoreSessionsCmd(), newFinishCmd(), newResetImportCmd(), newRepairTuwunelAccountsCmd(), newRecoverLoginCmd())
+	styleCommands(root, &progressMode, &verbose)
 	return root
 }
 
@@ -75,6 +83,7 @@ type sourceFlags struct {
 	url, token, user, password, adminToken, db string
 	signingKey                                 string
 	masURL, masToken, masDB                    string
+	masClientID, masClientSecret               string
 	users                                      []string
 	allUsers, skipMissingMedia                 bool
 	historyAtCheckpoint                        bool
@@ -97,6 +106,10 @@ func (f *sourceFlags) register(cmd *cobra.Command) {
 	fs.BoolVar(&f.historyAtCheckpoint, "history-at-checkpoint", false, "export Tuwunel room history and state from the dump, omitting later changes")
 	fs.StringVar(&f.masURL, "from-mas-url", "", "Matrix Authentication Service URL, when Synapse delegates authentication to it")
 	fs.StringVar(&f.masToken, "from-mas-token", os.Getenv("EXODUS_FROM_MAS_TOKEN"), "MAS admin API token (urn:mas:admin scope) [$EXODUS_FROM_MAS_TOKEN]")
+	fs.StringVar(&f.masClientID, "from-mas-client-id", os.Getenv("EXODUS_FROM_MAS_CLIENT_ID"), "MAS OAuth client ID for automatic admin token renewal [$EXODUS_FROM_MAS_CLIENT_ID]")
+	fs.StringVar(&f.masClientSecret, "from-mas-client-secret", os.Getenv("EXODUS_FROM_MAS_CLIENT_SECRET"), "MAS OAuth client secret [$EXODUS_FROM_MAS_CLIENT_SECRET]")
+	// Cobra must not print the environment's secret as a flag default.
+	fs.Lookup("from-mas-client-secret").DefValue = ""
 	fs.StringVar(&f.masDB, "mas-db", os.Getenv("EXODUS_MAS_DB"), "MAS database (postgres:// DSN), to keep passwords and legacy client sessions [$EXODUS_MAS_DB]")
 	fs.StringVar(&f.db, "synapse-db", os.Getenv("EXODUS_SYNAPSE_DB"), "Synapse database (postgres:// DSN or SQLite path), to keep passwords and client sessions [$EXODUS_SYNAPSE_DB]")
 	_ = cmd.MarkFlagRequired("from")
@@ -128,6 +141,12 @@ func (f *sourceFlags) preservationDefault() {
 
 func (f *sourceFlags) open(ctx context.Context) (*source, error) {
 	f.preservationDefault()
+	if (f.masClientID == "") != (f.masClientSecret == "") {
+		return nil, errors.New("--from-mas-client-id and --from-mas-client-secret must be supplied together")
+	}
+	if f.masClientID != "" && f.masURL == "" {
+		return nil, errors.New("MAS client credentials require --from-mas-url")
+	}
 	if f.historyAtCheckpoint && (f.kind != "tuwunel" || !f.allUsers || f.tuwunelDump == "") {
 		return nil, errors.New("--history-at-checkpoint requires --from-type tuwunel --all-users --tuwunel-dump")
 	}
@@ -205,10 +224,15 @@ func (f *sourceFlags) open(ctx context.Context) (*source, error) {
 	s.historyAtCheckpoint = f.historyAtCheckpoint
 	s.dump = dump
 	if f.masURL != "" {
-		if f.adminToken == "" || f.masToken == "" {
-			return nil, errors.New("--from-mas-url requires --from-admin-token and --from-mas-token")
+		if f.adminToken == "" || f.masToken == "" && f.masClientID == "" {
+			return nil, errors.New("--from-mas-url requires --from-admin-token and either --from-mas-token or MAS client credentials")
 		}
-		if s.mas, err = migrate.NewMAS(f.masURL, f.masToken); err != nil {
+		if f.masClientID != "" {
+			s.mas, err = migrate.NewMASWithClientCredentials(f.masURL, f.masClientID, f.masClientSecret)
+		} else {
+			s.mas, err = migrate.NewMAS(f.masURL, f.masToken)
+		}
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -300,16 +324,22 @@ func (s *source) userIDs() map[string]bool {
 // each runs fn per user, continuing past failures.
 func (s *source) each(ctx context.Context, fn func(*migrate.Session) error) error {
 	if s.single != nil {
+		progress.Count(ctx, "Accounts", 0, 1)
 		err := fn(s.single)
 		s.single.Close(context.WithoutCancel(ctx))
+		if ctx.Err() == nil {
+			progress.Count(ctx, "Accounts", 1, 1)
+		}
 		return err
 	}
 	var failures []error
-	for _, u := range s.users {
+	for i, u := range s.users {
+		progress.Count(ctx, "Accounts", i, len(s.users))
 		sess, relock, err := s.open(ctx, u)
 		if err != nil {
 			slog.Error("skipping user", "user", u.UserID, "err", err)
 			failures = append(failures, fmt.Errorf("%s: %w", u.UserID, err))
+			progress.Count(ctx, "Accounts", i+1, len(s.users))
 			continue
 		}
 		err = fn(sess)
@@ -322,6 +352,7 @@ func (s *source) each(ctx context.Context, fn func(*migrate.Session) error) erro
 			slog.Error("user failed", "user", sess.UserID, "err", err)
 			failures = append(failures, fmt.Errorf("%s: %w", sess.UserID, err))
 		}
+		progress.Count(ctx, "Accounts", i+1, len(s.users))
 	}
 	if len(failures) > 0 {
 		return fmt.Errorf("%d of %d users failed: %w", len(failures), len(s.users), errors.Join(failures...))
@@ -645,7 +676,8 @@ after replacing Synapse with Continuwuity on the same server name.`,
 			var reports []*migrate.Report
 			var jobs []*migrate.UserJob
 			var failed int
-			for _, u := range users {
+			for i, u := range users {
+				progress.Count(ctx, "Prepare accounts", i, len(users))
 				job, err := im.PrepareUser(ctx, u)
 				if ctx.Err() != nil {
 					return ctx.Err()
@@ -661,6 +693,7 @@ after replacing Synapse with Continuwuity on the same server name.`,
 					failed++
 				}
 			}
+			progress.Count(ctx, "Prepare accounts", len(users), len(users))
 			if failed > 0 {
 				for _, job := range jobs {
 					reports = append(reports, job.Report)
@@ -686,7 +719,8 @@ after replacing Synapse with Continuwuity on the same server name.`,
 			if len(rooms) > 0 {
 				roomReports = append(roomReports, im.ReplayRooms(ctx, rooms)...)
 			}
-			for _, job := range jobs {
+			for i, job := range jobs {
+				progress.Count(ctx, "Finish accounts", i, len(jobs))
 				rep, err := im.FinishUser(ctx, job, nil)
 				if ctx.Err() != nil {
 					return ctx.Err()
@@ -700,6 +734,7 @@ after replacing Synapse with Continuwuity on the same server name.`,
 				}
 				reports = append(reports, rep)
 			}
+			progress.Count(ctx, "Finish accounts", len(jobs), len(jobs))
 			printRoomSummary(cmd.OutOrStdout(), roomReports)
 			finishErr := finishImport(ctx, cmd.OutOrStdout(), im, a, users, reports, roomReports)
 			if failed > 0 {
@@ -1094,12 +1129,15 @@ func exportRooms(ctx context.Context, exp *migrate.Exporter, users []*archive.Us
 		}
 	}
 	var errs []error
-	for _, id := range ids {
+	for i, id := range ids {
+		progress.Count(ctx, "Rooms exported", i, len(ids))
+		slog.Info("exporting room", "room", id)
 		if err := exp.ExportRoom(ctx, id, known, member); err != nil {
 			slog.Error("room export failed", "room", id, "err", err)
 			errs = append(errs, fmt.Errorf("%s: %w", id, err))
 		}
 	}
+	progress.Count(ctx, "Rooms exported", len(ids), len(ids))
 	errs = append(errs, exp.ExportDepartedRooms(ctx, known))
 	return errors.Join(errs...)
 }

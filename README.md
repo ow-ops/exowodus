@@ -15,6 +15,12 @@ To build from source, you need Go 1.27:
 go build -o exodus .
 ```
 
+All commands show an inline terminal display with the current step, elapsed
+time, batch counts and transfer progress. HTTP waits show the request path and
+attempt number. Redirected output uses plain logs; `--progress plain` disables
+the display explicitly, and `--progress tty` forces it. `--verbose` keeps
+request details and logs in scrollback. `NO_COLOR` disables colors.
+
 ## Before you start
 
 1. On a fresh Continuwuity, create **your own admin account first**: the first
@@ -47,6 +53,8 @@ Good to know:
   | `EXODUS_FROM_PASSWORD`           | `--from-password`           |
   | `EXODUS_FROM_ADMIN_TOKEN`        | `--from-admin-token`        |
   | `EXODUS_FROM_MAS_TOKEN`          | `--from-mas-token`          |
+  | `EXODUS_FROM_MAS_CLIENT_ID`      | `--from-mas-client-id`      |
+  | `EXODUS_FROM_MAS_CLIENT_SECRET`  | `--from-mas-client-secret`  |
   | `EXODUS_SYNAPSE_DB`              | `--synapse-db`              |
   | `EXODUS_MAS_DB`                  | `--mas-db`                  |
   | `EXODUS_TO_TOKEN`                | `--to-token`                |
@@ -166,6 +174,13 @@ Add `--from-mas-url` and `--from-mas-token`:
 
 - `--from-mas-token` needs the `urn:mas:admin` scope.
 - `--from-admin-token` must be a MAS personal token with `urn:synapse:admin:*`.
+
+For automatic token renewal, replace `--from-mas-token` with
+`--from-mas-client-id` and `--from-mas-client-secret`. The MAS client must use
+`client_secret_basic` and appear in `policy.data.admin_clients`; see the
+[MAS admin API setup](https://element-hq.github.io/matrix-authentication-service/topics/admin-api.html#automated-tools).
+Use `EXODUS_FROM_MAS_CLIENT_ID` and `EXODUS_FROM_MAS_CLIENT_SECRET` to keep the
+secret out of command arguments.
 
 exodus impersonates users through MAS personal sessions and reads emails, SSO
 links and registration tokens from MAS. Add `--mas-db` to also export
