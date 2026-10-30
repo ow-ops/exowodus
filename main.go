@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -128,6 +130,7 @@ type source struct {
 	admin                      *mautrix.Client
 	adminID                    string
 	users                      []migrate.SynapseUser
+	jobs                       int
 	// deactivated accounts cannot be logged into and are exported apart.
 	deactivated []migrate.SynapseUser
 	single      *migrate.Session
@@ -332,28 +335,30 @@ func (s *source) each(ctx context.Context, fn func(*migrate.Session) error) erro
 		}
 		return err
 	}
-	var failures []error
-	for i, u := range s.users {
-		progress.Count(ctx, "Accounts", i, len(s.users))
+	errs := make([]error, len(s.users))
+	var done atomic.Int64
+	progress.Count(ctx, "Accounts", 0, len(s.users))
+	parallel(ctx, s.jobs, len(s.users), func(i int) {
+		u := s.users[i]
 		sess, relock, err := s.open(ctx, u)
 		if err != nil {
 			slog.Error("skipping user", "user", u.UserID, "err", err)
-			failures = append(failures, fmt.Errorf("%s: %w", u.UserID, err))
-			progress.Count(ctx, "Accounts", i+1, len(s.users))
-			continue
+			errs[i] = fmt.Errorf("%s: %w", u.UserID, err)
+		} else {
+			err = fn(sess)
+			relock()
+			sess.Close(context.WithoutCancel(ctx))
+			if err != nil && ctx.Err() == nil {
+				slog.Error("user failed", "user", sess.UserID, "err", err)
+				errs[i] = fmt.Errorf("%s: %w", sess.UserID, err)
+			}
 		}
-		err = fn(sess)
-		relock()
-		sess.Close(context.WithoutCancel(ctx))
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if err != nil {
-			slog.Error("user failed", "user", sess.UserID, "err", err)
-			failures = append(failures, fmt.Errorf("%s: %w", sess.UserID, err))
-		}
-		progress.Count(ctx, "Accounts", i+1, len(s.users))
+		progress.Count(ctx, "Accounts", int(done.Add(1)), len(s.users))
+	})
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
+	failures := slices.DeleteFunc(errs, func(err error) bool { return err == nil })
 	if len(failures) > 0 {
 		return fmt.Errorf("%d of %d users failed: %w", len(failures), len(s.users), errors.Join(failures...))
 	}
@@ -467,6 +472,7 @@ func newExportCmd() *cobra.Command {
 	var src sourceFlags
 	var dir string
 	var skipRooms []string
+	var jobs int
 	cmd := &cobra.Command{
 		Use:   "export",
 		Short: "Export accounts from the source homeserver into an archive",
@@ -478,6 +484,9 @@ func newExportCmd() *cobra.Command {
 					result = fmt.Errorf("export did not start; export-report.json was not updated: %w", result)
 				}
 			}()
+			if jobs < 1 {
+				return errors.New("--jobs must be at least 1")
+			}
 			ctx := cmd.Context()
 			s, err := src.open(ctx)
 			if err != nil {
@@ -535,15 +544,19 @@ func newExportCmd() *cobra.Command {
 				}
 				s.users = pending
 			}
+			s.jobs = jobs
+			var usersMu sync.Mutex
 			err = s.each(ctx, func(sess *migrate.Session) error {
 				u, err := exp.ExportUser(ctx, sess)
 				if err != nil {
 					return err
 				}
+				usersMu.Lock()
 				users = append(users, u)
+				usersMu.Unlock()
 				if s.admin == nil {
 					// Without admin access, rooms are exported as their member.
-					return exportRooms(ctx, exp, users, sess.Client)
+					return exportRooms(ctx, exp, users, sess.Client, jobs)
 				}
 				return nil
 			})
@@ -555,7 +568,7 @@ func newExportCmd() *cobra.Command {
 				err = errors.Join(err, derr)
 			}
 			if s.admin != nil {
-				err = errors.Join(err, exportRooms(ctx, exp, users, nil))
+				err = errors.Join(err, exportRooms(ctx, exp, users, nil, jobs))
 			}
 			if src.signingKey != "" {
 				err = errors.Join(err, exp.ExportRelayKeys(ctx, src.signingKey))
@@ -570,6 +583,7 @@ func newExportCmd() *cobra.Command {
 	cmd.Flags().StringVar(&src.signingKey, "synapse-signing-key", "", "Synapse signing key file: with --synapse-db, rooms only your server was in move with their original events")
 	cmd.Flags().StringVar(&dir, "archive", defaultArchiveDir(), "archive directory")
 	cmd.Flags().StringArrayVar(&skipRooms, "skip-room", nil, "omit a whole room from export and import (repeatable)")
+	cmd.Flags().IntVar(&jobs, "jobs", 1, "accounts or rooms to export at once")
 	return cmd
 }
 
@@ -1102,7 +1116,7 @@ func startRelay(ctx context.Context, a *archive.Archive, destURL string, f relay
 	return rl, rl.Start(f.listen, f.cert, f.key)
 }
 
-func exportRooms(ctx context.Context, exp *migrate.Exporter, users []*archive.User, member *mautrix.Client) error {
+func exportRooms(ctx context.Context, exp *migrate.Exporter, users []*archive.User, member *mautrix.Client, jobs int) error {
 	ids := migrate.LocalOnlyRooms(users)
 	if exp.TuwunelDump != nil && exp.TuwunelDump.HasRelayData() && exp.AllUsers {
 		var err error
@@ -1112,9 +1126,14 @@ func exportRooms(ctx context.Context, exp *migrate.Exporter, users []*archive.Us
 		}
 		if !exp.HistoryAtCheckpoint {
 			// Include live rooms so export detects rooms missing from the checkpoint.
+			seen := map[string]bool{}
+			for _, id := range ids {
+				seen[id] = true
+			}
 			for _, u := range users {
 				for _, r := range u.Rooms {
-					if !slices.Contains(ids, r.RoomID) {
+					if !seen[r.RoomID] {
+						seen[r.RoomID] = true
 						ids = append(ids, r.RoomID)
 					}
 				}
@@ -1128,18 +1147,42 @@ func exportRooms(ctx context.Context, exp *migrate.Exporter, users []*archive.Us
 			known[m.MXC] = true
 		}
 	}
-	var errs []error
-	for i, id := range ids {
-		progress.Count(ctx, "Rooms exported", i, len(ids))
-		slog.Info("exporting room", "room", id)
-		if err := exp.ExportRoom(ctx, id, known, member); err != nil {
-			slog.Error("room export failed", "room", id, "err", err)
-			errs = append(errs, fmt.Errorf("%s: %w", id, err))
+	errs := make([]error, len(ids))
+	var done atomic.Int64
+	progress.Count(ctx, "Rooms exported", 0, len(ids))
+	parallel(ctx, jobs, len(ids), func(i int) {
+		slog.Info("exporting room", "room", ids[i])
+		if err := exp.ExportRoom(ctx, ids[i], known, member); err != nil {
+			slog.Error("room export failed", "room", ids[i], "err", err)
+			errs[i] = fmt.Errorf("%s: %w", ids[i], err)
 		}
-	}
-	progress.Count(ctx, "Rooms exported", len(ids), len(ids))
+		progress.Count(ctx, "Rooms exported", int(done.Add(1)), len(ids))
+	})
 	errs = append(errs, exp.ExportDepartedRooms(ctx, known))
 	return errors.Join(errs...)
+}
+
+// parallel calls fn for 0..n-1 on up to jobs goroutines until ctx is canceled.
+func parallel(ctx context.Context, jobs, n int, fn func(int)) {
+	next := make(chan int)
+	var wg sync.WaitGroup
+	for range min(max(jobs, 1), n) {
+		wg.Go(func() {
+			for i := range next {
+				fn(i)
+			}
+		})
+	}
+dispatch:
+	for i := range n {
+		select {
+		case next <- i:
+		case <-ctx.Done():
+			break dispatch
+		}
+	}
+	close(next)
+	wg.Wait()
 }
 
 // needsAppservice reports whether the import must act as other users.

@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
@@ -37,10 +38,14 @@ const syncFilter = `{
 }`
 
 type Exporter struct {
+	// mu guards completedRooms and quarantined.
+	mu             sync.Mutex
+	completedRooms map[string]bool
+	quarantined    map[string]bool
+	// authMu guards authRecovery.
+	authMu              sync.Mutex
 	authRecovery        *authRecovery
 	Resume              *archive.ExportResume
-	completedRooms      map[string]bool
-	quarantined         map[string]bool
 	AllUsers            bool
 	HistoryAtCheckpoint bool
 	// SkipMissingMedia keeps importing when the source no longer serves an MXC.
@@ -52,6 +57,23 @@ type Exporter struct {
 	MAS         *MAS
 	MASDB       *MASDB
 	TuwunelDump *TuwunelDump
+}
+
+func (e *Exporter) quarantine(mxcs ...string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.quarantined == nil {
+		e.quarantined = map[string]bool{}
+	}
+	for _, mxc := range mxcs {
+		e.quarantined[mxc] = true
+	}
+}
+
+func (e *Exporter) isQuarantined(mxc string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.quarantined[mxc]
 }
 
 func (e *Exporter) skipMissingMedia(mxc, path string, err error) bool {
@@ -381,10 +403,7 @@ func (e *Exporter) exportMedia(ctx context.Context, s *Session, avatar string) (
 		server := mx.ServerName(s.UserID)
 		for _, m := range list {
 			if m.QuarantinedBy != nil {
-				if e.quarantined == nil {
-					e.quarantined = map[string]bool{}
-				}
-				e.quarantined["mxc://"+server+"/"+m.MediaID] = true
+				e.quarantine("mxc://" + server + "/" + m.MediaID)
 				continue
 			}
 			am := archive.Media{MXC: "mxc://" + server + "/" + m.MediaID, ContentType: m.MediaType}
@@ -394,7 +413,7 @@ func (e *Exporter) exportMedia(ctx context.Context, s *Session, avatar string) (
 			wanted = append(wanted, am)
 		}
 	}
-	if avatar != "" && !e.quarantined[avatar] && !slices.ContainsFunc(wanted, func(m archive.Media) bool { return m.MXC == avatar }) {
+	if avatar != "" && !e.isQuarantined(avatar) && !slices.ContainsFunc(wanted, func(m archive.Media) bool { return m.MXC == avatar }) {
 		wanted = append(wanted, archive.Media{MXC: avatar})
 	}
 

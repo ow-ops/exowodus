@@ -27,16 +27,15 @@ const messagesPageSize = "100"
 // LocalOnlyRooms returns rooms no other server is in: they cannot be rejoined
 // once the source is gone.
 func LocalOnlyRooms(users []*archive.User) []string {
-	var ids []string
+	ids := map[string]bool{}
 	for _, u := range users {
 		for _, r := range u.Rooms {
-			if len(r.Via) == 0 && !slices.Contains(ids, r.RoomID) {
-				ids = append(ids, r.RoomID)
+			if len(r.Via) == 0 {
+				ids[r.RoomID] = true
 			}
 		}
 	}
-	slices.Sort(ids)
-	return ids
+	return slices.Sorted(maps.Keys(ids))
 }
 
 // ExportRoom uses the Synapse admin API when available, else the client API
@@ -291,7 +290,7 @@ func (e *Exporter) ExportRoom(ctx context.Context, roomID string, known map[stri
 	dir := e.Archive.RoomDir(roomID)
 	for _, mxc := range mediaRefs {
 		srv, mediaID, err := mx.ParseMXC(mxc)
-		if err != nil || srv != server || known[mxc] || e.quarantined[mxc] {
+		if err != nil || srv != server || known[mxc] || e.isQuarantined(mxc) {
 			continue
 		}
 		m := archive.Media{MXC: mxc, File: mediaFile(srv, mediaID)}

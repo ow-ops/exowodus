@@ -38,12 +38,7 @@ func (e *Exporter) ResumeUser(ctx context.Context, id string) (*archive.User, er
 			return nil, nil
 		}
 	}
-	if e.quarantined == nil {
-		e.quarantined = map[string]bool{}
-	}
-	for _, mxc := range checkpoint.Quarantined {
-		e.quarantined[mxc] = true
-	}
+	e.quarantine(checkpoint.Quarantined...)
 	slog.Info("reusing exported account", "user", id)
 	return user, nil
 }
@@ -63,14 +58,17 @@ func (e *Exporter) saveUserExport(ctx context.Context, user *archive.User) error
 	for _, media := range user.Media {
 		paths = append(paths, filepath.Join(dir, media.File))
 	}
-	return e.Resume.Save(ctx, "users", user.UserID, paths, archive.ExportCheckpoint{Quarantined: slices.Sorted(maps.Keys(e.quarantined)), SkippedRooms: e.Archive.Manifest.SkippedRooms})
+	e.mu.Lock()
+	quarantined := slices.Sorted(maps.Keys(e.quarantined))
+	e.mu.Unlock()
+	return e.Resume.Save(ctx, "users", user.UserID, paths, archive.ExportCheckpoint{Quarantined: quarantined, SkippedRooms: e.Archive.Manifest.SkippedRooms})
 }
 
 func (e *Exporter) resumeRoom(ctx context.Context, id string, client *mautrix.Client) (bool, error) {
 	if e.Resume == nil {
 		return false, nil
 	}
-	if e.completedRooms[id] {
+	if e.roomCompleted(id) {
 		return true, nil
 	}
 	slog.Info("checking room export checkpoint", "room", id)
@@ -81,10 +79,7 @@ func (e *Exporter) resumeRoom(ctx context.Context, id string, client *mautrix.Cl
 	if err := e.verifyRoomTip(ctx, client, id, checkpoint.Tip); err != nil {
 		return false, err
 	}
-	if e.completedRooms == nil {
-		e.completedRooms = map[string]bool{}
-	}
-	e.completedRooms[id] = true
+	e.completeRoom(id)
 	slog.Info("reusing exported room", "room", id)
 	return true, nil
 }
@@ -104,11 +99,23 @@ func (e *Exporter) saveRoomExport(ctx context.Context, room *archive.ArchivedRoo
 	if err := e.Resume.Save(ctx, "rooms", room.RoomID, paths, archive.ExportCheckpoint{Tip: tip}); err != nil {
 		return err
 	}
+	e.completeRoom(room.RoomID)
+	return nil
+}
+
+func (e *Exporter) roomCompleted(id string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.completedRooms[id]
+}
+
+func (e *Exporter) completeRoom(id string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if e.completedRooms == nil {
 		e.completedRooms = map[string]bool{}
 	}
-	e.completedRooms[room.RoomID] = true
-	return nil
+	e.completedRooms[id] = true
 }
 
 func (e *Exporter) resumeHistory(ctx context.Context, id string, omitted map[string]string) (bool, error) {

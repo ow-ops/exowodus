@@ -32,6 +32,8 @@ type authRecovery struct {
 
 func (e *Exporter) tuwunelRoomMetadata(ctx context.Context, roomID string) (*tuwunelRoomMetadata, error) {
 	resolve := func(ctx context.Context, data *tuwunelRoomMetadata, missing string, parent json.RawMessage) error {
+		e.authMu.Lock()
+		defer e.authMu.Unlock()
 		if e.authRecovery == nil {
 			keyText, err := e.TuwunelDump.SigningKey()
 			if err != nil {

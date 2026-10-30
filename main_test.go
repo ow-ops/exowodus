@@ -13,7 +13,10 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"exowodus/internal/archive"
 	"exowodus/internal/migrate"
@@ -256,13 +259,13 @@ func TestTuwunelStaleSnapshotCannotOmitJoinedRoom(t *testing.T) {
 	}
 	exp := &migrate.Exporter{Archive: a, Admin: mx.MustNew(srv.URL, "admin"), AllUsers: true, TuwunelDump: dump}
 	users := []*archive.User{{UserID: "@alice:example.org", Rooms: []archive.Room{{RoomID: "!new:example.org", Via: []string{"remote.example.org"}}}}}
-	err = exportRooms(t.Context(), exp, users, nil)
+	err = exportRooms(t.Context(), exp, users, nil, 1)
 	if !requested || err == nil {
 		t.Fatal("joined room created after checkpoint was silently omitted")
 	}
 	requested = false
 	exp.HistoryAtCheckpoint = true
-	if err := exportRooms(t.Context(), exp, users, nil); err != nil || requested {
+	if err := exportRooms(t.Context(), exp, users, nil, 1); err != nil || requested {
 		t.Fatalf("checkpoint export requested a newer room: %v", err)
 	}
 }
@@ -598,5 +601,126 @@ func TestImportPreflightReplacesStaleReport(t *testing.T) {
 	}
 	if posts != 0 || len(report.Users) != 0 || len(report.Failures) != 1 || report.Failures[0].Step != "preflight" {
 		t.Fatalf("posts=%d report=%+v", posts, report)
+	}
+}
+
+func TestParallelBoundsWorkers(t *testing.T) {
+	var mu sync.Mutex
+	running, peak := 0, 0
+	seen := make([]bool, 20)
+	parallel(t.Context(), 3, len(seen), func(i int) {
+		mu.Lock()
+		running++
+		peak = max(peak, running)
+		mu.Unlock()
+		time.Sleep(5 * time.Millisecond)
+		mu.Lock()
+		running--
+		seen[i] = true
+		mu.Unlock()
+	})
+	if slices.Contains(seen, false) || peak > 3 {
+		t.Fatalf("seen %v, peak %d", seen, peak)
+	}
+}
+
+func TestParallelStopsWhenCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	var ran atomic.Int32
+	parallel(ctx, 1, 100, func(int) {
+		if ran.Add(1) == 2 {
+			cancel()
+		}
+	})
+	if ran.Load() > 3 {
+		t.Fatalf("%d jobs ran after cancellation", ran.Load())
+	}
+}
+
+func TestExportRoomsConcurrently(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/download/"):
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte("png"))
+			return
+		case strings.HasSuffix(r.URL.Path, "/state"):
+			room := strings.Split(r.URL.Path, "/")[5]
+			fmt.Fprintf(w, `{"state":[{"type":"m.room.create","state_key":"","sender":"@alice:example.org","event_id":"$create%[1]s","room_id":%[1]q,"content":{"room_version":"10"}},{"type":"m.room.member","state_key":"@alice:example.org","sender":"@alice:example.org","event_id":"$member%[1]s","room_id":%[1]q,"content":{"membership":"join","avatar_url":"mxc://example.org/shared"}}]}`, room)
+		case strings.HasSuffix(r.URL.Path, "/messages"):
+			_, _ = w.Write([]byte(`{"chunk":[]}`))
+		case r.URL.Path == "/_synapse/admin/v1/rooms":
+			_, _ = w.Write([]byte(`{"rooms":[]}`))
+		default:
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer srv.Close()
+	a, err := archive.Create(t.TempDir(), "example.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exp := &migrate.Exporter{Archive: a, Admin: mx.MustNew(srv.URL, "admin"), AllUsers: true}
+	user := &archive.User{UserID: "@alice:example.org"}
+	for i := range 12 {
+		user.Rooms = append(user.Rooms, archive.Room{RoomID: fmt.Sprintf("!room%d:example.org", i)})
+	}
+	if err := exportRooms(t.Context(), exp, []*archive.User{user}, nil, 4); err != nil {
+		t.Fatal(err)
+	}
+	rooms, err := a.RoomHeaders()
+	if err != nil || len(rooms) != len(user.Rooms) {
+		t.Fatalf("exported %d of %d rooms: %v", len(rooms), len(user.Rooms), err)
+	}
+	for _, room := range rooms {
+		if len(room.Media) != 1 {
+			t.Fatalf("room %s exported %d media files, want 1", room.RoomID, len(room.Media))
+		}
+	}
+}
+
+func TestEachExportsAccountsConcurrently(t *testing.T) {
+	var logouts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "@broken:example.org"):
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"errcode":"M_FORBIDDEN","error":"no"}`))
+		case strings.HasSuffix(r.URL.Path, "/login"):
+			_, _ = w.Write([]byte(`{"access_token":"temporary"}`))
+		case r.URL.Path == "/_matrix/client/v3/logout":
+			logouts.Add(1)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	s := &source{admin: mx.MustNew(srv.URL, "admin"), adminID: "@admin:example.org", jobs: 3}
+	for _, name := range []string{"a", "b", "broken", "c", "d", "e"} {
+		s.users = append(s.users, migrate.SynapseUser{UserID: "@" + name + ":example.org"})
+	}
+	var mu sync.Mutex
+	visited := map[string]int{}
+	err := s.each(t.Context(), func(sess *migrate.Session) error {
+		mu.Lock()
+		visited[sess.UserID]++
+		mu.Unlock()
+		if sess.UserID == "@c:example.org" {
+			return errors.New("export failed")
+		}
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "2 of 6 users failed") {
+		t.Fatalf("err = %v", err)
+	}
+	if len(visited) != 5 || logouts.Load() != 5 {
+		t.Fatalf("visited %v, logouts %d", visited, logouts.Load())
+	}
+	for user, n := range visited {
+		if n != 1 {
+			t.Fatalf("%s exported %d times", user, n)
+		}
 	}
 }

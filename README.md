@@ -54,6 +54,8 @@ Good to know:
   failures also fail the export. Pass `--skip-missing-media` to migrate
   accounts while omitting source media that returns HTTP 404.
   Remote media is always skipped; local uploads are exported.
+- **`export --jobs N`** exports N accounts or rooms at once. More jobs use
+  more memory.
 - **The archive is sensitive.** It holds account data, encrypted key backups,
   password hashes, access tokens and generated passwords. Keep it safe, and
   retain it while you run the proxy or need archive-only room history.
