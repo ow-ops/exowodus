@@ -12,8 +12,8 @@ import (
 	"slices"
 	"strings"
 
-	"exodus/internal/archive"
-	"exodus/internal/migrate"
+	"exowodus/internal/archive"
+	"exowodus/internal/migrate"
 )
 
 func (f *sourceFlags) exportResume(ctx context.Context, s *source, a *archive.Archive) (*archive.ExportResume, error) {

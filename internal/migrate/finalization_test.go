@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
 )
 
 func TestCheckRelayFromDestination(t *testing.T) {
@@ -20,7 +20,8 @@ func TestCheckRelayFromDestination(t *testing.T) {
 		name, reply string
 		fails       bool
 	}{
-		{name: "relay", reply: "Got response which took 5ms time:\n```json\n{\"name\":\"exodus relay\",\"version\":\"1\"}\n```"},
+		{name: "relay", reply: "Got response which took 5ms time:\n```json\n{\"name\":\"exowodus relay\",\"version\":\"1\"}\n```"},
+		{name: "legacy relay", reply: "```json\n{\"name\":\"exodus relay\",\"version\":\"1\"}\n```"},
 		{name: "wrong upstream", reply: "Got response:\n```json\n{\"name\":\"continuwuity\"}\n```", fails: true},
 		{name: "502", reply: "Command failed with error: Failed sending federation request: HTTP 502 Bad Gateway", fails: true},
 		{name: "unhealthy", reply: "Command failed with error: Remote server is currently unhealthy", fails: true},

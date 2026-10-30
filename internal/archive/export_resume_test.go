@@ -152,7 +152,7 @@ func TestLegacyExportRequiresMatchingRetainedDump(t *testing.T) {
 }
 
 func TestExportLockReleasedAfterCrash(t *testing.T) {
-	if dir := os.Getenv("EXODUS_EXPORT_LOCK_HELPER"); dir != "" {
+	if dir := os.Getenv("EXOWODUS_EXPORT_LOCK_HELPER"); dir != "" {
 		a, err := Open(dir)
 		if err != nil {
 			t.Fatal(err)
@@ -174,7 +174,7 @@ func TestExportLockReleasedAfterCrash(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestExportLockReleasedAfterCrash$", "-test.timeout=30s")
-	cmd.Env = append(os.Environ(), "EXODUS_EXPORT_LOCK_HELPER="+a.Dir)
+	cmd.Env = append(os.Environ(), "EXOWODUS_EXPORT_LOCK_HELPER="+a.Dir)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}

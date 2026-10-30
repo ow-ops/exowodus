@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"exodus/internal/relay"
+	"exowodus/internal/relay"
 )
 
 func TestStateEventIDs(t *testing.T) {
@@ -90,7 +90,7 @@ func TestStateEventIDsRejectsInvalidGroups(t *testing.T) {
 
 func TestStateEventIDsLongDeletionChain(t *testing.T) {
 	members, updates := 512, 128
-	if os.Getenv("EXODUS_MEMORY_STRESS") != "" {
+	if os.Getenv("EXOWODUS_MEMORY_STRESS") != "" {
 		members, updates = 4096, 4096
 	}
 	d := deletionStateFixture(members, updates)

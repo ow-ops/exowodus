@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
 )
 
 type MASDB struct {

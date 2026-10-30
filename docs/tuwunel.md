@@ -94,7 +94,7 @@ Export reads Tuwunel schema version 17, used from v1.5 through v1.9.4, from
 
 Keep the dump private: it contains password hashes, login tokens and the server
 signing key. Pending federation deliveries can be retained for proxy retry as
-described below. Exodus excludes
+described below. Exowodus excludes
 expired tokens, superseded refresh tokens and used fallback keys.
 
 Tuwunel must provide the [Synapse-compatible admin endpoints](https://github.com/matrix-construct/tuwunel/blob/main/docs/development/compliance/synapse-admin.md)
@@ -104,14 +104,14 @@ used by export. If you renamed the `conduit` server bot, pass its localpart with
 ## Original events and strict cutover checks
 
 ```sh
-exodus export --from https://example.org --from-type tuwunel \
+exowodus export --from https://example.org --from-type tuwunel \
   --from-admin-token "$ADMIN" --all-users --tuwunel-dump ./tuwunel-dump
 
 # Stop Tuwunel and prepare Continuwuity on the same server_name.
-exodus import --to http://continuwuity:8008 --to-admin-token "$CADMIN" \
+exowodus import --to http://continuwuity:8008 --to-admin-token "$CADMIN" \
   --registration-token "$REG" --relay-name relay.example.net
 
-exodus proxy --upstream http://continuwuity:8008
+exowodus proxy --upstream http://continuwuity:8008
 ```
 
 Import checks destination login methods and username compatibility before creating
@@ -127,7 +127,7 @@ ownership, confirm that the destination account belongs to that attempt, then
 add `--adopt-existing-user` to the same import command:
 
 ```sh
-exodus import --to http://continuwuity:8008 --to-admin-token "$CADMIN" \
+exowodus import --to http://continuwuity:8008 --to-admin-token "$CADMIN" \
   --registration-token "$REG" --relay-name relay.example.net \
   --adopt-existing-user '@bridgebot:example.org'
 ```
@@ -140,7 +140,7 @@ For an existing account with a password, verify its destination login before
 retrying import:
 
 ```sh
-exodus recover-login --archive ./exodus-archive \
+exowodus recover-login --archive ./exowodus-archive \
   --to https://matrix.example.org --user '@alice:example.org'
 ```
 
@@ -172,14 +172,14 @@ import reports it as a note.
 
 Backfilled events without historical state are retained. State queries for
 those events return an error. Archive format 3 stores state deletions as deltas.
-Update Exodus for export, import and proxy; formats 1 and 2 remain readable.
+Update Exowodus for export, import and proxy; formats 1 and 2 remain readable.
 
 Room exports include accepted events, referenced state and their auth chains.
 Unused outliers remain in the retained database scans. Missing auth dependencies
 and invalid IDs of required events still block export.
 
 To resume a whole-server Tuwunel export, rerun the same command with the same
-archive and unchanged dump. Keep source writes paused between attempts. Exodus
+archive and unchanged dump. Keep source writes paused between attempts. Exowodus
 verifies completed accounts, rooms and media against `export-progress/` before
 reuse. A changed source, dump or account selection requires a new `--archive`
 directory.
@@ -200,9 +200,9 @@ To export room history and state from the backup, use `--history-at-checkpoint`
 with a new archive:
 
 ```sh
-exodus export --from https://example.org --from-type tuwunel \
+exowodus export --from https://example.org --from-type tuwunel \
   --from-admin-token "$ADMIN" --all-users --tuwunel-dump ./tuwunel-dump \
-  --history-at-checkpoint --archive ./exodus-checkpoint
+  --history-at-checkpoint --archive ./exowodus-checkpoint
 ```
 
 This omits later messages, redactions, membership changes and rooms absent from
@@ -216,7 +216,7 @@ are recorded in `room.json` and the import report. Other events keep their
 original IDs and contents; backfill can traverse the omitted events' predecessors.
 
 Some servers have sent dummy events whose `content` is a string or `null`.
-Exodus computes their IDs as Tuwunel and Continuwuity do, so these events are
+Exowodus computes their IDs as Tuwunel and Continuwuity do, so these events are
 kept. Archives exported by earlier versions omit them; export again to a new
 `--archive` directory to keep them.
 
@@ -235,9 +235,9 @@ If no server supplies the event, export fails. To omit an affected room entirely
 repeat the export command with `--skip-room`:
 
 ```sh
-exodus export --from https://example.org --from-type tuwunel \
+exowodus export --from https://example.org --from-type tuwunel \
   --from-admin-token "$ADMIN" --all-users --tuwunel-dump ./tuwunel-dump \
-  --history-at-checkpoint --archive ./exodus-checkpoint \
+  --history-at-checkpoint --archive ./exowodus-checkpoint \
   --skip-room '!broken:example.org'
 ```
 
@@ -273,13 +273,13 @@ deactivated. Export reads the dump instead: accounts with an empty password
 and live devices are exported as passwordless accounts, because deactivation
 removes all devices first.
 
-Archives exported by older Exodus versions may still list these accounts as
+Archives exported by older Exowodus versions may still list these accounts as
 deactivated. If import refuses ID-only restoration for such an account, export
 again to a new `--archive` directory, or recover its missing account data from
 the **original database backup used for the dump**:
 
 ```sh
-exodus repair-tuwunel-accounts --archive ./exodus-archive \
+exowodus repair-tuwunel-accounts --archive ./exowodus-archive \
   --database /backup/tuwunel --ldb /path/to/ldb
 ```
 
@@ -330,7 +330,7 @@ Import loads one relay room at a time and releases it after each attempt.
 Event bodies stay in the archive and are read when served; the relay keeps
 about 300 bytes per event plus the room's state. Verification streams the
 archived messages, and key backups upload one session at a time. Continuwuity
-uses memory separately: backfilling a large room can use more than Exodus does.
+uses memory separately: backfilling a large room can use more than Exowodus does.
 
 Key backups are restored after rooms. Import reuses the current destination
 backup when its algorithm and encryption key match the archive. It retains the
@@ -347,13 +347,13 @@ appear in the report; check the destination backup or pause automatic key backup
 for the affected account. Rerun import with the same archive to retry the backup
 without repeating completed room writes.
 
-On Linux with systemd, this example caps Exodus at 1 GiB. Adjust the limit to
+On Linux with systemd, this example caps Exowodus at 1 GiB. Adjust the limit to
 leave room for Continuwuity and the rest of the system:
 
 ```sh
 GOMEMLIMIT=512MiB systemd-run --user --scope --expand-environment=no \
   -p MemoryHigh=768M -p MemoryMax=1G -p MemorySwapMax=256M \
-  exodus import --archive ./exodus-archive \
+  exowodus import --archive ./exowodus-archive \
   --to http://continuwuity:8008 --to-admin-token "$CADMIN" \
   --registration-token "$REG" --relay-name relay.example.net \
   --skip-private-receipts --skip-threaded-receipts \
@@ -361,7 +361,7 @@ GOMEMLIMIT=512MiB systemd-run --user --scope --expand-environment=no \
 ```
 
 [`MemoryMax`](https://www.freedesktop.org/software/systemd/man/latest/systemd.resource-control.html#MemoryMax=bytes)
-limits the importer process group. The kernel may terminate Exodus at this
+limits the importer process group. The kernel may terminate Exowodus at this
 limit; rerun with the same archive to retry. `GOMEMLIMIT` is a soft limit.
 Limit Continuwuity separately.
 
@@ -374,7 +374,7 @@ binary for import and proxy; existing archives do not need a new export.
 
 ## Relay behind Traefik
 
-When Traefik runs on a Docker bridge network and Exodus runs on the host,
+When Traefik runs on a Docker bridge network and Exowodus runs on the host,
 `127.0.0.1` points inside the Traefik container. Use the Pi's LAN address for
 the upstream. Merge this into Traefik's dynamic file configuration, replacing
 `PI_LAN_IP` and the example domain:
@@ -398,13 +398,13 @@ http:
       insecureSkipVerify: true
 ```
 
-The relay transport skips verification of Exodus's default self-signed backend
+The relay transport skips verification of Exowodus's default self-signed backend
 certificate. Public HTTPS still uses Traefik's trusted certificate. This setting
 applies only to the relay service; see [Traefik's transport documentation](https://doc.traefik.io/traefik/reference/routing-configuration/http/load-balancing/serverstransport).
 
 For public port 443, use `--relay-name relay.example.net:443` and
 `--relay-listen 0.0.0.0:8448`. The explicit port avoids requiring
-`/.well-known/matrix/server`, which Exodus does not serve. Add the relay name and
+`/.well-known/matrix/server`, which Exowodus does not serve. Add the relay name and
 port to Continuwuity's existing `trusted_servers` list in `[global]`:
 
 ```toml
@@ -435,14 +435,14 @@ Continuwuity must use the original server signing key. Stop Continuwuity, then
 run this as the database owner with a compatible `ldb`:
 
 ```sh
-exodus restore-signing-key --archive ./exodus-archive \
+exowodus restore-signing-key --archive ./exowodus-archive \
   --database /path/to/continuwuity-database --ldb /absolute/path/to/ldb
 ```
 
 The command backs up the current key to
-`exodus-archive/continuwuity-signing-key-backup.txt` before replacing it. Private
+`exowodus-archive/continuwuity-signing-key-backup.txt` before replacing it. Private
 key material is passed to `ldb` through stdin. It also writes
-`exodus-archive/continuwuity-old-verify-key.toml`; merge that entry into the
+`exowodus-archive/continuwuity-old-verify-key.toml`; merge that entry into the
 Continuwuity configuration so events already signed by its previous key remain
 verifiable. Then restart Continuwuity.
 
@@ -454,7 +454,7 @@ Old messages keep their original `mxc://` links, which Continuwuity does not
 know after import. To serve them without the proxy, stop Continuwuity and run:
 
 ```sh
-exodus restore-media --archive ./exodus-archive \
+exowodus restore-media --archive ./exowodus-archive \
   --database /path/to/continuwuity-database --ldb /absolute/path/to/ldb
 ```
 
@@ -467,7 +467,7 @@ Old access tokens and passwords also work only through the proxy. To keep
 clients logged in without it, stop Continuwuity and the proxy and run:
 
 ```sh
-exodus restore-sessions --archive ./exodus-archive \
+exowodus restore-sessions --archive ./exowodus-archive \
   --database /path/to/continuwuity-database --ldb /absolute/path/to/ldb
 ```
 
@@ -476,19 +476,19 @@ it stops working. Users log in with their Tuwunel password again. Devices whose
 token changed since the import, guests and refresh tokens are left to the
 proxy; the command reports how many. Rerunning it is safe.
 
-`exodus finish` runs `restore-signing-key`, `restore-media` and
+`exowodus finish` runs `restore-signing-key`, `restore-media` and
 `restore-sessions` in that order, with the same flags.
 
 To accept these metadata limitations, import with:
 
 ```sh
-exodus import --archive ./exodus-archive \
+exowodus import --archive ./exowodus-archive \
   --to http://continuwuity:8008 --to-admin-token "$CADMIN" \
   --registration-token "$REG" --relay-name relay.example.net \
   --skip-private-receipts --skip-threaded-receipts \
   --archive-departed-rooms --deactivated-id-only
 
-exodus proxy --archive ./exodus-archive --upstream http://continuwuity:8008
+exowodus proxy --archive ./exowodus-archive --upstream http://continuwuity:8008
 ```
 
 Import prepares `federation-outbox.sqlite` once by scanning the retained PDU
@@ -505,10 +505,10 @@ To import the same archive into a new, empty Continuwuity database, stop the
 proxy and run:
 
 ```sh
-exodus reset-import --archive ./exodus-archive
+exowodus reset-import --archive ./exowodus-archive
 ```
 
 It moves import progress, generated passwords, sessions and `finish` backups to
-`exodus-archive/reset-<time>/`; export data stays. Then run import and `finish`
+`exowodus-archive/reset-<time>/`; export data stays. Then run import and `finish`
 again. Other servers keep the events the previous destination sent, so rooms
 shared with them may reference events the new destination cannot fetch.

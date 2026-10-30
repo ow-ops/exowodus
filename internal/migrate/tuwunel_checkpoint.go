@@ -11,8 +11,8 @@ import (
 	"os"
 	"slices"
 
-	"exodus/internal/archive"
-	"exodus/internal/relay"
+	"exowodus/internal/archive"
+	"exowodus/internal/relay"
 )
 
 func (d *TuwunelDump) roomStateEvents(ctx context.Context, roomID string, state map[string]string) iter.Seq2[json.RawMessage, error] {

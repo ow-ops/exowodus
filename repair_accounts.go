@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 
-	"exodus/internal/archive"
-	"exodus/internal/migrate"
+	"exowodus/internal/archive"
+	"exowodus/internal/migrate"
 	"github.com/spf13/cobra"
 )
 
@@ -30,7 +30,7 @@ Stop export and import commands before running this repair.`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&dir, "archive", "exodus-archive", "archive directory")
+	cmd.Flags().StringVar(&dir, "archive", defaultArchiveDir(), "archive directory")
 	cmd.Flags().StringVar(&database, "database", "", "original Tuwunel database backup used to create the dump")
 	cmd.Flags().StringVar(&ldb, "ldb", "ldb", "path to a compatible RocksDB ldb executable")
 	cmd.Flags().BoolVar(&includeAppserviceSenders, "include-appservice-senders", false, "restore registered bridge bots with empty passwords and no devices as active; may reactivate intentionally deactivated bots")

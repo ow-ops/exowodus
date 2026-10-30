@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"exodus/internal/archive"
-	"exodus/internal/migrate"
+	"exowodus/internal/archive"
+	"exowodus/internal/migrate"
 )
 
 func TestRecoverLoginCommand(t *testing.T) {

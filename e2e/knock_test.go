@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"exodus/internal/migrate"
-	"exodus/internal/mx"
+	"exowodus/internal/migrate"
+	"exowodus/internal/mx"
 )
 
 func TestKnockFailureReportsIncompleteMigration(t *testing.T) {
@@ -29,7 +29,7 @@ func TestKnockFailureReportsIncompleteMigration(t *testing.T) {
 	room := createRoom(t, ctx, owner, map[string]any{"preset": "private_chat", "initial_state": []map[string]any{{"type": "m.room.join_rules", "state_key": "", "content": map[string]string{"join_rule": "knock"}}}})
 	must(t, do(ctx, user, http.MethodPost, urlPath("/_matrix/client/v3/knock", room), nil, map[string]string{"reason": "hi"}, nil))
 	dir := t.TempDir()
-	cmd := exec.CommandContext(ctx, exodusBin, "migrate", "--from", synapseURL, "--from-token", user.AccessToken, "--to", continuURL, "--to-password", "knocker-password", "--registration-token", regToken, "--archive", dir)
+	cmd := exec.CommandContext(ctx, exowodusBin, "migrate", "--from", synapseURL, "--from-token", user.AccessToken, "--to", continuURL, "--to-password", "knocker-password", "--registration-token", regToken, "--archive", dir)
 	output, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("expected incomplete migration from upstream knock failure: %s", output)

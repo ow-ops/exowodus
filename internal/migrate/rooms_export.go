@@ -18,8 +18,8 @@ import (
 
 	"maunium.net/go/mautrix"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
 )
 
 const messagesPageSize = "100"

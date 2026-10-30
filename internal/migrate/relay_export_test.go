@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"exodus/internal/relay"
+	"exowodus/internal/relay"
 )
 
 func TestStoredEventReferenceHashes(t *testing.T) {

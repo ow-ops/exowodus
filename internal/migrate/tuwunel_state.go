@@ -10,7 +10,7 @@ import (
 	"os"
 	"time"
 
-	"exodus/internal/relay"
+	"exowodus/internal/relay"
 )
 
 func (d *TuwunelDump) loadStateGroups(ctx context.Context, groups map[int64]relay.Group, gid uint64, stateFile *os.File) error {

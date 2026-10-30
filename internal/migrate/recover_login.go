@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"exodus/internal/mx"
+	"exowodus/internal/mx"
 )
 
 // RecoverLogin verifies an existing destination password and saves it for import.

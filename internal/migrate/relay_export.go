@@ -12,7 +12,7 @@ import (
 	"maunium.net/go/mautrix/federation"
 	"maunium.net/go/mautrix/id"
 
-	"exodus/internal/relay"
+	"exowodus/internal/relay"
 )
 
 func checkEventIDs(pdus []relay.EventJSON, roomVersion string) int {

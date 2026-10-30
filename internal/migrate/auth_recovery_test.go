@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"exodus/internal/archive"
-	"exodus/internal/relay"
+	"exowodus/internal/archive"
+	"exowodus/internal/relay"
 	"go.mau.fi/util/exhttp"
 	"maunium.net/go/mautrix/federation"
 	"maunium.net/go/mautrix/id"

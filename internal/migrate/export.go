@@ -19,9 +19,9 @@ import (
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
-	"exodus/internal/progress"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
+	"exowodus/internal/progress"
 )
 
 const maxVia = 5

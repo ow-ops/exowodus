@@ -429,7 +429,7 @@ func selfSigned(name string) (tls.Certificate, error) {
 func (rl *Relay) handler() http.Handler {
 	keys := &federation.KeyServer{
 		KeyProvider: &federation.StaticServerKey{ServerName: rl.Name, Key: rl.key},
-		Version:     federation.ServerVersion{Name: "exodus relay", Version: "1"},
+		Version:     federation.ServerVersion{Name: "exowodus relay", Version: "1"},
 		OtherKeys:   notaryKeys{rl},
 	}
 	mux := http.NewServeMux()
@@ -459,7 +459,7 @@ func (rl *Relay) handler() http.Handler {
 		writeJSON(w, map[string]any{"user_id": r.PathValue("userID"), "stream_id": 0, "devices": []any{}})
 	})
 	fed.HandleFunc("GET /_matrix/federation/v1/query/profile", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, map[string]any{"displayname": "exodus"})
+		writeJSON(w, map[string]any{"displayname": "exowodus"})
 	})
 	mux.Handle("/_matrix/federation/", rl.auth.AuthenticateMiddleware(rl.onlyPeer(fed)))
 	return mux

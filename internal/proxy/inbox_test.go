@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"exodus/internal/archive"
+	"exowodus/internal/archive"
 )
 
 type inboxEvent struct {

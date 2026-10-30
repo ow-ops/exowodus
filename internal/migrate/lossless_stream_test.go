@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"exodus/internal/archive"
-	"exodus/internal/relay"
+	"exowodus/internal/archive"
+	"exowodus/internal/relay"
 )
 
 func TestLosslessStreamChecksOriginalEventIDs(t *testing.T) {

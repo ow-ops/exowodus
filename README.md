@@ -1,4 +1,4 @@
-# exodus
+# exowodus
 
 Migrate a Matrix homeserver from Synapse or Tuwunel to [Continuwuity](https://continuwuity.org),
 or move a single account from any homeserver (including matrix.org). Continuwuity
@@ -12,8 +12,13 @@ attached to each release.
 To build from source, you need Go 1.27:
 
 ```sh
-go build -o exodus .
+go build -o exowodus .
 ```
+
+`EXOWODUS_*` environment variables take precedence over the older `EXODUS_*`
+names, which remain supported. The default archive is `exowodus-archive`; an
+existing `exodus-archive` is reused when the new directory is absent. Use
+`--archive` to select another directory.
 
 All commands show an inline terminal display with the current step, elapsed
 time, batch counts and transfer progress. HTTP waits show the request path and
@@ -28,17 +33,17 @@ request details and logs in scrollback. `NO_COLOR` disables colors.
 2. Issue a registration token with `!admin token issue`.
 3. Pass the admin's access token as `--to-admin-token`. It is needed for admin
    rights, account statuses, emails, recreated rooms, devices, bridges and
-   server state. exodus temporarily registers an `exodus` appservice through
+   server state. exowodus temporarily registers an `exodus` appservice through
    the admin room and removes it when the import ends.
 
 Good to know:
 
 - **Retry failed steps with the same archive and destination.** Commands exit
   nonzero on failure. Check
-  `exodus-archive/import-report.json` and the per-user reports under
-  `exodus-archive/users/*/import-report.json` before cutover.
+  `exowodus-archive/import-report.json` and the per-user reports under
+  `exowodus-archive/users/*/import-report.json` before cutover.
 - **Incomplete exports cannot be imported.** Check
-  `exodus-archive/export-report.json` and rerun `export`. Media download
+  `exowodus-archive/export-report.json` and rerun `export`. Media download
   failures also fail the export. Pass `--skip-missing-media` to migrate
   accounts while omitting source media that returns HTTP 404.
   Remote media is always skipped; local uploads are exported.
@@ -47,22 +52,22 @@ Good to know:
   retain it while you run the proxy or need archive-only room history.
 - **Secrets can be passed as environment variables** instead of flags:
 
-  | Variable                         | Flag                        |
-  | -------------------------------- | --------------------------- |
-  | `EXODUS_FROM_TOKEN`              | `--from-token`              |
-  | `EXODUS_FROM_PASSWORD`           | `--from-password`           |
-  | `EXODUS_FROM_ADMIN_TOKEN`        | `--from-admin-token`        |
-  | `EXODUS_FROM_MAS_TOKEN`          | `--from-mas-token`          |
-  | `EXODUS_FROM_MAS_CLIENT_ID`      | `--from-mas-client-id`      |
-  | `EXODUS_FROM_MAS_CLIENT_SECRET`  | `--from-mas-client-secret`  |
-  | `EXODUS_SYNAPSE_DB`              | `--synapse-db`              |
-  | `EXODUS_MAS_DB`                  | `--mas-db`                  |
-  | `EXODUS_TO_TOKEN`                | `--to-token`                |
-  | `EXODUS_TO_PASSWORD`             | `--to-password`             |
-  | `EXODUS_TO_ADMIN_TOKEN`          | `--to-admin-token`          |
-  | `EXODUS_REGISTRATION_TOKEN`      | `--registration-token`      |
-  | `EXODUS_SYNAPSE_PASSWORD_PEPPER` | `--synapse-password-pepper` |
-  | `EXODUS_SYNAPSE_MACAROON_SECRET` | `--synapse-macaroon-secret` |
+  | Variable                           | Flag                        |
+  | ---------------------------------- | --------------------------- |
+  | `EXOWODUS_FROM_TOKEN`              | `--from-token`              |
+  | `EXOWODUS_FROM_PASSWORD`           | `--from-password`           |
+  | `EXOWODUS_FROM_ADMIN_TOKEN`        | `--from-admin-token`        |
+  | `EXOWODUS_FROM_MAS_TOKEN`          | `--from-mas-token`          |
+  | `EXOWODUS_FROM_MAS_CLIENT_ID`      | `--from-mas-client-id`      |
+  | `EXOWODUS_FROM_MAS_CLIENT_SECRET`  | `--from-mas-client-secret`  |
+  | `EXOWODUS_SYNAPSE_DB`              | `--synapse-db`              |
+  | `EXOWODUS_MAS_DB`                  | `--mas-db`                  |
+  | `EXOWODUS_TO_TOKEN`                | `--to-token`                |
+  | `EXOWODUS_TO_PASSWORD`             | `--to-password`             |
+  | `EXOWODUS_TO_ADMIN_TOKEN`          | `--to-admin-token`          |
+  | `EXOWODUS_REGISTRATION_TOKEN`      | `--registration-token`      |
+  | `EXOWODUS_SYNAPSE_PASSWORD_PEPPER` | `--synapse-password-pepper` |
+  | `EXOWODUS_SYNAPSE_MACAROON_SECRET` | `--synapse-macaroon-secret` |
 
 ## Usage
 
@@ -74,20 +79,20 @@ Keep the same `server_name` to preserve message IDs, encrypted history and login
 2. Back up the database and media, then [prepare the database export](docs/tuwunel.md).
 3. Export, stop Tuwunel, and start Continuwuity with the same `server_name`.
 4. [Configure the relay](#relay---relay-name) and import.
-5. Stop Continuwuity, run `exodus finish` to restore the signing key, media and
+5. Stop Continuwuity, run `exowodus finish` to restore the signing key, media and
    logins, then start it again. Use [the proxy](#the-proxy) for sessions
    `finish` reports it could not restore and for pending deliveries.
 
 ```sh
-exodus export --from https://example.org --from-type tuwunel \
+exowodus export --from https://example.org --from-type tuwunel \
   --from-admin-token "$ADMIN" --all-users --tuwunel-dump ./tuwunel-dump
 
 # Stop Tuwunel and start Continuwuity with the same server_name.
-exodus import --to http://continuwuity:8008 --to-admin-token "$CADMIN" \
+exowodus import --to http://continuwuity:8008 --to-admin-token "$CADMIN" \
   --registration-token "$REG" --relay-name relay.example.net
 
 # Stop Continuwuity.
-exodus finish --database /path/to/continuwuity-database --ldb /absolute/path/to/ldb
+exowodus finish --database /path/to/continuwuity-database --ldb /absolute/path/to/ldb
 # Start Continuwuity.
 ```
 
@@ -111,23 +116,23 @@ For one account, use `--from-type tuwunel` with the [single-account flow](#movin
 This restores sessions, devices and encryption on the same server name.
 Keep a source database and media backup. Before the final export, stop client,
 bridge and federation writes to Synapse while leaving its APIs available to
-exodus. Export reads APIs and database tables separately; it is not a consistent
+exowodus. Export reads APIs and database tables separately; it is not a consistent
 snapshot while the source is changing. Route clients to the destination only
 after import completes without failures.
 
 ```sh
-exodus export --from https://example.org --from-admin-token "$ADMIN" --all-users \
+exowodus export --from https://example.org --from-admin-token "$ADMIN" --all-users \
   --synapse-db postgres://synapse@db/synapse
 
 # stop Synapse, start Continuwuity with the same server_name
 
-exodus import --to http://continuwuity:8008 --registration-token "$REG" --to-admin-token "$CADMIN" \
+exowodus import --to http://continuwuity:8008 --registration-token "$REG" --to-admin-token "$CADMIN" \
   --appservice-registration /etc/synapse/bridges/telegram.yaml
 
-exodus proxy --upstream http://continuwuity:8008
+exowodus proxy --upstream http://continuwuity:8008
 ```
 
-Then route all client and federation traffic through `exodus proxy`, for
+Then route all client and federation traffic through `exowodus proxy`, for
 example by pointing your reverse proxy at it instead of Continuwuity. See
 [The proxy](#the-proxy).
 
@@ -140,12 +145,12 @@ your old key and verify your server's past events.
 With the source server still online:
 
 ```sh
-exodus migrate --from https://synapse.example.org --from-admin-token "$ADMIN" --all-users \
+exowodus migrate --from https://synapse.example.org --from-admin-token "$ADMIN" --all-users \
   --synapse-db postgres://synapse@db/synapse \
   --to https://continuwuity.example.net --registration-token "$REG" --to-admin-token "$CADMIN"
 
-exodus proxy --upstream https://continuwuity.example.net   # password migration
-exodus proxy --listen :8080   # behind the old domain's TLS reverse proxy, for old media links
+exowodus proxy --upstream https://continuwuity.example.net   # password migration
+exowodus proxy --listen :8080   # behind the old domain's TLS reverse proxy, for old media links
 ```
 
 Each old account invites its new account into every room with the same power
@@ -155,7 +160,7 @@ room's history visibility allows it (`shared`, the default).
 
 - `--users @a:example.org,@b:example.org` selects a subset of users.
 - Accounts without a known password get a random one, written to
-  `exodus-archive/credentials.csv`. The proxy replaces it with the old
+  `exowodus-archive/credentials.csv`. The proxy replaces it with the old
   password on first login.
 
 ### Moving a single account
@@ -164,7 +169,7 @@ No admin access is needed, for example to leave matrix.org. Copy your access
 token from Element (Settings → Help & About):
 
 ```sh
-exodus migrate --from https://matrix-client.matrix.org --from-token "$TOKEN" \
+exowodus migrate --from https://matrix-client.matrix.org --from-token "$TOKEN" \
   --to https://matrix.example.org --registration-token "$REG" --to-password "$NEW_PASSWORD"
 ```
 
@@ -179,10 +184,10 @@ For automatic token renewal, replace `--from-mas-token` with
 `--from-mas-client-id` and `--from-mas-client-secret`. The MAS client must use
 `client_secret_basic` and appear in `policy.data.admin_clients`; see the
 [MAS admin API setup](https://element-hq.github.io/matrix-authentication-service/topics/admin-api.html#automated-tools).
-Use `EXODUS_FROM_MAS_CLIENT_ID` and `EXODUS_FROM_MAS_CLIENT_SECRET` to keep the
+Use `EXOWODUS_FROM_MAS_CLIENT_ID` and `EXOWODUS_FROM_MAS_CLIENT_SECRET` to keep the
 secret out of command arguments.
 
-exodus impersonates users through MAS personal sessions and reads emails, SSO
+exowodus impersonates users through MAS personal sessions and reads emails, SSO
 links and registration tokens from MAS. Add `--mas-db` to also export
 passwords and sessions:
 
@@ -200,11 +205,11 @@ on, but linking identities requires OIDC. So, in order:
 
 1. Run the import.
 2. Configure `[global.oauth.oidc]` on Continuwuity.
-3. Run `exodus link-sso --to ... --to-admin-token ...`.
+3. Run `exowodus link-sso --to ... --to-admin-token ...`.
 
 ## The proxy
 
-`exodus proxy` sits in front of Continuwuity and keeps old credentials and
+`exowodus proxy` sits in front of Continuwuity and keeps old credentials and
 links working:
 
 | What                | How                                                                                                                                                                                                                    |
@@ -240,11 +245,11 @@ original timestamps:
 
 ### Relay (`--relay-name`)
 
-exodus hands the rooms over with their **original events**: event IDs,
+exowodus hands the rooms over with their **original events**: event IDs,
 signatures, senders and timestamps are unchanged. Requires exported original
 PDUs, the source signing key and `import --to-admin-token`.
 
-During the import, exodus runs a temporary federation server under that name
+During the import, exowodus runs a temporary federation server under that name
 (`--relay-listen`, default `:8448`) that serves the exported events:
 
 1. The relay joins through an authorized invitation, or joins a public room
@@ -258,10 +263,10 @@ During the import, exodus runs a temporary federation server under that name
 Use a server name such as `--relay-name relay.example.net`, without `https://`.
 The listener uses HTTPS, including behind a reverse proxy. Point the proxy at
 `https://<reachable-host>:8448` and configure backend certificate trust. With a
-proxy on a Docker bridge network and Exodus on the host, use the host's LAN
+proxy on a Docker bridge network and Exowodus on the host, use the host's LAN
 address and `--relay-listen 0.0.0.0:8448`. `127.0.0.1` points inside the container.
 For public port 443, use `--relay-name relay.example.net:443` or provide federation
-delegation separately. Exodus does not serve `/.well-known/matrix/server`.
+delegation separately. Exowodus does not serve `/.well-known/matrix/server`.
 See the [Traefik example](docs/tuwunel.md#relay-behind-traefik).
 
 While import is running, test the local listener and public route:
@@ -274,7 +279,7 @@ curl -fsS https://relay.example.net/_matrix/key/v2/server
 `-k` is only for diagnosing the local self-signed listener. Both responses should
 identify the configured relay server name.
 
-Exodus checks that Continuwuity can reach the relay before importing accounts or
+Exowodus checks that Continuwuity can reach the relay before importing accounts or
 rooms. A failed check stops import and appears in `import-report.json`. Room
 permissions can still block individual rooms.
 
@@ -345,7 +350,7 @@ those flags or recover skipped data. Compare against the source backup.
 ## What cannot be migrated
 
 - **Messages from other servers' users in replayed rooms.** Events are signed
-  by their origin server, and exodus cannot sign as another server. `@exodus`
+  by their origin server, and exowodus cannot sign as another server. `@exodus`
   posts them as notices naming the sender. Relayed rooms keep them.
 - **Some timestamps in replayed rooms** (relayed rooms keep them all). These
   carry the import time:

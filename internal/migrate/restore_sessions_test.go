@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"exodus/internal/archive"
+	"exowodus/internal/archive"
 )
 
 func TestRestoreSessions(t *testing.T) {

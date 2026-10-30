@@ -16,7 +16,7 @@ import (
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
-	"exodus/internal/mx"
+	"exowodus/internal/mx"
 )
 
 const commandTimeout = 2 * time.Minute
@@ -123,7 +123,7 @@ func (a *ContinuwuityAdmin) CheckRelay(ctx context.Context, server string) error
 	var version struct {
 		Name string `json:"name"`
 	}
-	if !ok || json.Unmarshal([]byte(body), &version) != nil || version.Name != "exodus relay" {
+	if !ok || json.Unmarshal([]byte(body), &version) != nil || version.Name != "exowodus relay" && version.Name != "exodus relay" {
 		return fmt.Errorf("destination reached a different service for relay %s; check federation delegation and reverse proxy routing", server)
 	}
 	return nil
@@ -140,6 +140,7 @@ type Appservice struct {
 	client *mautrix.Client
 }
 
+// Keep the appservice and bot IDs stable across migration retries.
 const appserviceID = "exodus"
 
 func RegisterAppservice(ctx context.Context, admin *ContinuwuityAdmin, dest *mautrix.Client) (*Appservice, error) {

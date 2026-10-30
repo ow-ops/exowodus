@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 
-	"exodus/internal/archive"
-	"exodus/internal/migrate"
+	"exowodus/internal/archive"
+	"exowodus/internal/migrate"
 	"github.com/spf13/cobra"
 )
 
@@ -30,7 +30,7 @@ since the import, refresh tokens and OAuth sessions are left to the proxy.`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&dir, "archive", "exodus-archive", "archive directory")
+	cmd.Flags().StringVar(&dir, "archive", defaultArchiveDir(), "archive directory")
 	cmd.Flags().StringVar(&database, "database", "", "path to the stopped Continuwuity RocksDB database")
 	cmd.Flags().StringVar(&ldb, "ldb", "ldb", "path to a compatible RocksDB ldb executable")
 	_ = cmd.MarkFlagRequired("database")

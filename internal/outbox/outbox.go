@@ -178,7 +178,7 @@ func (s *Store) Next(ctx context.Context, origin string, now time.Time) (*Batch,
 	if len(b.entries) == 0 {
 		return nil, errors.New("empty pending federation transaction")
 	}
-	b.Request.TxnID = "exodus-" + rand.Text()
+	b.Request.TxnID = "exowodus-" + rand.Text()
 	request, err := json.Marshal(b.Request)
 	if err != nil {
 		return nil, err
@@ -247,7 +247,7 @@ func (s *Store) Retry(ctx context.Context, b *Batch, now time.Time, cause error,
 	txnID := b.Request.TxnID
 	// A returned PDU error may be cached under the old transaction ID.
 	if rejected {
-		txnID = "exodus-" + rand.Text()
+		txnID = "exowodus-" + rand.Text()
 	}
 	_, err := s.db.ExecContext(ctx, `UPDATE destinations SET transaction_id=?,attempts=attempts+1,next_attempt=?,last_error=? WHERE name=?`, txnID, now.Add(delay).UnixMilli(), cause.Error(), b.Request.Destination)
 	return err

@@ -236,7 +236,7 @@ func (m model) View() tea.View {
 			status = "✗ Failed"
 		}
 	}
-	lines := []string{accent.Render("EXODUS") + muted.Render(" / "+s.title), "", status}
+	lines := []string{accent.Render("EXOWODUS") + muted.Render(" / "+s.title), "", status}
 	if s.detail != "" && !m.finished {
 		lines = append(lines, muted.Render(clip(s.detail)))
 	}

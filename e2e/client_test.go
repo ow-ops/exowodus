@@ -17,16 +17,16 @@ import (
 	"maunium.net/go/mautrix/id"
 )
 
-var exodusBin string
+var exowodusBin string
 
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "exodus-bin")
+	dir, err := os.MkdirTemp("", "exowodus-bin")
 	if err != nil {
 		panic(err)
 	}
-	exodusBin = filepath.Join(dir, "exodus")
-	if out, err := exec.Command("go", "build", "-o", exodusBin, "..").CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "build exodus: %v\n%s", err, out)
+	exowodusBin = filepath.Join(dir, "exowodus")
+	if out, err := exec.Command("go", "build", "-o", exowodusBin, "..").CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "build exowodus: %v\n%s", err, out)
 		os.Exit(1)
 	}
 	code := m.Run()

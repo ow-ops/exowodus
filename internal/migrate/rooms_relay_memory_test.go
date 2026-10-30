@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
-	"exodus/internal/relay"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
+	"exowodus/internal/relay"
 )
 
 func relayFailureFixture(t *testing.T) (*archive.Archive, []*archive.ArchivedRoom) {

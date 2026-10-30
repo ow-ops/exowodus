@@ -15,9 +15,9 @@ import (
 	"strings"
 	"testing"
 
-	"exodus/internal/archive"
-	"exodus/internal/migrate"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/migrate"
+	"exowodus/internal/mx"
 )
 
 type reportCheckingWriter struct {

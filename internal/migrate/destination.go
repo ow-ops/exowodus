@@ -8,8 +8,8 @@ import (
 	"net/url"
 	"time"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
 
 	"maunium.net/go/mautrix"
 )
@@ -86,7 +86,7 @@ func (im *Importer) CheckDestination(ctx context.Context, users []*archive.User)
 		} `json:"flows"`
 	}
 	if err := im.checkDestinationRequest(ctx, im.Dest.BuildClientURL("v3", "login"), &login); err != nil {
-		return fmt.Errorf("destination login discovery failed: %w; Exodus requires legacy login APIs; check global.oauth.compatibility_mode and delegated OIDC settings", err)
+		return fmt.Errorf("destination login discovery failed: %w; Exowodus requires legacy login APIs; check global.oauth.compatibility_mode and delegated OIDC settings", err)
 	}
 	types := map[string]bool{}
 	for _, flow := range login.Flows {

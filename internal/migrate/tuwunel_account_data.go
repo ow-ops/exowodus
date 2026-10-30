@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"strings"
 
-	"exodus/internal/archive"
+	"exowodus/internal/archive"
 )
 
 const maxAccountRecoveryBytes = 32 << 20

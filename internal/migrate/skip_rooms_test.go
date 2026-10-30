@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
-	"exodus/internal/relay"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
+	"exowodus/internal/relay"
 )
 
 func TestSkippedRoomDoesNotExportOrImport(t *testing.T) {

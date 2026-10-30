@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"exodus/internal/relay"
+	"exowodus/internal/relay"
 	"maunium.net/go/mautrix/federation"
 )
 

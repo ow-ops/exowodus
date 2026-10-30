@@ -11,7 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/spf13/cobra"
 
-	"exodus/internal/progress"
+	"exowodus/internal/progress"
 )
 
 func styleCommands(root *cobra.Command, mode *string, verbose *bool) {

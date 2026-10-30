@@ -16,8 +16,8 @@ import (
 	"strings"
 	"testing"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
 )
 
 const recoveryUser = "@discordbot:example.org"
@@ -117,14 +117,14 @@ func accountRecoveryFixture(t *testing.T) (*archive.Archive, string, string) {
 	if err := os.WriteFile(filepath.Join(native, "families"), []byte(list), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("EXODUS_ACCOUNT_FIXTURE", native)
+	t.Setenv("EXOWODUS_ACCOUNT_FIXTURE", native)
 	ldb := filepath.Join(t.TempDir(), "ldb")
 	script := `#!/bin/sh
 for arg in "$@"; do
   case "$arg" in
-    list_column_families) cat "$EXODUS_ACCOUNT_FIXTURE/families"; exit 0 ;;
+    list_column_families) cat "$EXOWODUS_ACCOUNT_FIXTURE/families"; exit 0 ;;
     --column_family=*) table=${arg#--column_family=} ;;
-    scan) cat "$EXODUS_ACCOUNT_FIXTURE/$table.txt"; exit 0 ;;
+    scan) cat "$EXOWODUS_ACCOUNT_FIXTURE/$table.txt"; exit 0 ;;
   esac
 done
 exit 2
@@ -273,9 +273,9 @@ func TestAccountRepairRefusesWrongDeviceKeys(t *testing.T) {
 }
 
 func TestAccountRepairRocksDB(t *testing.T) {
-	ldb := os.Getenv("EXODUS_TEST_LDB")
+	ldb := os.Getenv("EXOWODUS_TEST_LDB")
 	if ldb == "" {
-		t.Skip("set EXODUS_TEST_LDB to exercise a real RocksDB database")
+		t.Skip("set EXOWODUS_TEST_LDB to exercise a real RocksDB database")
 	}
 	a, fixture, _ := accountRecoveryFixture(t)
 	database := filepath.Join(t.TempDir(), "rocksdb")

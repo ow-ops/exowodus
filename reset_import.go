@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"exodus/internal/archive"
+	"exowodus/internal/archive"
 	"github.com/spf13/cobra"
 )
 
@@ -28,6 +28,6 @@ archive; export data stays. Then import into a new, empty Continuwuity database.
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&dir, "archive", "exodus-archive", "archive directory")
+	cmd.Flags().StringVar(&dir, "archive", defaultArchiveDir(), "archive directory")
 	return cmd
 }

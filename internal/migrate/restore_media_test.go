@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"exodus/internal/archive"
+	"exowodus/internal/archive"
 )
 
 func TestRestoreMedia(t *testing.T) {

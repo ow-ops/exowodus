@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
-	"exodus/internal/relay"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
+	"exowodus/internal/relay"
 )
 
 func (im *Importer) VerifySessions(ctx context.Context, users []*archive.User) (failures []Failure) {

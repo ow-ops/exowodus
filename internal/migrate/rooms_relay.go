@@ -16,9 +16,9 @@ import (
 	"slices"
 	"strings"
 
-	"exodus/internal/archive"
-	"exodus/internal/progress"
-	"exodus/internal/relay"
+	"exowodus/internal/archive"
+	"exowodus/internal/progress"
+	"exowodus/internal/relay"
 
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"

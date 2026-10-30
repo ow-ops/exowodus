@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
 
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
@@ -351,7 +351,7 @@ func (im *Importer) deliverToDevice(ctx context.Context, msgs []archive.ToDevice
 			*failures = append(*failures, Failure{Step: "to_device", Error: err.Error()})
 			return nil
 		}
-		return []string{fmt.Sprintf("%d queued to-device messages from remote senders retained for delivery by exodus proxy", remote)}
+		return []string{fmt.Sprintf("%d queued to-device messages from remote senders retained for delivery by exowodus proxy", remote)}
 	}
 	return nil
 }
@@ -396,7 +396,7 @@ func (im *Importer) toDeviceSender(ctx context.Context, userID string) (*mautrix
 		return nil, fmt.Errorf("sender %s was not restored and has no registered appservice", userID)
 	}
 	if im.Appservice == nil {
-		return nil, errors.New("the exodus appservice is not registered")
+		return nil, errors.New("the exowodus appservice is not registered")
 	}
 	return im.Appservice.As(userID), nil
 }

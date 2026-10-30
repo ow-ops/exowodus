@@ -16,9 +16,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
-	"exodus/internal/relay"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
+	"exowodus/internal/relay"
 	"maunium.net/go/mautrix/id"
 )
 

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"exodus/internal/outbox"
+	"exowodus/internal/outbox"
 	"go.mau.fi/util/exhttp"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/federation"

@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"exodus/internal/archive"
-	"exodus/internal/relay"
+	"exowodus/internal/archive"
+	"exowodus/internal/relay"
 	"maunium.net/go/mautrix/id"
 )
 
@@ -327,8 +327,8 @@ func TestTuwunelStreamWritesBeforeExhaustingEvents(t *testing.T) {
 }
 
 func TestTuwunelLargeRoomStream(t *testing.T) {
-	if os.Getenv("EXODUS_MEMORY_STRESS") == "" {
-		t.Skip("set EXODUS_MEMORY_STRESS to run the large-room memory test")
+	if os.Getenv("EXOWODUS_MEMORY_STRESS") == "" {
+		t.Skip("set EXOWODUS_MEMORY_STRESS to run the large-room memory test")
 	}
 	const room = "!room0:example.org"
 	d := diskRoomFixture(t, 2048, 128<<10)

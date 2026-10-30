@@ -12,8 +12,8 @@ import (
 	"go.yaml.in/yaml/v3"
 	"maunium.net/go/mautrix"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
 )
 
 // Bridge is re-registered unchanged; its token replays its puppets' messages.

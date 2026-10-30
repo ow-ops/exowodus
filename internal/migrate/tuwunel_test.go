@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
 )
 
 func TestTuwunelSchemaVersion(t *testing.T) {

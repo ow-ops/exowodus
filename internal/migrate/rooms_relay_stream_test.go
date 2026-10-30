@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"exodus/internal/mx"
-	"exodus/internal/relay"
+	"exowodus/internal/mx"
+	"exowodus/internal/relay"
 
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/federation"

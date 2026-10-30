@@ -17,8 +17,8 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
 )
 
 func TestTuwunelLoginsThroughProxy(t *testing.T) {

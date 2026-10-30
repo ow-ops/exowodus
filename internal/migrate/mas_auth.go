@@ -16,7 +16,7 @@ import (
 
 	"maunium.net/go/mautrix"
 
-	"exodus/internal/progress"
+	"exowodus/internal/progress"
 )
 
 type masClientCredentials struct {

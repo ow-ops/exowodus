@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"exodus/internal/relay"
+	"exowodus/internal/relay"
 )
 
 func TestTuwunelDiskRelay(t *testing.T) {

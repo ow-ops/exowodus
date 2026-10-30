@@ -23,8 +23,8 @@ import (
 	"sync"
 	"time"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
 
 	"maunium.net/go/mautrix"
 )

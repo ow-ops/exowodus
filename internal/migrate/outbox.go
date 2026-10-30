@@ -16,9 +16,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"exodus/internal/archive"
-	"exodus/internal/outbox"
-	"exodus/internal/relay"
+	"exowodus/internal/archive"
+	"exowodus/internal/outbox"
+	"exowodus/internal/relay"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/federation"
 	"maunium.net/go/mautrix/id"
@@ -66,7 +66,7 @@ func (im *Importer) PrepareOutbox(ctx context.Context, server *archive.Server, r
 		return fmt.Errorf("check destination signing key: %w", err)
 	}
 	if keys.ServerName != im.Archive.Manifest.ServerName || keys.VerifyKeys[key.ID].Key != key.Pub {
-		return errors.New("pending federation deliveries require the original server signing key on Continuwuity; stop Continuwuity, run exodus restore-signing-key, restart it, and retry import with the same archive")
+		return errors.New("pending federation deliveries require the original server signing key on Continuwuity; stop Continuwuity, run exowodus restore-signing-key, restart it, and retry import with the same archive")
 	}
 	if err := keys.VerifySelfSignature(); err != nil {
 		return fmt.Errorf("destination signing key response: %w", err)

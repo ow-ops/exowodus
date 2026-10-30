@@ -18,7 +18,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/text/unicode/norm"
 
-	"exodus/internal/archive"
+	"exowodus/internal/archive"
 )
 
 // bcryptMaxLen matches Synapse, which truncates to bcrypt's input limit.

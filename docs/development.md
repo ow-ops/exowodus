@@ -12,7 +12,7 @@
   reports the error and exits nonzero; the knock stays pending on the room's
   side.
 - **Master keys without signatures.** Continuwuity only records other users'
-  signatures on master keys that have a `signatures` field, so exodus adds one
+  signatures on master keys that have a `signatures` field, so exowodus adds one
   before uploading.
 
 ## Tests

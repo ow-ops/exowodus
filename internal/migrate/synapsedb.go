@@ -13,8 +13,8 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 
-	"exodus/internal/archive"
-	"exodus/internal/relay"
+	"exowodus/internal/archive"
+	"exowodus/internal/relay"
 )
 
 // SynapseDB reads what no Synapse API exposes.

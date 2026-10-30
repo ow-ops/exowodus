@@ -19,9 +19,9 @@ import (
 	"testing"
 	"time"
 
-	"exodus/internal/archive"
-	"exodus/internal/migrate"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/migrate"
+	"exowodus/internal/mx"
 
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/id"
@@ -222,7 +222,7 @@ func TestSameServerName(t *testing.T) {
 	synapseDB := filepath.Join(workDir(t), "samename", "homeserver.db")
 	dir := t.TempDir()
 	signingKey := filepath.Join(workDir(t), "samename", "samename.signing.key")
-	exodus(t, "export", "--from", samenameURL, "--from-admin-token", sadmin.AccessToken, "--all-users",
+	exowodus(t, "export", "--from", samenameURL, "--from-admin-token", sadmin.AccessToken, "--all-users",
 		"--synapse-db", synapseDB, "--synapse-signing-key", signingKey, "--archive", dir)
 	if _, err := os.Stat(filepath.Join(dir, "rooms", url.PathEscape(local), "events.jsonl")); err != nil {
 		t.Fatalf("local room history not exported: %v", err)
@@ -247,7 +247,7 @@ func TestSameServerName(t *testing.T) {
 	}
 
 	cadmin := login(t, ctx, mx.MustNew(samenameURL, ""), "cadmin")
-	out := exodus(t, "import", "--to", samenameURL, "--registration-token", regToken, "--to-admin-token", cadmin.AccessToken,
+	out := exowodus(t, "import", "--to", samenameURL, "--registration-token", regToken, "--to-admin-token", cadmin.AccessToken,
 		"--appservice-registration", "bridge.yaml", "--relay-name", "host.docker.internal:38020", "--relay-listen", "0.0.0.0:38020",
 		"--archive", dir)
 	t.Log(out)
@@ -633,7 +633,7 @@ func TestSameServerName(t *testing.T) {
 	if out, err := exec.Command("./enable-oidc.sh").CombinedOutput(); err != nil {
 		t.Fatalf("enable OIDC: %v\n%s", err, out)
 	}
-	if out := exodus(t, "link-sso", "--to", samenameURL, "--to-admin-token", cadmin.AccessToken, "--archive", dir); !strings.Contains(out, "1 users linked") {
+	if out := exowodus(t, "link-sso", "--to", samenameURL, "--to-admin-token", cadmin.AccessToken, "--archive", dir); !strings.Contains(out, "1 users linked") {
 		t.Fatalf("link-sso: %s", out)
 	}
 	subjects, err := adm.Run(ctx, "!admin query raw raw-keys openidsubject_localpart")
@@ -767,7 +767,7 @@ func waitForEvent(t *testing.T, ctx context.Context, c *mautrix.Client, roomID, 
 
 const proxyURL = "http://127.0.0.1:38011"
 
-// startProxy runs exodus proxy on addr; upstream may be empty.
+// startProxy runs exowodus proxy on addr; upstream may be empty.
 func startProxy(t *testing.T, dir, addr, upstream string, extra ...string) func() {
 	t.Helper()
 	args := []string{"proxy", "--archive", dir, "--listen", addr}
@@ -775,7 +775,7 @@ func startProxy(t *testing.T, dir, addr, upstream string, extra ...string) func(
 		args = append(args, "--upstream", upstream)
 	}
 	args = append(args, extra...)
-	cmd := exec.Command(exodusBin, args...)
+	cmd := exec.Command(exowodusBin, args...)
 	cmd.Stderr = os.Stderr
 	must(t, cmd.Start())
 	stop := func() {

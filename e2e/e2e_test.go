@@ -19,8 +19,8 @@ import (
 	"testing"
 	"time"
 
-	"exodus/internal/migrate"
-	"exodus/internal/mx"
+	"exowodus/internal/migrate"
+	"exowodus/internal/mx"
 
 	"maunium.net/go/mautrix"
 )
@@ -82,7 +82,7 @@ func TestMigrateNewServerName(t *testing.T) {
 		"--to", continuURL, "--registration-token", regToken, "--to-admin-token", cadmin.AccessToken, "--archive", dir}
 	var out string
 	for run := 1; run <= 2; run++ {
-		out = exodus(t, args...)
+		out = exowodus(t, args...)
 		for _, u := range []string{"alice", "bob"} {
 			want := "@" + u + ":synapse -> @" + u + ":continuwuity: 2/2 rooms joined, 0 failures"
 			if !strings.Contains(out, want) {
@@ -223,7 +223,7 @@ func TestMigrateSingleUser(t *testing.T) {
 	carol := login(t, ctx, src, "carol")
 	room := createRoom(t, ctx, carol, map[string]any{"preset": "private_chat", "name": "Carol's room"})
 
-	out := exodus(t, "migrate", "--from", synapseURL, "--from-token", carol.AccessToken,
+	out := exowodus(t, "migrate", "--from", synapseURL, "--from-token", carol.AccessToken,
 		"--to", continuURL, "--to-password", "new-carol-password", "--registration-token", regToken,
 		"--archive", t.TempDir())
 	if want := "@carol:synapse -> @carol:continuwuity: 1/1 rooms joined, 0 failures"; !strings.Contains(out, want) {
@@ -248,7 +248,7 @@ func TestExportSingleUser(t *testing.T) {
 	solo := createRoom(t, ctx, bob, map[string]any{"preset": "private_chat", "name": "Solo"})
 	send(t, ctx, bob, solo, "m.room.message", map[string]any{"msgtype": "m.text", "body": "only here"})
 	dir := t.TempDir()
-	exodus(t, "export", "--from", synapseURL, "--from-token", bob.AccessToken, "--archive", dir)
+	exowodus(t, "export", "--from", synapseURL, "--from-token", bob.AccessToken, "--archive", dir)
 	history, err := os.ReadFile(filepath.Join(dir, "rooms", url.PathEscape(solo), "events.jsonl"))
 	must(t, err)
 	if !strings.Contains(string(history), "only here") {
@@ -276,13 +276,13 @@ func isServerAdmin(t *testing.T, ctx context.Context, cadmin *mautrix.Client, us
 	return strings.Contains(out, resolveAlias(t, ctx, cadmin, "#admins:"+mx.ServerName(userID)))
 }
 
-func exodus(t *testing.T, args ...string) string {
+func exowodus(t *testing.T, args ...string) string {
 	t.Helper()
-	cmd := exec.Command(exodusBin, args...)
+	cmd := exec.Command(exowodusBin, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("exodus %v: %v\n%s\n%s", args[0], err, stdout.String(), stderr.String())
+		t.Fatalf("exowodus %v: %v\n%s\n%s", args[0], err, stdout.String(), stderr.String())
 	}
 	return stdout.String()
 }

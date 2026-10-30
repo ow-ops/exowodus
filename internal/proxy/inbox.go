@@ -18,10 +18,11 @@ import (
 	"strings"
 	"sync"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
 )
 
+// Existing clients retain these sync tokens across upgrades.
 const inboxTokenPrefix = "exodus-inbox-v1."
 const inboxBatchSize = 100
 const maxSyncRequestBody = 2 << 20

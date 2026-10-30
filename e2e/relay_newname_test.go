@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"exodus/internal/mx"
+	"exowodus/internal/mx"
 )
 
 // TestRelayNewServerName moves a local-only room to a new server name through the relay.
@@ -38,12 +38,12 @@ func TestRelayNewServerName(t *testing.T) {
 
 	w := filepath.Join(workDir(t), "synapse")
 	dir := t.TempDir()
-	exodus(t, "export", "--from", synapseURL, "--from-admin-token", admin.AccessToken, "--users", "@carl:synapse,@dina:synapse",
+	exowodus(t, "export", "--from", synapseURL, "--from-admin-token", admin.AccessToken, "--users", "@carl:synapse,@dina:synapse",
 		"--synapse-db", filepath.Join(w, "homeserver.db"), "--synapse-signing-key", filepath.Join(w, "synapse.signing.key"),
 		"--archive", dir)
 
 	cadmin := login(t, ctx, mx.MustNew(continuURL, ""), "cadmin")
-	out := exodus(t, "import", "--to", continuURL, "--registration-token", regToken, "--to-admin-token", cadmin.AccessToken,
+	out := exowodus(t, "import", "--to", continuURL, "--registration-token", regToken, "--to-admin-token", cadmin.AccessToken,
 		"--relay-name", "host.docker.internal:38021", "--relay-listen", "0.0.0.0:38021", "--archive", dir)
 	t.Log(out)
 	for _, want := range []string{

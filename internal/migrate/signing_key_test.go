@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"exodus/internal/archive"
+	"exowodus/internal/archive"
 	"maunium.net/go/mautrix/federation"
 )
 
@@ -36,12 +36,12 @@ func TestRestoreSigningKeyReportsWriteFailureWithoutKeyData(t *testing.T) {
 	if err := os.WriteFile(readValue, []byte(fmt.Sprintf("0x%x\n", record)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("EXODUS_TEST_LDB_RECORD", readValue)
+	t.Setenv("EXOWODUS_TEST_LDB_RECORD", readValue)
 	ldb := filepath.Join(t.TempDir(), "ldb")
 	script := `#!/bin/sh
 for arg in "$@"; do
   case "$arg" in
-    get) cat "$EXODUS_TEST_LDB_RECORD"; exit 0 ;;
+    get) cat "$EXOWODUS_TEST_LDB_RECORD"; exit 0 ;;
     load)
       printf 'Failed: IO error: Permission denied\n' >&2
       cat >&2
@@ -76,9 +76,9 @@ exit 2
 }
 
 func TestRestoreSigningKeyRocksDB(t *testing.T) {
-	ldb := os.Getenv("EXODUS_TEST_LDB")
+	ldb := os.Getenv("EXOWODUS_TEST_LDB")
 	if ldb == "" {
-		t.Skip("set EXODUS_TEST_LDB to run the real RocksDB key-transfer check")
+		t.Skip("set EXOWODUS_TEST_LDB to run the real RocksDB key-transfer check")
 	}
 	db := t.TempDir()
 	run := func(args ...string) []byte {

@@ -9,10 +9,10 @@ import (
 	"os"
 	"time"
 
-	"exodus/internal/archive"
-	"exodus/internal/migrate"
-	"exodus/internal/mx"
-	"exodus/internal/progress"
+	"exowodus/internal/archive"
+	"exowodus/internal/migrate"
+	"exowodus/internal/mx"
+	"exowodus/internal/progress"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -57,7 +57,7 @@ Stop any running import before using this command.`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&dir, "archive", "exodus-archive", "archive directory")
+	cmd.Flags().StringVar(&dir, "archive", defaultArchiveDir(), "archive directory")
 	cmd.Flags().StringVar(&to, "to", "", "Continuwuity client API URL")
 	cmd.Flags().StringVar(&user, "user", "", "archived user ID whose destination password is known")
 	_ = cmd.MarkFlagRequired("to")

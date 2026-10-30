@@ -15,8 +15,8 @@ import (
 	"maunium.net/go/mautrix/id"
 	"maunium.net/go/mautrix/synapseadmin"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
 )
 
 type Session struct {

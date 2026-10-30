@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 
-	"exodus/internal/archive"
+	"exowodus/internal/archive"
 )
 
 const threadedReceiptLimitation = "threaded read receipts are not supported by the destination"

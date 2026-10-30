@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"exodus/internal/mx"
+	"exowodus/internal/mx"
 )
 
 func TestListSynapseUsersPagination(t *testing.T) {

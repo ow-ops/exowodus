@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"exodus/internal/archive"
-	"exodus/internal/progress"
+	"exowodus/internal/archive"
+	"exowodus/internal/progress"
 )
 
 // RestoreSessions writes the source access tokens and Tuwunel password hashes

@@ -34,7 +34,7 @@ jobs:
             os=${target%/*} arch=${target#*/}
             ext=; [ "$os" = windows ] && ext=.exe
             GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w" \
-              -o "dist/release/exodus-${{ forge.ref_name }}-$os-$arch$ext" .
+              -o "dist/release/exowodus-${{ forge.ref_name }}-$os-$arch$ext" .
           done
           cd dist/release && sha256sum * > SHA256SUMS
       - uses: actions/forgejo-release@v2.13.4

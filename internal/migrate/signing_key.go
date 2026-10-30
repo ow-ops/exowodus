@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"exodus/internal/archive"
+	"exowodus/internal/archive"
 	"maunium.net/go/mautrix/federation"
 )
 

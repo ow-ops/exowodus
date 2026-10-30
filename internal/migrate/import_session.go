@@ -8,8 +8,8 @@ import (
 
 	"maunium.net/go/mautrix"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
 )
 
 func (im *Importer) migrationSession(ctx context.Context, u *archive.User) (*archive.MigrationSession, error) {
@@ -75,7 +75,7 @@ func (im *Importer) migrationSession(ctx context.Context, u *archive.User) (*arc
 	}
 	if session.DeviceID == "" || devices[session.DeviceID] {
 		for {
-			session.DeviceID = "EXODUS_" + rand.Text()
+			session.DeviceID = "EXOWODUS_" + rand.Text()
 			if !devices[session.DeviceID] {
 				break
 			}

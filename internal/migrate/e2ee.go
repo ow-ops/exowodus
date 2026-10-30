@@ -12,8 +12,8 @@ import (
 
 	"maunium.net/go/mautrix"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
 )
 
 func exportKeyBackup(ctx context.Context, c *mautrix.Client) (*archive.KeyBackup, error) {

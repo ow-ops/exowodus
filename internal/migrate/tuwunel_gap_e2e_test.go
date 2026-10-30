@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
-	"exodus/internal/relay"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
+	"exowodus/internal/relay"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/federation"
@@ -29,9 +29,9 @@ import (
 
 // Uses an empty test homeserver with server_name example.org and cadmin/cadmin-password.
 func TestTuwunelDummyGapLive(t *testing.T) {
-	target := os.Getenv("EXODUS_DUMMY_GAP_TARGET")
+	target := os.Getenv("EXOWODUS_DUMMY_GAP_TARGET")
 	if target == "" {
-		t.Skip("set EXODUS_DUMMY_GAP_TARGET to an isolated Continuwuity instance")
+		t.Skip("set EXOWODUS_DUMMY_GAP_TARGET to an isolated Continuwuity instance")
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()

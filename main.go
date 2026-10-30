@@ -1,4 +1,4 @@
-// Command exodus migrates Matrix accounts to Continuwuity.
+// Command exowodus migrates Matrix accounts to Continuwuity.
 package main
 
 import (
@@ -21,12 +21,12 @@ import (
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/federation"
 
-	"exodus/internal/archive"
-	"exodus/internal/migrate"
-	"exodus/internal/mx"
-	"exodus/internal/progress"
-	"exodus/internal/proxy"
-	"exodus/internal/relay"
+	"exowodus/internal/archive"
+	"exowodus/internal/migrate"
+	"exowodus/internal/mx"
+	"exowodus/internal/progress"
+	"exowodus/internal/proxy"
+	"exowodus/internal/relay"
 )
 
 const impersonationTTL = 24 * time.Hour
@@ -44,19 +44,19 @@ func newRootCmd() *cobra.Command {
 	var verbose bool
 	var progressMode string
 	root := &cobra.Command{
-		Use:   "exodus",
+		Use:   "exowodus",
 		Short: "Migrate Matrix accounts from Synapse or Tuwunel to Continuwuity",
-		Long: `exodus copies accounts, profiles, media, account data, push rules and room
+		Long: `exowodus copies accounts, profiles, media, account data, push rules and room
 memberships from Synapse or Tuwunel (or any homeserver, such as matrix.org,
 through the client API) to a Continuwuity homeserver.
 
 Moving to a new server name, with the source still online:
-  exodus migrate --from https://matrix.org --from-token ... --to https://new.example --registration-token ...
+  exowodus migrate --from https://matrix.org --from-token ... --to https://new.example --registration-token ...
 
 Replacing Synapse on the same server name:
-  exodus export --from https://example.com --from-admin-token ... --all-users
+  exowodus export --from https://example.com --from-admin-token ... --all-users
   (stop Synapse, start Continuwuity on the same server name)
-  exodus import --to https://example.com --registration-token ...`,
+  exowodus import --to https://example.com --registration-token ...`,
 		SilenceUsage: true,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			if progressMode != "auto" && progressMode != "plain" && progressMode != "tty" {
@@ -96,22 +96,22 @@ func (f *sourceFlags) register(cmd *cobra.Command) {
 	fs.StringVar(&f.tuwunelDump, "tuwunel-dump", "", "directory of offline Tuwunel RocksDB hex scans, to keep passwords and sessions")
 	fs.StringVar(&f.serverUser, "tuwunel-server-user", "conduit", "Tuwunel server bot localpart, excluded from bulk migration")
 	fs.BoolVar(&f.requireLossless, "require-lossless", false, "require original messages and login data (mandatory for whole-server Tuwunel export)")
-	fs.StringVar(&f.token, "from-token", os.Getenv("EXODUS_FROM_TOKEN"), "source access token of the user to migrate [$EXODUS_FROM_TOKEN]")
+	fs.StringVar(&f.token, "from-token", configEnv("FROM_TOKEN"), "source access token of the user to migrate [$EXOWODUS_FROM_TOKEN]")
 	fs.StringVar(&f.user, "from-user", "", "source user to log in as (with --from-password)")
-	fs.StringVar(&f.password, "from-password", os.Getenv("EXODUS_FROM_PASSWORD"), "source password [$EXODUS_FROM_PASSWORD]")
-	fs.StringVar(&f.adminToken, "from-admin-token", os.Getenv("EXODUS_FROM_ADMIN_TOKEN"), "source admin access token, to migrate several users [$EXODUS_FROM_ADMIN_TOKEN]")
+	fs.StringVar(&f.password, "from-password", configEnv("FROM_PASSWORD"), "source password [$EXOWODUS_FROM_PASSWORD]")
+	fs.StringVar(&f.adminToken, "from-admin-token", configEnv("FROM_ADMIN_TOKEN"), "source admin access token, to migrate several users [$EXOWODUS_FROM_ADMIN_TOKEN]")
 	fs.StringSliceVar(&f.users, "users", nil, "user IDs to migrate (with --from-admin-token)")
 	fs.BoolVar(&f.allUsers, "all-users", false, "migrate every local account (with --from-admin-token)")
 	fs.BoolVar(&f.skipMissingMedia, "skip-missing-media", false, "continue when source media returns HTTP 404")
 	fs.BoolVar(&f.historyAtCheckpoint, "history-at-checkpoint", false, "export Tuwunel room history and state from the dump, omitting later changes")
 	fs.StringVar(&f.masURL, "from-mas-url", "", "Matrix Authentication Service URL, when Synapse delegates authentication to it")
-	fs.StringVar(&f.masToken, "from-mas-token", os.Getenv("EXODUS_FROM_MAS_TOKEN"), "MAS admin API token (urn:mas:admin scope) [$EXODUS_FROM_MAS_TOKEN]")
-	fs.StringVar(&f.masClientID, "from-mas-client-id", os.Getenv("EXODUS_FROM_MAS_CLIENT_ID"), "MAS OAuth client ID for automatic admin token renewal [$EXODUS_FROM_MAS_CLIENT_ID]")
-	fs.StringVar(&f.masClientSecret, "from-mas-client-secret", os.Getenv("EXODUS_FROM_MAS_CLIENT_SECRET"), "MAS OAuth client secret [$EXODUS_FROM_MAS_CLIENT_SECRET]")
+	fs.StringVar(&f.masToken, "from-mas-token", configEnv("FROM_MAS_TOKEN"), "MAS admin API token (urn:mas:admin scope) [$EXOWODUS_FROM_MAS_TOKEN]")
+	fs.StringVar(&f.masClientID, "from-mas-client-id", configEnv("FROM_MAS_CLIENT_ID"), "MAS OAuth client ID for automatic admin token renewal [$EXOWODUS_FROM_MAS_CLIENT_ID]")
+	fs.StringVar(&f.masClientSecret, "from-mas-client-secret", configEnv("FROM_MAS_CLIENT_SECRET"), "MAS OAuth client secret [$EXOWODUS_FROM_MAS_CLIENT_SECRET]")
 	// Cobra must not print the environment's secret as a flag default.
 	fs.Lookup("from-mas-client-secret").DefValue = ""
-	fs.StringVar(&f.masDB, "mas-db", os.Getenv("EXODUS_MAS_DB"), "MAS database (postgres:// DSN), to keep passwords and legacy client sessions [$EXODUS_MAS_DB]")
-	fs.StringVar(&f.db, "synapse-db", os.Getenv("EXODUS_SYNAPSE_DB"), "Synapse database (postgres:// DSN or SQLite path), to keep passwords and client sessions [$EXODUS_SYNAPSE_DB]")
+	fs.StringVar(&f.masDB, "mas-db", configEnv("MAS_DB"), "MAS database (postgres:// DSN), to keep passwords and legacy client sessions [$EXOWODUS_MAS_DB]")
+	fs.StringVar(&f.db, "synapse-db", configEnv("SYNAPSE_DB"), "Synapse database (postgres:// DSN or SQLite path), to keep passwords and client sessions [$EXOWODUS_SYNAPSE_DB]")
 	_ = cmd.MarkFlagRequired("from")
 	cmd.MarkFlagsMutuallyExclusive("from-token", "from-user", "from-admin-token")
 	cmd.MarkFlagsMutuallyExclusive("users", "all-users")
@@ -417,10 +417,10 @@ type relayFlags struct {
 func (f *destFlags) register(cmd *cobra.Command) {
 	fs := cmd.Flags()
 	fs.StringVar(&f.url, "to", "", "Continuwuity client API URL")
-	fs.StringVar(&f.token, "to-token", os.Getenv("EXODUS_TO_TOKEN"), "access token of an existing destination account (single user only) [$EXODUS_TO_TOKEN]")
-	fs.StringVar(&f.password, "to-password", os.Getenv("EXODUS_TO_PASSWORD"), "password for the destination account (single user only) [$EXODUS_TO_PASSWORD]")
-	fs.StringVar(&f.regToken, "registration-token", os.Getenv("EXODUS_REGISTRATION_TOKEN"), "Continuwuity registration token used to create accounts [$EXODUS_REGISTRATION_TOKEN]")
-	fs.StringVar(&f.adminToken, "to-admin-token", os.Getenv("EXODUS_TO_ADMIN_TOKEN"), "access token of a Continuwuity server admin, to restore admin rights and recreate local-only rooms [$EXODUS_TO_ADMIN_TOKEN]")
+	fs.StringVar(&f.token, "to-token", configEnv("TO_TOKEN"), "access token of an existing destination account (single user only) [$EXOWODUS_TO_TOKEN]")
+	fs.StringVar(&f.password, "to-password", configEnv("TO_PASSWORD"), "password for the destination account (single user only) [$EXOWODUS_TO_PASSWORD]")
+	fs.StringVar(&f.regToken, "registration-token", configEnv("REGISTRATION_TOKEN"), "Continuwuity registration token used to create accounts [$EXOWODUS_REGISTRATION_TOKEN]")
+	fs.StringVar(&f.adminToken, "to-admin-token", configEnv("TO_ADMIN_TOKEN"), "access token of a Continuwuity server admin, to restore admin rights and recreate local-only rooms [$EXOWODUS_TO_ADMIN_TOKEN]")
 	fs.StringSliceVar(&f.bridges, "appservice-registration", nil, "registration YAML of a source appservice (bridge) to move along, same server name only (repeatable)")
 	_ = cmd.MarkFlagRequired("to")
 	cmd.MarkFlagsMutuallyExclusive("to-token", "to-password")
@@ -568,7 +568,7 @@ func newExportCmd() *cobra.Command {
 	}
 	src.register(cmd)
 	cmd.Flags().StringVar(&src.signingKey, "synapse-signing-key", "", "Synapse signing key file: with --synapse-db, rooms only your server was in move with their original events")
-	cmd.Flags().StringVar(&dir, "archive", "exodus-archive", "archive directory")
+	cmd.Flags().StringVar(&dir, "archive", defaultArchiveDir(), "archive directory")
 	cmd.Flags().StringArrayVar(&skipRooms, "skip-room", nil, "omit a whole room from export and import (repeatable)")
 	return cmd
 }
@@ -755,7 +755,7 @@ after replacing Synapse with Continuwuity on the same server name.`,
 	fs.StringVar(&relayOpts.listen, "relay-listen", ":8448", "address the relay listens on")
 	fs.StringVar(&relayOpts.cert, "relay-tls-cert", "", "TLS certificate of the relay; self-signed when unset")
 	fs.StringVar(&relayOpts.key, "relay-tls-key", "", "TLS key of the relay")
-	fs.StringVar(&dir, "archive", "exodus-archive", "archive directory")
+	fs.StringVar(&dir, "archive", defaultArchiveDir(), "archive directory")
 	return cmd
 }
 
@@ -861,7 +861,7 @@ over its power level, so invite-only and local-only rooms are kept.`,
 	}
 	src.register(cmd)
 	dst.register(cmd)
-	cmd.Flags().StringVar(&dir, "archive", "exodus-archive", "archive directory used as working state")
+	cmd.Flags().StringVar(&dir, "archive", defaultArchiveDir(), "archive directory used as working state")
 	return cmd
 }
 
@@ -900,9 +900,9 @@ OIDC, then run this command.`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&dir, "archive", "exodus-archive", "archive directory")
+	cmd.Flags().StringVar(&dir, "archive", defaultArchiveDir(), "archive directory")
 	cmd.Flags().StringVar(&to, "to", "", "Continuwuity client API URL")
-	cmd.Flags().StringVar(&adminToken, "to-admin-token", os.Getenv("EXODUS_TO_ADMIN_TOKEN"), "access token of a Continuwuity server admin [$EXODUS_TO_ADMIN_TOKEN]")
+	cmd.Flags().StringVar(&adminToken, "to-admin-token", configEnv("TO_ADMIN_TOKEN"), "access token of a Continuwuity server admin [$EXOWODUS_TO_ADMIN_TOKEN]")
 	_ = cmd.MarkFlagRequired("to")
 	return cmd
 }
@@ -965,11 +965,11 @@ Without --upstream it only serves archived media, for a retired server name.`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&dir, "archive", "exodus-archive", "archive directory")
+	cmd.Flags().StringVar(&dir, "archive", defaultArchiveDir(), "archive directory")
 	cmd.Flags().StringVar(&listen, "listen", ":8008", "address to listen on")
 	cmd.Flags().StringVar(&upstream, "upstream", "", "Continuwuity URL to forward to")
-	cmd.Flags().StringVar(&pepper, "synapse-password-pepper", os.Getenv("EXODUS_SYNAPSE_PASSWORD_PEPPER"), "Synapse password_config.pepper, if set [$EXODUS_SYNAPSE_PASSWORD_PEPPER]")
-	cmd.Flags().StringVar(&macaroonSecret, "synapse-macaroon-secret", os.Getenv("EXODUS_SYNAPSE_MACAROON_SECRET"), "Synapse macaroon_secret_key (or registration_shared_secret if unset), to keep guests logged in [$EXODUS_SYNAPSE_MACAROON_SECRET]")
+	cmd.Flags().StringVar(&pepper, "synapse-password-pepper", configEnv("SYNAPSE_PASSWORD_PEPPER"), "Synapse password_config.pepper, if set [$EXOWODUS_SYNAPSE_PASSWORD_PEPPER]")
+	cmd.Flags().StringVar(&macaroonSecret, "synapse-macaroon-secret", configEnv("SYNAPSE_MACAROON_SECRET"), "Synapse macaroon_secret_key (or registration_shared_secret if unset), to keep guests logged in [$EXOWODUS_SYNAPSE_MACAROON_SECRET]")
 	cmd.Flags().StringVar(&masConfig, "mas-config", "", "MAS configuration file, for password schemes with a secret or Unicode normalization")
 	cmd.Flags().StringVar(&signingKey, "synapse-signing-key", "", "Synapse signing key file, when neither macaroon_secret_key nor registration_shared_secret is set")
 	return cmd
@@ -982,7 +982,7 @@ func registerAppservice(ctx context.Context, im *migrate.Importer) (unregister f
 	return func() {
 		slog.Info("unregistering migration appservice")
 		if err := im.Appservice.Unregister(context.WithoutCancel(ctx), im.Admin); err != nil {
-			slog.Error("could not unregister the exodus appservice", "err", err)
+			slog.Error("could not unregister the exowodus appservice", "err", err)
 		}
 	}, nil
 }
@@ -1213,10 +1213,10 @@ func printSummary(out io.Writer, a *archive.Archive, users []*archive.User, repo
 		fmt.Fprintln(out, "  "+migrate.AdminHint(r.DestUserID))
 	}
 	if slices.ContainsFunc(users, func(u *archive.User) bool { return u.ShadowBanned }) {
-		fmt.Fprintln(out, "\nContinuwuity has no shadow bans: run exodus proxy, which enforces them")
+		fmt.Fprintln(out, "\nContinuwuity has no shadow bans: run exowodus proxy, which enforces them")
 	}
 	if slices.ContainsFunc(users, func(u *archive.User) bool { return len(u.ExternalIDs) > 0 }) {
-		fmt.Fprintln(out, "\nSome users log in with SSO: once OIDC is enabled on Continuwuity, run exodus link-sso")
+		fmt.Fprintln(out, "\nSome users log in with SSO: once OIDC is enabled on Continuwuity, run exowodus link-sso")
 	}
 	creds := a.CredentialsPath()
 	if _, err := os.Stat(creds); err == nil {

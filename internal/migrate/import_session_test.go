@@ -11,8 +11,8 @@ import (
 	"sync"
 	"testing"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
 )
 
 func TestMigrationDeviceAvoidsPreservedID(t *testing.T) {
@@ -121,7 +121,7 @@ func TestMigrationDeviceAvoidsPreservedID(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if !keys["EXODUS"] || tokens["EXODUS"] == "" {
-		t.Fatal("cleanup deleted preserved EXODUS device")
+		t.Fatal("cleanup deleted preserved EXOWODUS device")
 	}
 
 }

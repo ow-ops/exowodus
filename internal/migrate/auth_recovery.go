@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
-	"exodus/internal/relay"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
+	"exowodus/internal/relay"
 	"go.mau.fi/util/exhttp"
 	"maunium.net/go/mautrix/federation"
 	"maunium.net/go/mautrix/id"

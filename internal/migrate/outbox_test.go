@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
-	"exodus/internal/outbox"
-	"exodus/internal/relay"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
+	"exowodus/internal/outbox"
+	"exowodus/internal/relay"
 	"maunium.net/go/mautrix/federation"
 	"maunium.net/go/mautrix/id"
 )

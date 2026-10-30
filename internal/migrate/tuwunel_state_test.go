@@ -6,13 +6,13 @@ import (
 	"os"
 	"testing"
 
-	"exodus/internal/archive"
-	"exodus/internal/relay"
+	"exowodus/internal/archive"
+	"exowodus/internal/relay"
 )
 
 func TestTuwunelReplacementStateStaysCompact(t *testing.T) {
 	members, updates := 512, 128
-	if os.Getenv("EXODUS_MEMORY_STRESS") != "" {
+	if os.Getenv("EXOWODUS_MEMORY_STRESS") != "" {
 		members, updates = 4096, 4096
 	}
 	u64 := func(n int) string { return string(binary.BigEndian.AppendUint64(nil, uint64(n))) }
@@ -102,7 +102,7 @@ func BenchmarkTuwunelDeletionState(b *testing.B) {
 
 func TestTuwunelDeletionStateStaysCompact(t *testing.T) {
 	members, updates := 512, 128
-	if os.Getenv("EXODUS_MEMORY_STRESS") != "" {
+	if os.Getenv("EXOWODUS_MEMORY_STRESS") != "" {
 		members, updates = 4096, 4096
 	}
 	d := deletionStateFixture(members, updates)

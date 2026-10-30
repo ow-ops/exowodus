@@ -17,9 +17,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
-	"exodus/internal/progress"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
+	"exowodus/internal/progress"
 )
 
 type archivedMedia struct {

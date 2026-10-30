@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 
-	"exodus/internal/mx"
+	"exowodus/internal/mx"
 )
 
 func (d *TuwunelDump) appservices() ([]*Bridge, error) {

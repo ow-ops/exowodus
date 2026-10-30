@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
 )
 
 func TestImportAcceptedLimitsKeepPreservationChecks(t *testing.T) {

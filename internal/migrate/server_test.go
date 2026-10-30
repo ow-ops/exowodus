@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
 )
 
 func TestServerImportKeepsNativeAdminAlias(t *testing.T) {
@@ -82,7 +82,7 @@ func TestRemoteToDeviceMessagesRetainedForProxy(t *testing.T) {
 	state := &archive.ServerImportState{ToDevice: map[string]bool{}}
 	var failures []Failure
 	notes := im.deliverToDevice(t.Context(), srv.ToDevice, state, &failures)
-	if len(failures) != 0 || len(notes) != 1 || !strings.Contains(notes[0], "retained for delivery by exodus proxy") || state.ToDevice[message.Key] {
+	if len(failures) != 0 || len(notes) != 1 || !strings.Contains(notes[0], "retained for delivery by exowodus proxy") || state.ToDevice[message.Key] {
 		t.Fatalf("remote message not retained: %v %v %+v", failures, notes, state)
 	}
 	stored, err := a.ReadServer()

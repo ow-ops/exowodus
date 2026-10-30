@@ -17,7 +17,7 @@ import (
 	"slices"
 	"strings"
 
-	"exodus/internal/archive"
+	"exowodus/internal/archive"
 )
 
 var accountCheckpointTables = []string{

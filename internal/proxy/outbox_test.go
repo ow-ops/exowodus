@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"exodus/internal/archive"
-	"exodus/internal/outbox"
+	"exowodus/internal/archive"
+	"exowodus/internal/outbox"
 	"maunium.net/go/mautrix/federation"
 )
 

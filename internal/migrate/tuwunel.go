@@ -19,8 +19,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
 )
 
 // TuwunelDump reads offline ldb scan --hex output.
@@ -127,7 +127,7 @@ func checkTuwunelSchema(raw []byte) error {
 		return errors.New("Tuwunel dump has no schema version in global.txt; extract it from a database opened by Tuwunel")
 	}
 	if version := binary.BigEndian.Uint64(raw); version != tuwunelSchemaVersion {
-		return fmt.Errorf("Tuwunel schema version %d is unsupported; this Exodus reads version %d", version, tuwunelSchemaVersion)
+		return fmt.Errorf("Tuwunel schema version %d is unsupported; this Exowodus reads version %d", version, tuwunelSchemaVersion)
 	}
 	return nil
 }

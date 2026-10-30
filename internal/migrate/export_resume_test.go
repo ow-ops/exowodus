@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
 )
 
 func TestResumeCompletedRoom(t *testing.T) {

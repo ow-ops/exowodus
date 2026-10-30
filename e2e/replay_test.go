@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"exodus/internal/mx"
+	"exowodus/internal/mx"
 )
 
 func TestReplayEncryptedHistory(t *testing.T) {
@@ -25,18 +25,18 @@ func TestReplayEncryptedHistory(t *testing.T) {
 	room := createRoom(t, ctx, user, map[string]any{"preset": "private_chat", "room_version": "10"})
 	backup := createKeyBackup(t, ctx, user, room)
 	dir := t.TempDir()
-	exodus(t, "export", "--from", synapseURL, "--from-token", user.AccessToken, "--synapse-db", filepath.Join(workDir(t), "synapse", "homeserver.db"), "--archive", dir)
-	cmd := exec.CommandContext(ctx, "./continuwuity.sh", "exodus-replay", "synapse", "38022")
-	cmd.Env = append(os.Environ(), "NETWORK_ALIAS=exodus-replay")
+	exowodus(t, "export", "--from", synapseURL, "--from-token", user.AccessToken, "--synapse-db", filepath.Join(workDir(t), "synapse", "homeserver.db"), "--archive", dir)
+	cmd := exec.CommandContext(ctx, "./continuwuity.sh", "exowodus-replay", "synapse", "38022")
+	cmd.Env = append(os.Environ(), "NETWORK_ALIAS=exowodus-replay")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("start replay destination: %v\n%s", err, out)
 	}
-	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", "exodus-replay").Run() })
+	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", "exowodus-replay").Run() })
 	const destURL = "http://127.0.0.1:38022"
 	dst := mx.MustNew(destURL, "")
 	cadmin := login(t, ctx, dst, "cadmin")
 	for range 2 {
-		exodus(t, "import", "--to", destURL, "--registration-token", regToken, "--to-admin-token", cadmin.AccessToken, "--archive", dir)
+		exowodus(t, "import", "--to", destURL, "--registration-token", regToken, "--to-admin-token", cadmin.AccessToken, "--archive", dir)
 	}
 	migrated, err := mx.Login(ctx, dst, "replayuser", password(t, dir, "@replayuser:synapse"))
 	must(t, err)

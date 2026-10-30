@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"exodus/internal/archive"
+	"exowodus/internal/archive"
 )
 
 // FilterBridgeAccounts also handles archives made before ghost filtering existed.

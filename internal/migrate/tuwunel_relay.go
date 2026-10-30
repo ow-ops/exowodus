@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"exodus/internal/relay"
+	"exowodus/internal/relay"
 )
 
 var tuwunelRelayMaps = []string{"global", "server_signingkeys", "pduid_pdu", "eventid_outlierpdu", "shorteventid_eventid", "shortstatekey_statekey", "shorteventid_shortstatehash", "roomid_shortstatehash", "shortstatehash_statediff", "roomid_pduleaves"}

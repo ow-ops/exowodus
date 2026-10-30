@@ -1,4 +1,4 @@
-module exodus
+module exowodus
 
 go 1.27.1
 

@@ -18,7 +18,7 @@ import (
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/id"
 
-	"exodus/internal/progress"
+	"exowodus/internal/progress"
 )
 
 // mautrix does not define this auth stage.
@@ -124,7 +124,7 @@ func LoginDevice(ctx context.Context, c *mautrix.Client, user, password, deviceI
 		Identifier:               mautrix.UserIdentifier{Type: mautrix.IdentifierTypeUser, User: user},
 		Password:                 password,
 		DeviceID:                 id.DeviceID(deviceID),
-		InitialDeviceDisplayName: "exodus",
+		InitialDeviceDisplayName: "exowodus",
 	})
 	if err != nil {
 		return nil, err
@@ -140,7 +140,7 @@ func Register(ctx context.Context, c *mautrix.Client, username, password, regTok
 }
 
 func RegisterDevice(ctx context.Context, c *mautrix.Client, username, password, regToken, deviceID string) (*mautrix.Client, error) {
-	req := &mautrix.ReqRegister[any]{Username: username, Password: password, DeviceID: id.DeviceID(deviceID), InitialDeviceDisplayName: "exodus"}
+	req := &mautrix.ReqRegister[any]{Username: username, Password: password, DeviceID: id.DeviceID(deviceID), InitialDeviceDisplayName: "exowodus"}
 	for range 4 {
 		resp, state, err := c.Register(ctx, req)
 		if err == nil && resp != nil {
@@ -167,7 +167,7 @@ func RegisterDevice(ctx context.Context, c *mautrix.Client, username, password, 
 	return nil, fmt.Errorf("register %s: too many auth rounds", username)
 }
 
-// CheckRegistrationFlow rejects UIAA stages Exodus cannot complete.
+// CheckRegistrationFlow rejects UIAA stages Exowodus cannot complete.
 func CheckRegistrationFlow(state *mautrix.RespUserInteractive, haveToken bool) error {
 	_, err := nextStage(state, haveToken)
 	return err

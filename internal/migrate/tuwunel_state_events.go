@@ -7,7 +7,7 @@ import (
 	"maps"
 	"slices"
 
-	"exodus/internal/relay"
+	"exowodus/internal/relay"
 )
 
 type stateUndo struct {

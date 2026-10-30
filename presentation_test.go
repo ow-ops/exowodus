@@ -12,7 +12,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/spf13/cobra"
 
-	"exodus/internal/progress"
+	"exowodus/internal/progress"
 )
 
 func TestCommandPresentation(t *testing.T) {
@@ -23,7 +23,7 @@ func TestCommandPresentation(t *testing.T) {
 			var out, errOut bytes.Buffer
 			verbose := false
 			failure := errors.New("migration failed")
-			root := &cobra.Command{Use: "exodus", SilenceErrors: true, SilenceUsage: true}
+			root := &cobra.Command{Use: "exowodus", SilenceErrors: true, SilenceUsage: true}
 			cmd := &cobra.Command{Use: "test", Short: "Test migration", RunE: func(cmd *cobra.Command, _ []string) error {
 				slog.Warn("Preserve this warning")
 				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Migration summary")
@@ -78,7 +78,7 @@ func TestProgressModeValidation(t *testing.T) {
 }
 
 func TestHelpDoesNotExposeMASClientSecret(t *testing.T) {
-	t.Setenv("EXODUS_FROM_MAS_CLIENT_SECRET", "private-mas-client-secret")
+	t.Setenv("EXOWODUS_FROM_MAS_CLIENT_SECRET", "private-mas-client-secret")
 	root := newRootCmd()
 	var output bytes.Buffer
 	root.SetOut(&output)

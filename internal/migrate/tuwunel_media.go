@@ -12,8 +12,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
 )
 
 func (d *TuwunelDump) MediaIDs() ([]string, error) {

@@ -12,8 +12,8 @@ set -euo pipefail
 
 SYNAPSE_IMAGE=${SYNAPSE_IMAGE:-ghcr.io/element-hq/synapse:latest}
 MAS_IMAGE=${MAS_IMAGE:-ghcr.io/element-hq/matrix-authentication-service:latest}
-NET=exodus-e2e
-WORK=$(mktemp -d /tmp/exodus-e2e.XXXXXX)
+NET=exowodus-e2e
+WORK=$(mktemp -d /tmp/exowodus-e2e.XXXXXX)
 chmod 755 "$WORK"
 E2E=$(cd "$(dirname "$0")" && pwd)
 

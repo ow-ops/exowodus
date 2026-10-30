@@ -11,7 +11,7 @@ import (
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/bcrypt"
 
-	"exodus/internal/archive"
+	"exowodus/internal/archive"
 )
 
 func TestCheckPassword(t *testing.T) {

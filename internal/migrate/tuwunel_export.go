@@ -17,8 +17,8 @@ import (
 	"strings"
 	"time"
 
-	"exodus/internal/archive"
-	"exodus/internal/relay"
+	"exowodus/internal/archive"
+	"exowodus/internal/relay"
 )
 
 func (r *tuwunelRoomIndex) hasEvent(id string) bool {

@@ -34,7 +34,7 @@ key = "/certs/tls.key"
 dual_protocol = true
 EOF
 
-docker run -d --name "$name" --network exodus-e2e --network-alias "${NETWORK_ALIAS:-$server}" -p "127.0.0.1:$port:8008" \
+docker run -d --name "$name" --network exowodus-e2e --network-alias "${NETWORK_ALIAS:-$server}" -p "127.0.0.1:$port:8008" \
 	--add-host host.docker.internal:host-gateway \
 	-e CONTINUWUITY_CONFIG=/etc/continuwuity.toml \
 	-v "$dir/continuwuity.toml:/etc/continuwuity.toml:ro" \

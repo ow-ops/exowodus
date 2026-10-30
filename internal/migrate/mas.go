@@ -11,8 +11,8 @@ import (
 
 	"maunium.net/go/mautrix"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
 )
 
 // MAS is the MAS admin API. With MAS, Synapse disables "login as user", so
@@ -74,7 +74,7 @@ func (m *MAS) Impersonate(ctx context.Context, synapse *mautrix.Client, u Synaps
 	}
 	body := map[string]any{
 		"actor_user_id": id,
-		"human_name":    "exodus migration",
+		"human_name":    "exowodus migration",
 		"scope":         "urn:matrix:client:api:*",
 		"expires_in":    int(validFor.Seconds()),
 	}

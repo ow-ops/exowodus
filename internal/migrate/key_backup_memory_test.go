@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
 )
 
 func keyBackupImportFixture(t *testing.T, count, keyBytes int) (*archive.Archive, string) {

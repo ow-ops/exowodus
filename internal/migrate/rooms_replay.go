@@ -18,10 +18,10 @@ import (
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
-	"exodus/internal/progress"
-	"exodus/internal/relay"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
+	"exowodus/internal/progress"
+	"exowodus/internal/relay"
 )
 
 type RoomReport struct {
@@ -616,6 +616,7 @@ func (r *replay) replayRedaction(ctx context.Context, ev roomEvent, content map[
 
 func txnID(eventID string) string {
 	sum := sha256.Sum256([]byte(eventID))
+	// Preserve transaction IDs so retries after an upgrade do not duplicate events.
 	return "exodus." + hex.EncodeToString(sum[:12])
 }
 

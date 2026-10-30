@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"exodus/internal/migrate"
-	"exodus/internal/mx"
+	"exowodus/internal/migrate"
+	"exowodus/internal/mx"
 )
 
 const (
@@ -65,7 +65,7 @@ func TestMigrateFromMAS(t *testing.T) {
 
 	cadmin := login(t, ctx, mx.MustNew(continuURL, ""), "cadmin")
 	dir := t.TempDir()
-	out := exodus(t, "migrate", "--mas-db", "postgres://postgres:mas@127.0.0.1:38016/mas",
+	out := exowodus(t, "migrate", "--mas-db", "postgres://postgres:mas@127.0.0.1:38016/mas",
 		"--from", massynURL, "--from-admin-token", synapseAdmin, "--from-mas-url", masURL, "--from-mas-token", masAdmin,
 		"--users", "@mira:massyn",
 		"--to", continuURL, "--registration-token", regToken, "--to-admin-token", cadmin.AccessToken, "--archive", dir)
@@ -135,8 +135,8 @@ func TestMigrateFromMAS(t *testing.T) {
 	}
 	must(t, do(ctx, mas, http.MethodGet, "/api/admin/v1/personal-sessions", nil, nil, &sessions))
 	for _, s := range sessions.Data {
-		if s.Attributes.HumanName == "exodus migration" && s.Attributes.RevokedAt == nil {
-			t.Fatal("exodus left its MAS personal session active")
+		if s.Attributes.HumanName == "exowodus migration" && s.Attributes.RevokedAt == nil {
+			t.Fatal("exowodus left its MAS personal session active")
 		}
 	}
 }

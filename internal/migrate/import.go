@@ -21,9 +21,9 @@ import (
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
-	"exodus/internal/outbox"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
+	"exowodus/internal/outbox"
 )
 
 type Importer struct {
@@ -978,7 +978,7 @@ func (im *Importer) guestLoginSession(ctx context.Context, u *archive.User, migr
 	} else if migration.UserID != userID {
 		return nil, "", errors.New("migration account belongs to a different destination")
 	}
-	token, err := im.Appservice.Login(ctx, userID, migration.DeviceID, "exodus")
+	token, err := im.Appservice.Login(ctx, userID, migration.DeviceID, "exowodus")
 	if err != nil {
 		return nil, "", err
 	}

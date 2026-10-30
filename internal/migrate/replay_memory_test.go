@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"exodus/internal/mx"
+	"exowodus/internal/mx"
 )
 
 func TestReplayReloadsFinalStateAfterCreatingAllRooms(t *testing.T) {

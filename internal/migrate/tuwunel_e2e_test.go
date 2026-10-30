@@ -6,14 +6,14 @@ import (
 	"os"
 	"testing"
 
-	"exodus/internal/archive"
-	"exodus/internal/mx"
+	"exowodus/internal/archive"
+	"exowodus/internal/mx"
 )
 
 func TestTuwunelOriginalEventsLive(t *testing.T) {
-	dir, target := os.Getenv("EXODUS_TUWUNEL_LIVE_ARCHIVE"), os.Getenv("EXODUS_TUWUNEL_LIVE_TARGET")
+	dir, target := os.Getenv("EXOWODUS_TUWUNEL_LIVE_ARCHIVE"), os.Getenv("EXOWODUS_TUWUNEL_LIVE_TARGET")
 	if dir == "" || target == "" {
-		t.Skip("set EXODUS_TUWUNEL_LIVE_ARCHIVE and EXODUS_TUWUNEL_LIVE_TARGET")
+		t.Skip("set EXOWODUS_TUWUNEL_LIVE_ARCHIVE and EXOWODUS_TUWUNEL_LIVE_TARGET")
 	}
 	a, err := archive.Open(dir)
 	if err != nil {
