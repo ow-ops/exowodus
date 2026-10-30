@@ -149,7 +149,11 @@ func (m *MAS) list(ctx context.Context, q map[string]string, path ...any) ([]jso
 		if len(page.Data) < 100 {
 			return out, nil
 		}
-		q["page[after]"] = page.Data[len(page.Data)-1].ID
+		next := page.Data[len(page.Data)-1].ID
+		if next == q["page[after]"] {
+			return nil, fmt.Errorf("MAS pagination did not advance from %s", next)
+		}
+		q["page[after]"] = next
 	}
 }
 

@@ -120,3 +120,24 @@ func TestMASRevokedCredentialsDoNotLoop(t *testing.T) {
 		t.Fatalf("unbounded authentication retry: grants=%d requests=%d", grants.Load(), requests.Load())
 	}
 }
+
+func TestMASListStopsWhenPaginationRepeats(t *testing.T) {
+	var requests atomic.Int32
+	page := `{"data":[` + strings.TrimSuffix(strings.Repeat(`{"id":"same","attributes":{}},`, 100), ",") + `]}`
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) > 3 {
+			t.Error("MAS pagination kept requesting the same page")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		fmt.Fprint(w, page)
+	}))
+	defer api.Close()
+	m, err := NewMAS(api.URL, "admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Emails(t.Context(), "user"); err == nil || !strings.Contains(err.Error(), "did not advance") {
+		t.Fatalf("err = %v", err)
+	}
+}

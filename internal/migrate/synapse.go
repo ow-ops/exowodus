@@ -221,6 +221,10 @@ func listSynapseMedia(ctx context.Context, admin *mautrix.Client, userID string)
 		if page.NextToken == nil {
 			return all, nil
 		}
-		q["from"] = fmt.Sprint(page.NextToken)
+		next := fmt.Sprint(page.NextToken)
+		if next == q["from"] {
+			return nil, fmt.Errorf("media pagination for %s did not advance from %s", userID, next)
+		}
+		q["from"] = next
 	}
 }

@@ -68,3 +68,20 @@ func TestListSynapseUsersPagination(t *testing.T) {
 		})
 	}
 }
+
+func TestListSynapseMediaStopsWhenPaginationRepeats(t *testing.T) {
+	var requests atomic.Int32
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) > 3 {
+			t.Error("media pagination kept requesting the same page")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		fmt.Fprint(w, `{"media":[{"media_id":"m"}],"next_token":1}`)
+	}))
+	defer api.Close()
+	_, err := listSynapseMedia(t.Context(), mx.MustNew(api.URL, "admin"), "@alice:example.org")
+	if err == nil || !strings.Contains(err.Error(), "did not advance") {
+		t.Fatalf("err = %v", err)
+	}
+}
