@@ -14,6 +14,7 @@ import (
 
 	"exowodus/internal/archive"
 	"exowodus/internal/mx"
+	"exowodus/internal/progress"
 )
 
 func exportKeyBackup(ctx context.Context, c *mautrix.Client) (*archive.KeyBackup, error) {
@@ -43,14 +44,8 @@ func exportKeyBackup(ctx context.Context, c *mautrix.Client) (*archive.KeyBackup
 
 // exportKeys excludes only devices created for the export session.
 func exportKeys(ctx context.Context, c *mautrix.Client, userID string, ephemeral bool) (*archive.CrossSigning, []archive.Device, error) {
-	var resp struct {
-		Devices     map[string]map[string]json.RawMessage `json:"device_keys"`
-		Master      map[string]json.RawMessage            `json:"master_keys"`
-		SelfSigning map[string]json.RawMessage            `json:"self_signing_keys"`
-		UserSigning map[string]json.RawMessage            `json:"user_signing_keys"`
-	}
-	body := map[string]any{"device_keys": map[string][]string{userID: {}}}
-	if err := queryKeys(ctx, c, body, &resp); err != nil {
+	resp, err := queryKeys(ctx, c, map[string][]string{userID: {}})
+	if err != nil {
 		return nil, nil, err
 	}
 	var cs *archive.CrossSigning
@@ -91,11 +86,8 @@ func exportDehydrated(ctx context.Context, c *mautrix.Client, userID string) (*a
 	if err != nil {
 		return nil, err
 	}
-	var resp struct {
-		Devices map[string]map[string]json.RawMessage `json:"device_keys"`
-	}
-	body := map[string]any{"device_keys": map[string][]string{userID: {d.DeviceID}}}
-	if err := queryKeys(ctx, c, body, &resp); err != nil {
+	resp, err := queryKeys(ctx, c, map[string][]string{userID: {d.DeviceID}})
+	if err != nil {
 		return nil, err
 	}
 	return &archive.Dehydrated{DeviceID: d.DeviceID, DeviceData: d.DeviceData, Keys: resp.Devices[userID][d.DeviceID]}, nil
@@ -132,18 +124,23 @@ func exportVerifications(ctx context.Context, c *mautrix.Client, userID string, 
 		return nil, err
 	}
 	verified := map[string]json.RawMessage{}
+	checked := 0
+	progress.Count(ctx, "Verification users", 0, len(users))
 	for chunk := range slices.Chunk(users, 100) {
+		slog.Info("exporting verifications", "user", userID, "batch", checked/100+1, "batches", (len(users)+99)/100, "checked", checked, "total", len(users))
 		query := map[string][]string{}
 		for _, u := range chunk {
 			query[u] = []string{}
 		}
-		var resp struct {
-			Master map[string]map[string]json.RawMessage `json:"master_keys"`
+		resp, err := queryKeys(ctx, c, query)
+		if err != nil {
+			return nil, fmt.Errorf("verification batch %d/%d (%d/%d users checked): %w", checked/100+1, (len(users)+99)/100, checked, len(users), err)
 		}
-		if err := queryKeys(ctx, c, map[string]any{"device_keys": query}, &resp); err != nil {
-			return nil, err
-		}
-		for u, key := range resp.Master {
+		for u, raw := range resp.Master {
+			var key map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &key); err != nil {
+				return nil, fmt.Errorf("master key of %s: %w", u, err)
+			}
 			var sigs map[string]map[string]string
 			_ = json.Unmarshal(key["signatures"], &sigs)
 			sig, ok := sigs[userID][uskID]
@@ -156,6 +153,8 @@ func exportVerifications(ctx context.Context, c *mautrix.Client, userID string, 
 				return nil, err
 			}
 		}
+		checked += len(chunk)
+		progress.Count(ctx, "Verification users", checked, len(users))
 	}
 	return verified, nil
 }
@@ -320,10 +319,4 @@ func importCrossSigning(ctx context.Context, acct destAccount, as *Appservice, c
 	}
 	c := acct.client
 	return mx.DoWithPassword(ctx, c, http.MethodPost, c.BuildClientURL("v3", "keys", "device_signing", "upload"), body, acct.id, acct.password)
-}
-
-// queryKeys keeps signed key objects verbatim.
-func queryKeys(ctx context.Context, c *mautrix.Client, body, out any) error {
-	_, err := c.MakeRequest(ctx, http.MethodPost, c.BuildClientURL("v3", "keys", "query"), body, out)
-	return err
 }

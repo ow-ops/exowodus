@@ -80,6 +80,10 @@ func TestRequestAttemptsAndPrivacy(t *testing.T) {
 	if d.state.attempt != 1 {
 		t.Fatal("a new request should start with attempt one")
 	}
+	Request(req.Clone(WithRequestAttempt(ctx, 3)))
+	if d.state.attempt != 3 {
+		t.Fatal("application retries should retain their attempt number")
+	}
 }
 
 func TestUnknownTransferSizeAndNarrowTerminal(t *testing.T) {

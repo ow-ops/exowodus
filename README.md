@@ -26,6 +26,12 @@ attempt number. Redirected output uses plain logs; `--progress plain` disables
 the display explicitly, and `--progress tty` forces it. `--verbose` keeps
 request details and logs in scrollback. `NO_COLOR` disables colors.
 
+Verification export shows the batch number and users checked. Each key-query
+batch has a two-minute deadline and up to three attempts, with a 45-second HTTP
+timeout and a 10-second remote-key timeout. Transient failures use jittered
+backoff and honor rate-limit delays. Partial federation failures retry only
+the affected users; unresolved failures fail the export.
+
 ## Before you start
 
 1. On a fresh Continuwuity, create **your own admin account first**: the first

@@ -24,6 +24,11 @@ import (
 )
 
 type contextKey struct{}
+type requestAttemptKey struct{}
+
+func WithRequestAttempt(ctx context.Context, attempt int) context.Context {
+	return context.WithValue(ctx, requestAttemptKey{}, attempt)
+}
 
 type counter struct {
 	label       string
@@ -118,7 +123,9 @@ func Request(req *http.Request) {
 	if d, ok := req.Context().Value(contextKey{}).(*Display); ok {
 		d.state.Lock()
 		defer d.state.Unlock()
-		if d.state.request == req {
+		if attempt, ok := req.Context().Value(requestAttemptKey{}).(int); ok {
+			d.state.attempt = attempt
+		} else if d.state.request == req {
 			d.state.attempt++
 		} else {
 			d.state.attempt = 1
