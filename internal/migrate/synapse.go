@@ -92,10 +92,11 @@ type synapseUserDetails struct {
 
 // SelectSynapseUsers returns every local account when ids is empty.
 // Appservice accounts are skipped: they move with their bridge.
-func SelectSynapseUsers(ctx context.Context, admin *mautrix.Client, ids []string) ([]SynapseUser, error) {
+// includeGuests must be false when Synapse delegates authentication to MAS.
+func SelectSynapseUsers(ctx context.Context, admin *mautrix.Client, ids []string, includeGuests bool) ([]SynapseUser, error) {
 	if len(ids) == 0 {
 		var err error
-		if ids, err = listSynapseUsers(ctx, admin); err != nil {
+		if ids, err = listSynapseUsers(ctx, admin, includeGuests); err != nil {
 			return nil, err
 		}
 	}
@@ -126,13 +127,13 @@ func synapseUser(ctx context.Context, admin *mautrix.Client, userID string) (syn
 	return d, nil
 }
 
-func listSynapseUsers(ctx context.Context, admin *mautrix.Client) ([]string, error) {
+func listSynapseUsers(ctx context.Context, admin *mautrix.Client, includeGuests bool) ([]string, error) {
 	var ids []string
 	serverName := admin.UserID.Homeserver()
 	if serverName == "" {
 		return nil, errors.New("source admin user ID is missing")
 	}
-	q := map[string]string{"guests": "true", "deactivated": "true", "locked": "true", "limit": "500", "user_id": ":" + serverName}
+	q := map[string]string{"guests": strconv.FormatBool(includeGuests), "deactivated": "true", "locked": "true", "limit": "500", "user_id": ":" + serverName}
 	seen := map[string]bool{}
 	var offset uint64
 	for {

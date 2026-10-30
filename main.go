@@ -241,7 +241,7 @@ func (f *sourceFlags) openAPI(ctx context.Context) (*source, error) {
 		if err != nil {
 			return nil, fmt.Errorf("source: %w", err)
 		}
-		users, err := migrate.SelectSynapseUsers(ctx, admin, f.users)
+		users, err := migrate.SelectSynapseUsers(ctx, admin, f.users, f.masURL == "")
 		if err != nil {
 			return nil, err
 		}

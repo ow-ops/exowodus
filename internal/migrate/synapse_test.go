@@ -52,7 +52,7 @@ func TestListSynapseUsersPagination(t *testing.T) {
 			defer server.Close()
 			admin := mx.MustNew(server.URL, "token")
 			admin.UserID = "@admin:example.org"
-			got, err := listSynapseUsers(t.Context(), admin)
+			got, err := listSynapseUsers(t.Context(), admin, true)
 			if tc.fail != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.fail) {
 					t.Fatalf("error=%v", err)

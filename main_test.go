@@ -306,6 +306,66 @@ func TestTuwunelSourceExportsPasswordlessUsersWithDevices(t *testing.T) {
 	}
 }
 
+func TestSynapseBulkSourceGuests(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		masURL string
+		guests string
+	}{
+		{name: "Synapse", guests: "true"},
+		{name: "MAS", masURL: "https://mas.example.org", guests: "false"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var offsets []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/_matrix/client/v3/account/whoami":
+					_, _ = w.Write([]byte(`{"user_id":"@admin:example.org"}`))
+				case "/_synapse/admin/v2/users":
+					q := r.URL.Query()
+					if q.Get("guests") != tc.guests {
+						http.Error(w, `{"errcode":"M_INVALID_PARAM","error":"The guests parameter is not supported when delegating to MAS."}`, http.StatusBadRequest)
+						return
+					}
+					if q.Get("deactivated") != "true" || q.Get("locked") != "true" {
+						t.Errorf("account status filters missing: %s", r.URL.RawQuery)
+					}
+					offsets = append(offsets, q.Get("from"))
+					if q.Get("from") == "" {
+						_, _ = w.Write([]byte(`{"users":[{"name":"@alice:example.org"}],"next_token":"1"}`))
+					} else {
+						_, _ = w.Write([]byte(`{"users":[{"name":"@gone:example.org"}]}`))
+					}
+				case "/_synapse/admin/v2/users/@alice:example.org":
+					_, _ = w.Write([]byte(`{"locked":true}`))
+				case "/_synapse/admin/v2/users/@gone:example.org":
+					_, _ = w.Write([]byte(`{"deactivated":true}`))
+				default:
+					t.Errorf("unexpected request %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+			f := sourceFlags{kind: "synapse", url: srv.URL, adminToken: "admin-token", allUsers: true, masURL: tc.masURL, masToken: "mas-token"}
+			s, err := f.open(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			if !slices.Equal(offsets, []string{"", "1"}) {
+				t.Fatalf("pagination offsets = %v", offsets)
+			}
+			if len(s.users) != 1 || s.users[0].UserID != "@alice:example.org" || !s.users[0].Locked {
+				t.Fatalf("active users = %+v", s.users)
+			}
+			if len(s.deactivated) != 1 || s.deactivated[0].UserID != "@gone:example.org" {
+				t.Fatalf("deactivated users = %+v", s.deactivated)
+			}
+		})
+	}
+}
+
 func TestTuwunelBulkSource(t *testing.T) {
 	logouts := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
