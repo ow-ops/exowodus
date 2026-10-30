@@ -124,17 +124,20 @@ func exportVerifications(ctx context.Context, c *mautrix.Client, userID string, 
 		return nil, err
 	}
 	verified := map[string]json.RawMessage{}
+	const batchSize = 100
+	batches := (len(users) + batchSize - 1) / batchSize
 	checked := 0
 	progress.Count(ctx, "Verification users", 0, len(users))
-	for chunk := range slices.Chunk(users, 100) {
-		slog.Info("exporting verifications", "user", userID, "batch", checked/100+1, "batches", (len(users)+99)/100, "checked", checked, "total", len(users))
+	for chunk := range slices.Chunk(users, batchSize) {
+		batch := checked/batchSize + 1
+		slog.Info("exporting verifications", "user", userID, "batch", batch, "batches", batches, "checked", checked, "total", len(users))
 		query := map[string][]string{}
 		for _, u := range chunk {
 			query[u] = []string{}
 		}
 		resp, err := queryKeys(ctx, c, query)
 		if err != nil {
-			return nil, fmt.Errorf("verification batch %d/%d (%d/%d users checked): %w", checked/100+1, (len(users)+99)/100, checked, len(users), err)
+			return nil, fmt.Errorf("verification batch %d/%d (%d/%d users checked): %w", batch, batches, checked, len(users), err)
 		}
 		for u, raw := range resp.Master {
 			var key map[string]json.RawMessage

@@ -49,7 +49,7 @@ func queryKeys(ctx context.Context, c *mautrix.Client, users map[string][]string
 		SelfSigning: map[string]json.RawMessage{},
 		UserSigning: map[string]json.RawMessage{},
 	}
-	pending := maps.Clone(users)
+	pending := users
 	var lastErr error
 	for attempt := 1; attempt <= keyQueryAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
@@ -64,9 +64,9 @@ func queryKeys(ctx context.Context, c *mautrix.Client, users map[string][]string
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		delay := time.Duration(rand.Int64N(int64(time.Second) << (attempt - 1)))
+		var delay time.Duration
 		if err != nil {
-			if !retryableKeyQuery(ctx, err) {
+			if !retryableKeyQuery(err) {
 				return nil, err
 			}
 			lastErr = err
@@ -107,6 +107,7 @@ func queryKeys(ctx context.Context, c *mautrix.Client, users map[string][]string
 		if attempt == keyQueryAttempts {
 			break
 		}
+		delay = max(delay, time.Duration(rand.Int64N(int64(time.Second)<<(attempt-1))))
 		if deadline, ok := ctx.Deadline(); ok && delay >= time.Until(deadline) {
 			return nil, fmt.Errorf("key query retry delay %s exceeds the batch deadline: %w", delay, lastErr)
 		}
@@ -122,8 +123,8 @@ func queryKeys(ctx context.Context, c *mautrix.Client, users map[string][]string
 	return nil, fmt.Errorf("key query failed after %d attempts: %w", keyQueryAttempts, lastErr)
 }
 
-func retryableKeyQuery(ctx context.Context, err error) bool {
-	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+func retryableKeyQuery(err error) bool {
+	if errors.Is(err, context.Canceled) {
 		return false
 	}
 	if status := mx.Status(err); status >= 400 {
@@ -133,7 +134,12 @@ func retryableKeyQuery(ctx context.Context, err error) bool {
 	if errors.As(err, &network) && (network.Timeout() || network.Temporary()) {
 		return true
 	}
-	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNABORTED) || errors.Is(err, syscall.EPIPE)
+	for _, cause := range []error{io.EOF, io.ErrUnexpectedEOF, syscall.ECONNRESET, syscall.ECONNREFUSED, syscall.ECONNABORTED, syscall.EPIPE} {
+		if errors.Is(err, cause) {
+			return true
+		}
+	}
+	return false
 }
 
 func keyQueryRetryAfter(body []byte) time.Duration {
