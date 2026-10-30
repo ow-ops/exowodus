@@ -29,7 +29,9 @@ request details and logs in scrollback. `NO_COLOR` disables colors.
 Verification export shows batch and user counts. Each key-query batch allows
 three attempts within two minutes, with 45-second HTTP and 10-second remote-key
 timeouts. Retries use jittered backoff and respect rate-limit delays. Partial
-federation failures retry only affected users; unresolved failures fail the export.
+federation failures retry only affected users. Unreachable peers leave recorded
+verification warnings; cached keys are kept and other batches continue. Required
+account keys and `--require-lossless` exports still fail on unresolved lookups.
 
 ## Before you start
 

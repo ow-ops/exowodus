@@ -68,6 +68,8 @@ type User struct {
 	Media        []Media                    `json:"media"`
 	CrossSigning *CrossSigning              `json:"cross_signing,omitempty"`
 	Devices      []Device                   `json:"devices,omitempty"`
+
+	VerificationWarnings []string `json:"verification_warnings,omitempty"`
 }
 
 type Device struct {

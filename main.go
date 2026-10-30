@@ -1191,6 +1191,9 @@ func printSummary(out io.Writer, a *archive.Archive, users []*archive.User, repo
 		for _, roomID := range r.SkippedRooms {
 			fmt.Fprintf(out, "  skipped room %s\n", roomID)
 		}
+		for _, warning := range r.Warnings {
+			fmt.Fprintf(out, "  ! %s\n", warning)
+		}
 		for _, f := range r.Failures {
 			fmt.Fprintf(out, "  - %s %s: %s\n", f.Step, f.Target, f.Error)
 		}

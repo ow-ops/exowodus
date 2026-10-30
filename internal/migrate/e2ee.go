@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -115,15 +116,21 @@ func importDehydrated(ctx context.Context, c *mautrix.Client, d *archive.Dehydra
 }
 
 // exportVerifications keeps only this user's signature on each master key.
-func exportVerifications(ctx context.Context, c *mautrix.Client, userID string, cs *archive.CrossSigning, users []string) (map[string]json.RawMessage, error) {
+func exportVerifications(ctx context.Context, c *mautrix.Client, userID string, cs *archive.CrossSigning, users []string) (map[string]json.RawMessage, []string, error) {
 	if cs == nil || len(cs.UserSigning) == 0 || len(users) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	uskID, err := keyID(cs.UserSigning)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	verified := map[string]json.RawMessage{}
+	var warnings []string
+	// Group homeservers so an unreachable peer affects fewer batches.
+	users = slices.Clone(users)
+	slices.SortFunc(users, func(a, b string) int {
+		return cmp.Or(strings.Compare(mx.ServerName(a), mx.ServerName(b)), strings.Compare(a, b))
+	})
 	const batchSize = 100
 	batches := (len(users) + batchSize - 1) / batchSize
 	checked := 0
@@ -137,12 +144,19 @@ func exportVerifications(ctx context.Context, c *mautrix.Client, userID string, 
 		}
 		resp, err := queryKeys(ctx, c, query)
 		if err != nil {
-			return nil, fmt.Errorf("verification batch %d/%d (%d/%d users checked): %w", batch, batches, checked, len(users), err)
+			batchErr := fmt.Errorf("verification batch %d/%d (%d/%d users checked): %w", batch, batches, checked, len(users), err)
+			var incomplete *keyQueryIncomplete
+			if !errors.As(err, &incomplete) {
+				return nil, warnings, batchErr
+			}
+			warning := batchErr.Error() + "; verification data may be incomplete"
+			warnings = append(warnings, warning)
+			slog.Warn("incomplete verification lookup", "user", userID, "warning", warning)
 		}
 		for u, raw := range resp.Master {
 			var key map[string]json.RawMessage
 			if err := json.Unmarshal(raw, &key); err != nil {
-				return nil, fmt.Errorf("master key of %s: %w", u, err)
+				return nil, warnings, fmt.Errorf("master key of %s: %w", u, err)
 			}
 			var sigs map[string]map[string]string
 			_ = json.Unmarshal(key["signatures"], &sigs)
@@ -153,13 +167,13 @@ func exportVerifications(ctx context.Context, c *mautrix.Client, userID string, 
 			key["signatures"], _ = json.Marshal(map[string]map[string]string{userID: {uskID: sig}})
 			delete(key, "unsigned")
 			if verified[u], err = json.Marshal(key); err != nil {
-				return nil, err
+				return nil, warnings, err
 			}
 		}
 		checked += len(chunk)
 		progress.Count(ctx, "Verification users", checked, len(users))
 	}
-	return verified, nil
+	return verified, warnings, nil
 }
 
 func keyID(raw json.RawMessage) (string, error) {

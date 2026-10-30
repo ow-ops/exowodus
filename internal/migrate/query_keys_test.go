@@ -87,7 +87,9 @@ func TestKeyQueryRetryLimits(t *testing.T) {
 			}))
 			defer server.Close()
 			result, err := queryKeys(t.Context(), mx.MustNew(server.URL, "token"), map[string][]string{"@alice:example.org": {}})
-			if err == nil || result != nil || calls.Load() != tc.calls {
+			var incomplete *keyQueryIncomplete
+			partial := errors.As(err, &incomplete)
+			if err == nil || (result != nil) != partial || calls.Load() != tc.calls {
 				t.Fatalf("result=%+v error=%v calls=%d", result, err, calls.Load())
 			}
 		})
@@ -204,9 +206,9 @@ func TestVerificationBatchProgress(t *testing.T) {
 	logger := slog.Default()
 	slog.SetDefault(slog.New(display.Handler(slog.LevelDebug)))
 	defer slog.SetDefault(logger)
-	verified, err := exportVerifications(ctx, mx.MustNew(server.URL, "token"), actor, &archive.CrossSigning{UserSigning: json.RawMessage(`{"keys":{"ed25519:signer":"signer"}}`)}, users)
+	verified, warnings, err := exportVerifications(ctx, mx.MustNew(server.URL, "token"), actor, &archive.CrossSigning{UserSigning: json.RawMessage(`{"keys":{"ed25519:signer":"signer"}}`)}, users)
 	display.Stop(err)
-	if err != nil || calls.Load() != 3 || len(verified) != 201 {
+	if err != nil || calls.Load() != 3 || len(verified) != 201 || len(warnings) != 0 {
 		t.Fatalf("verification export: keys=%d calls=%d error=%v", len(verified), calls.Load(), err)
 	}
 	view := ansi.Strip(output.String())

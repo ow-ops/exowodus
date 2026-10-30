@@ -35,6 +35,15 @@ type keyQueryResponse struct {
 	Failures    map[string]json.RawMessage            `json:"failures"`
 }
 
+type keyQueryIncomplete struct {
+	Servers []string
+	Users   int
+}
+
+func (e *keyQueryIncomplete) Error() string {
+	return fmt.Sprintf("key query could not reach %v (%d users)", e.Servers, e.Users)
+}
+
 // queryKeys retries unavailable servers without discarding successful results.
 func queryKeys(ctx context.Context, c *mautrix.Client, users map[string][]string) (*keyQueryResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, keyQueryDeadline)
@@ -51,6 +60,7 @@ func queryKeys(ctx context.Context, c *mautrix.Client, users map[string][]string
 	}
 	pending := users
 	var lastErr error
+	var partial *keyQueryResponse
 	for attempt := 1; attempt <= keyQueryAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -66,6 +76,7 @@ func queryKeys(ctx context.Context, c *mautrix.Client, users map[string][]string
 		}
 		var delay time.Duration
 		if err != nil {
+			partial = nil
 			if !retryableKeyQuery(err) {
 				return nil, err
 			}
@@ -76,11 +87,18 @@ func queryKeys(ctx context.Context, c *mautrix.Client, users map[string][]string
 			}
 		} else {
 			next := map[string][]string{}
+			failedServers := map[string]bool{}
 			for user, devices := range pending {
 				if _, failed := page.Failures[mx.ServerName(user)]; failed {
 					next[user] = devices
-					continue
+					failedServers[mx.ServerName(user)] = true
+				} else {
+					delete(result.Devices, user)
+					delete(result.Master, user)
+					delete(result.SelfSigning, user)
+					delete(result.UserSigning, user)
 				}
+				// Failed federation queries can still return locally cached keys.
 				if keys, ok := page.Devices[user]; ok {
 					result.Devices[user] = keys
 				}
@@ -97,8 +115,8 @@ func queryKeys(ctx context.Context, c *mautrix.Client, users map[string][]string
 			if len(next) == 0 {
 				return result, nil
 			}
-			servers := slices.Sorted(maps.Keys(page.Failures))
-			lastErr = fmt.Errorf("key query could not reach %v (%d users)", servers, len(next))
+			lastErr = &keyQueryIncomplete{Servers: slices.Sorted(maps.Keys(failedServers)), Users: len(next)}
+			partial = result
 			for _, failure := range page.Failures {
 				delay = max(delay, keyQueryRetryAfter(failure))
 			}
@@ -109,7 +127,7 @@ func queryKeys(ctx context.Context, c *mautrix.Client, users map[string][]string
 		}
 		delay = max(delay, time.Duration(rand.Int64N(int64(time.Second)<<(attempt-1))))
 		if deadline, ok := ctx.Deadline(); ok && delay >= time.Until(deadline) {
-			return nil, fmt.Errorf("key query retry delay %s exceeds the batch deadline: %w", delay, lastErr)
+			return partial, fmt.Errorf("key query retry delay %s exceeds the batch deadline: %w", delay, lastErr)
 		}
 		slog.Warn("retrying key query", "attempt", attempt+1, "max_attempts", keyQueryAttempts, "retry_in", delay, "users", len(pending), "err", lastErr)
 		timer := time.NewTimer(delay)
@@ -120,7 +138,7 @@ func queryKeys(ctx context.Context, c *mautrix.Client, users map[string][]string
 			return nil, ctx.Err()
 		}
 	}
-	return nil, fmt.Errorf("key query failed after %d attempts: %w", keyQueryAttempts, lastErr)
+	return partial, fmt.Errorf("key query failed after %d attempts: %w", keyQueryAttempts, lastErr)
 }
 
 func retryableKeyQuery(err error) bool {

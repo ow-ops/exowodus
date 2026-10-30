@@ -230,8 +230,11 @@ func (e *Exporter) ExportUser(ctx context.Context, s *Session) (*archive.User, e
 	}
 	delete(members, s.UserID)
 	log.Info("exporting verifications", "users", len(members))
-	if u.Verified, err = exportVerifications(ctx, s.Client, s.UserID, u.CrossSigning, slices.Sorted(maps.Keys(members))); s.optional(err) != nil {
+	if u.Verified, u.VerificationWarnings, err = exportVerifications(ctx, s.Client, s.UserID, u.CrossSigning, slices.Collect(maps.Keys(members))); s.optional(err) != nil {
 		return nil, fmt.Errorf("verifications: %w", err)
+	}
+	if e.Archive.Manifest.RequireLossless && len(u.VerificationWarnings) > 0 {
+		return nil, fmt.Errorf("verifications: lossless export requires complete lookups: %s", u.VerificationWarnings[0])
 	}
 	if e.DB != nil || e.MASDB != nil || e.TuwunelDump != nil {
 		log.Info("exporting passwords and sessions")

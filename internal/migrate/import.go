@@ -88,6 +88,7 @@ type Report struct {
 	RoomsJoined     int       `json:"rooms_joined"`
 	AdminGranted    bool      `json:"admin_granted,omitempty"`
 	Failures        []Failure `json:"failures,omitempty"`
+	Warnings        []string  `json:"warnings,omitempty"`
 }
 
 type Failure struct {
@@ -135,14 +136,14 @@ func (im *Importer) PrepareUser(ctx context.Context, u *archive.User) (*UserJob,
 			return nil, errors.New("completed account status has no destination user")
 		}
 		im.addMedia(state.Media)
-		return &UserJob{User: u, Report: &Report{SourceUserID: u.UserID, DestUserID: state.DestUserID, AdminGranted: state.Admin}, acct: destAccount{id: state.DestUserID}, state: state}, nil
+		return &UserJob{User: u, Report: &Report{SourceUserID: u.UserID, DestUserID: state.DestUserID, AdminGranted: state.Admin, Warnings: slices.Clone(u.VerificationWarnings)}, acct: destAccount{id: state.DestUserID}, state: state}, nil
 	}
 	acct, err := im.destSession(ctx, u)
 	if err != nil {
 		return nil, err
 	}
 	state.DestUserID = acct.id
-	job := &UserJob{User: u, Report: &Report{SourceUserID: u.UserID, DestUserID: acct.id}, acct: acct, state: state}
+	job := &UserJob{User: u, Report: &Report{SourceUserID: u.UserID, DestUserID: acct.id, Warnings: slices.Clone(u.VerificationWarnings)}, acct: acct, state: state}
 	rep := job.Report
 	save := func() error { return job.save(im.Archive) }
 	slog.Info("importing user", "user", u.UserID, "dest", acct.id)

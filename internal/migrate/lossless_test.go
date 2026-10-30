@@ -75,6 +75,24 @@ func TestLosslessRejectsDestinationCredentials(t *testing.T) {
 	}
 }
 
+func TestLosslessRejectsVerificationGaps(t *testing.T) {
+	a, err := archive.Create(t.TempDir(), "example.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.RequireLossless(); err != nil {
+		t.Fatal(err)
+	}
+	u := &archive.User{UserID: "@alice:example.org", VerificationWarnings: []string{"offline.test did not answer"}}
+	if err := a.WriteSecrets(u.UserID, &archive.Secrets{PasswordHash: "source-hash"}); err != nil {
+		t.Fatal(err)
+	}
+	im := &Importer{Archive: a, Admin: &ContinuwuityAdmin{bot: "@conduit:example.org"}}
+	if err := im.CheckLosslessImport([]*archive.User{u}, nil, nil, false); err == nil || !strings.Contains(err.Error(), "incomplete verification export") {
+		t.Fatalf("verification gaps allowed a lossless import: %v", err)
+	}
+}
+
 func TestVerifyOriginalRoomChecksContent(t *testing.T) {
 	source := json.RawMessage(`{"event_id":"$original","room_id":"!room:example.org","sender":"@alice:example.org","origin_server_ts":1234,"type":"m.room.message","content":{"msgtype":"m.text","body":"original"}}`)
 	for _, tc := range []struct {

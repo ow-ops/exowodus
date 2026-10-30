@@ -140,6 +140,9 @@ func (im *Importer) CheckLosslessImportContext(ctx context.Context, users []*arc
 		}
 	}
 	for _, u := range users {
+		if len(u.VerificationWarnings) > 0 {
+			failures = append(failures, fmt.Errorf("%s: incomplete verification export: %s", u.UserID, u.VerificationWarnings[0]))
+		}
 		if u.Deactivated {
 			if !im.DeactivatedIDOnly {
 				failures = append(failures, fmt.Errorf("%s: full deactivated-account data restoration is not implemented; use --deactivated-id-only to reserve its ID without restoring account data", u.UserID))
