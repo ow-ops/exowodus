@@ -38,6 +38,7 @@ const syncFilter = `{
 }`
 
 type Exporter struct {
+	Bridges []*Bridge
 	// mu guards completedRooms and quarantined.
 	mu             sync.Mutex
 	completedRooms map[string]bool
@@ -88,6 +89,7 @@ func (e *Exporter) skipMissingMedia(mxc, path string, err error) bool {
 func (e *Exporter) ExportUser(ctx context.Context, s *Session) (*archive.User, error) {
 	log := slog.With("user", s.UserID)
 	u := &archive.User{UserID: s.UserID, Admin: s.Admin, Locked: s.Locked, Suspended: s.Suspended, ShadowBanned: s.ShadowBanned, Guest: s.Guest, Passwordless: s.Passwordless, ExternalIDs: s.ExternalIDs, AccountData: map[string]json.RawMessage{}}
+	u.AppserviceID = s.AppserviceID
 
 	profile, err := s.Client.GetProfile(ctx, id.UserID(s.UserID))
 	if err != nil && !mx.IsStatus(err, http.StatusNotFound) {
@@ -128,7 +130,15 @@ func (e *Exporter) ExportUser(ctx context.Context, s *Session) (*archive.User, e
 	}
 
 	log.Info("syncing account")
-	sync, err := s.Client.FullSyncRequest(ctx, mautrix.ReqSync{FilterID: syncFilter, SetPresence: event.PresenceOffline})
+	var sync *mautrix.RespSync
+	if s.AppserviceID != "" {
+		if e.DB == nil {
+			return nil, errors.New("bridge account export requires --synapse-db; Synapse does not support appservice /sync")
+		}
+		sync, err = e.DB.appserviceSync(ctx, s.UserID)
+	} else {
+		sync, err = s.Client.FullSyncRequest(ctx, mautrix.ReqSync{FilterID: syncFilter, SetPresence: event.PresenceOffline})
+	}
 	if err != nil {
 		return nil, fmt.Errorf("sync: %w", err)
 	}
@@ -271,7 +281,7 @@ func (e *Exporter) ExportUser(ctx context.Context, s *Session) (*archive.User, e
 				return nil, err
 			}
 		}
-		if e.MASDB != nil {
+		if e.MASDB != nil && s.AppserviceID == "" {
 			if err := e.MASDB.addSecrets(ctx, s.UserID, secrets); err != nil {
 				return nil, err
 			}

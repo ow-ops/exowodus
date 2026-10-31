@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 
 	"exowodus/internal/archive"
 	"exowodus/internal/mx"
@@ -40,14 +43,30 @@ func TestRestoreArchivedBridges(t *testing.T) {
 	im := &Importer{Archive: a, Dest: dest, Admin: &ContinuwuityAdmin{
 		client: mx.WithToken(dest, "admin"), room: "!admin:example.org", bot: "@conduit:example.org",
 	}}
-	server := &archive.Server{AppserviceRegistrations: []string{testBridgeRegistration}}
+	registration := testBridgeRegistration + "receive_ephemeral: true\norg.matrix.msc3202: true\n"
+	server := &archive.Server{AppserviceRegistrations: []string{registration}}
 	if err := im.RestoreBridges(t.Context(), server); err != nil {
 		t.Fatal(err)
 	}
 	b := im.bridgeFor("@puppet_123:example.org")
-	if len(commands) != 1 || commands[0] != "!admin appservices register\n```yaml\n"+strings.TrimRight(testBridgeRegistration, "\n")+"\n```" ||
-		b == nil || b.client.AccessToken != "bridge-test-token" {
+	if len(commands) != 1 || b == nil || b.client.AccessToken != "bridge-test-token" || !b.held || b.registration != registration {
 		t.Fatal("archived registration or replay credentials were not restored")
+	}
+	_, raw, _ := strings.Cut(commands[0], "```yaml\n")
+	raw, _, _ = strings.Cut(raw, "```")
+	var held, original map[string]any
+	if err := yaml.Unmarshal([]byte(raw), &held); err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal([]byte(registration), &original); err != nil {
+		t.Fatal(err)
+	}
+	if held["url"] != "http://127.0.0.1:0" {
+		t.Fatal("bridge delivery was enabled during history replay")
+	}
+	held["url"] = original["url"]
+	if !reflect.DeepEqual(held, original) {
+		t.Fatal("holding delivery changed bridge credentials or namespaces")
 	}
 	if err := im.RestoreBridges(t.Context(), server); err != nil || len(commands) != 1 {
 		t.Fatalf("duplicate bridge registration: %v", err)

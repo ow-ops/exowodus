@@ -20,6 +20,7 @@ import (
 )
 
 type Session struct {
+	AppserviceID string
 	UserID       string
 	Client       *mautrix.Client
 	Admin        bool
@@ -67,6 +68,7 @@ func (s *Session) Close(ctx context.Context) {
 }
 
 type SynapseUser struct {
+	AppserviceID string `json:",omitempty"`
 	UserID       string
 	Admin        bool
 	Deactivated  bool
@@ -75,7 +77,7 @@ type SynapseUser struct {
 	ShadowBanned bool
 	Guest        bool
 	ExternalIDs  []archive.ExternalID
-	// Passwordless is set from a Tuwunel dump, never by the admin API.
+	// Passwordless is set from a Tuwunel dump or recorded appservice ownership.
 	Passwordless bool `json:",omitempty"`
 }
 
@@ -91,9 +93,10 @@ type synapseUserDetails struct {
 }
 
 // SelectSynapseUsers returns every local account when ids is empty.
-// Appservice accounts are skipped: they move with their bridge.
+// Appservice accounts retain ownership so their profiles and account data can
+// be restored through their service rather than ordinary password logins.
 // includeGuests must be false when Synapse delegates authentication to MAS.
-func SelectSynapseUsers(ctx context.Context, admin *mautrix.Client, ids []string, includeGuests bool) ([]SynapseUser, error) {
+func SelectSynapseUsers(ctx context.Context, admin *mautrix.Client, ids []string, includeGuests bool, bridges ...*Bridge) ([]SynapseUser, error) {
 	if len(ids) == 0 {
 		var err error
 		if ids, err = listSynapseUsers(ctx, admin, includeGuests); err != nil {
@@ -110,11 +113,19 @@ func SelectSynapseUsers(ctx context.Context, admin *mautrix.Client, ids []string
 		if err != nil {
 			return nil, err
 		}
+		appserviceID := ""
 		if d.AppserviceID != nil {
-			slog.Info("skipping appservice account", "user", userID, "appservice", *d.AppserviceID)
-			continue
+			appserviceID = *d.AppserviceID
 		}
-		users = append(users, SynapseUser{UserID: userID, Admin: d.Admin, Deactivated: d.Deactivated, Locked: d.Locked, Suspended: d.Suspended, ShadowBanned: d.ShadowBanned, Guest: d.IsGuest, ExternalIDs: d.ExternalIDs})
+		for _, b := range bridges {
+			if userID == "@"+b.sender+":"+admin.UserID.Homeserver() {
+				if appserviceID != "" && appserviceID != b.ID {
+					return nil, fmt.Errorf("%s belongs to another appservice", userID)
+				}
+				appserviceID = b.ID
+			}
+		}
+		users = append(users, SynapseUser{UserID: userID, AppserviceID: appserviceID, Passwordless: appserviceID != "", Admin: d.Admin, Deactivated: d.Deactivated, Locked: d.Locked, Suspended: d.Suspended, ShadowBanned: d.ShadowBanned, Guest: d.IsGuest, ExternalIDs: d.ExternalIDs})
 	}
 	return users, nil
 }

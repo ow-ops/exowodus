@@ -308,18 +308,38 @@ func (p *Proxy) identityOf(r *http.Request) cachedUser {
 	if token == "" || p.upstream == nil {
 		return cachedUser{}
 	}
-	if c, ok := p.auth.Load(token); ok {
-		if time.Now().Before(c.(cachedUser).expires) {
-			return c.(cachedUser)
+	// Only the homeserver may resolve appservice masquerading. Forward all
+	// supplied arguments, including duplicates, and revalidate scoped requests.
+	scope := url.Values{}
+	query := r.URL.Query()
+	for _, name := range []string{"user_id", "device_id", "org.matrix.msc3202.device_id"} {
+		if values, ok := query[name]; ok {
+			scope[name] = values
 		}
-		p.auth.Delete(token)
 	}
-	who, err := mx.WithToken(p.upstream, token).Whoami(r.Context())
+	if len(scope) == 0 {
+		if c, ok := p.auth.Load(token); ok {
+			if time.Now().Before(c.(cachedUser).expires) {
+				return c.(cachedUser)
+			}
+			p.auth.Delete(token)
+		}
+	}
+	c := mx.WithToken(p.upstream, token)
+	var who mautrix.RespWhoami
+	endpoint := c.BuildURLWithFullQuery(mautrix.ClientURLPath{"v3", "account", "whoami"}, func(q url.Values) {
+		for name, values := range scope {
+			q[name] = values
+		}
+	})
+	_, err := c.MakeRequest(r.Context(), http.MethodGet, endpoint, nil, &who)
 	if err != nil {
 		return cachedUser{}
 	}
 	identity := cachedUser{userID: string(who.UserID), deviceID: string(who.DeviceID), expires: time.Now().Add(authCacheTTL)}
-	p.auth.Store(token, identity)
+	if len(scope) == 0 {
+		p.auth.Store(token, identity)
+	}
 	return identity
 }
 

@@ -29,6 +29,102 @@ type reportCheckingWriter struct {
 	wrote bool
 }
 
+func TestBridgeSourceBypassesMASImpersonation(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/_matrix/client/v3/account/whoami" || r.URL.Query().Get("user_id") != "@bot:example.org" || r.Header.Get("Authorization") != "Bearer bridge-as" {
+			t.Errorf("unexpected source/MAS request: %s", r.URL.Path)
+		}
+		_, _ = io.WriteString(w, `{"user_id":"@bot:example.org"}`)
+	}))
+	defer api.Close()
+	path := filepath.Join(t.TempDir(), "bridge.yaml")
+	if err := os.WriteFile(path, []byte("id: bridge\nas_token: bridge-as\nsender_localpart: bot\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	b, err := migrate.LoadBridge(path, mx.MustNew(api.URL, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mas, err := migrate.NewMAS(api.URL, "mas-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &source{admin: mx.MustNew(api.URL, "admin"), mas: mas, bridges: []*migrate.Bridge{b}}
+	sess, relock, err := s.open(t.Context(), migrate.SynapseUser{UserID: "@bot:example.org", AppserviceID: "bridge"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	relock()
+	sess.Close(t.Context())
+	if !sess.Passwordless || sess.AppserviceID != "bridge" {
+		t.Fatal("source bot lost bridge identity")
+	}
+}
+
+func TestLockedBridgeSourceRelocks(t *testing.T) {
+	for _, reject := range []bool{false, true} {
+		t.Run(fmt.Sprint("reject=", reject), func(t *testing.T) {
+			var locked atomic.Bool
+			locked.Store(true)
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/_synapse/admin/v2/users/") {
+					if r.Header.Get("Authorization") != "Bearer admin" {
+						t.Error("wrong source admin")
+					}
+					var update struct {
+						Locked bool `json:"locked"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+						t.Error(err)
+					}
+					locked.Store(update.Locked)
+					_, _ = io.WriteString(w, `{}`)
+					return
+				}
+				if r.URL.Path != "/_matrix/client/v3/account/whoami" {
+					t.Errorf("unexpected request %s", r.URL.Path)
+				}
+				if locked.Load() {
+					t.Error("authenticated bridge before unlocking")
+				}
+				if reject {
+					w.WriteHeader(403)
+					return
+				}
+				_, _ = io.WriteString(w, `{"user_id":"@bot:example.org"}`)
+			}))
+			defer api.Close()
+			path := filepath.Join(t.TempDir(), "bridge.yaml")
+			if err := os.WriteFile(path, []byte("id: bridge\nas_token: as\nsender_localpart: bot\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			b, err := migrate.LoadBridge(path, mx.MustNew(api.URL, ""))
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := &source{admin: mx.MustNew(api.URL, "admin"), bridges: []*migrate.Bridge{b}}
+			sess, relock, err := s.open(t.Context(), migrate.SynapseUser{UserID: "@bot:example.org", AppserviceID: "bridge", Locked: true})
+			if reject {
+				if err == nil {
+					t.Fatal("authentication failure ignored")
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if locked.Load() {
+					t.Fatal("account relocked before export")
+				}
+				relock()
+				sess.Close(t.Context())
+			}
+			if !locked.Load() {
+				t.Fatal("source account left unlocked")
+			}
+		})
+	}
+}
+
 func (w *reportCheckingWriter) Write(p []byte) (int, error) {
 	w.t.Helper()
 	if _, err := os.Stat(w.path); err != nil {

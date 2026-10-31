@@ -32,12 +32,24 @@ func (e *Exporter) ExportServer(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if checkpoint != nil && maps.Equal(checkpoint.SkippedRooms, e.Archive.Manifest.SkippedRooms) {
+		if checkpoint != nil && len(e.Bridges) == 0 && maps.Equal(checkpoint.SkippedRooms, e.Archive.Manifest.SkippedRooms) {
 			slog.Info("reusing exported server data")
 			return nil
 		}
 	}
 	srv := &archive.Server{SkippedRemoteMedia: true, HistoryAtCheckpoint: e.HistoryAtCheckpoint}
+	for _, b := range e.Bridges {
+		srv.AppserviceRegistrations = append(srv.AppserviceRegistrations, b.registration)
+	}
+	if len(e.Bridges) > 0 {
+		if e.DB == nil {
+			return errors.New("appservice export requires --synapse-db to verify source deliveries")
+		}
+		if err := e.DB.CheckAppserviceQueues(ctx, e.Bridges); err != nil {
+			return err
+		}
+		srv.BridgeQueuesDrained = true
+	}
 	if e.MAS != nil {
 		var err error
 		if srv.RegistrationTokens, err = e.MAS.RegistrationTokens(ctx); err != nil {
@@ -84,6 +96,19 @@ func (e *Exporter) ExportServer(ctx context.Context) error {
 		if err := e.exportTuwunelMedia(ctx, srv); err != nil {
 			return err
 		}
+	}
+	if e.TuwunelDump != nil && len(srv.AppserviceRegistrations) > 0 {
+		for _, table := range outgoingTables {
+			if _, ok := e.TuwunelDump.maps[table]; !ok {
+				return fmt.Errorf("appservice export requires %s.txt to verify source queues", table)
+			}
+			for key := range e.TuwunelDump.maps[table] {
+				if strings.HasPrefix(key, "+") {
+					return errors.New("source appservice deliveries are pending; drain bridge queues before taking the final dump")
+				}
+			}
+		}
+		srv.BridgeQueuesDrained = true
 	}
 	if err := e.Archive.WriteServer(srv); err != nil {
 		return err

@@ -123,27 +123,98 @@ For one account, use `--from-type tuwunel` with the [single-account flow](#movin
 ### Replacing Synapse on the same server name
 
 This restores sessions, devices and encryption on the same server name.
-Keep a source database and media backup. Before the final export, stop client,
-bridge and federation writes to Synapse while leaving its APIs available to
-exowodus. Export reads APIs and database tables separately; it is not a consistent
-snapshot while the source is changing. Route clients to the destination only
+Keep a source database and media backup. Pause client and federation writes,
+let bridges finish processing source transactions, then stop bridge writes too.
+Leave Synapse's APIs available to Exowodus. Export reads APIs and database tables
+separately; it is not a consistent snapshot while the source is changing.
+Route clients to the destination only
 after import completes without failures.
 
 ```sh
 exowodus export --from https://example.org --from-admin-token "$ADMIN" --all-users \
-  --synapse-db postgres://synapse@db/synapse
+  --synapse-db postgres://synapse@db/synapse \
+  --synapse-signing-key /etc/synapse/example.org.signing.key \
+  --from-appservice-registration /etc/synapse/bridges/telegram.yaml
 
 # stop Synapse, start Continuwuity with the same server_name
 
-exowodus import --to http://continuwuity:8008 --registration-token "$REG" --to-admin-token "$CADMIN" \
-  --appservice-registration /etc/synapse/bridges/telegram.yaml
+exowodus import --to http://continuwuity:8008 --registration-token "$REG" \
+  --to-admin-token "$CADMIN" --relay-name relay.example.net
 
 exowodus proxy --upstream http://continuwuity:8008
 ```
 
-Keep each bridge's database and crypto store. Its registration file does not
-restore device keys; queued messages wait until their original devices exist
-on the destination.
+Keep each bridge's database, crypto store, configuration and registration.
+The homeserver backup does not contain the bridge's private encryption keys or
+external message mappings. Do not reset the bridge or let two copies use the
+same encryption device.
+
+Bridge imports require [original-event transfer](#relay---relay-name), the original
+server name and drained source appservice queues. Replay is refused because new
+event IDs break replies, edits, reactions and threads stored in bridge databases.
+An archive already replayed with changed IDs requires a fresh destination for
+this workflow. Exowodus checks preserved history before releasing bridge delivery;
+it does not rewrite bridge databases.
+
+Pass each source bridge registration with `--from-appservice-registration` during
+export. Bot and puppet accounts retain their profiles and account data, including
+device-less puppets. Existing devices retain their IDs and public keys.
+Bridge accounts use appservice credentials and Synapse database data, including
+on MAS deployments. Registrations are archived and restored during import.
+
+For an older archive whose report says a bridge recipient or inviter was not
+restored, recover the omitted accounts before rerunning import:
+
+```sh
+exowodus recover-bridge-accounts --archive ./exowodus-archive \
+  --from http://source-synapse:8008 --from-admin-token "$ADMIN" \
+  --synapse-db postgres://synapse@db/synapse \
+  --registration /path/to/bridge-registration.yaml
+```
+
+This requires drained source queues, the original Synapse API and a matching
+database with writes paused. A MAS database alone does not contain bridge
+accounts. It adds missing accounts without replacing archived users or room
+history. Rerun `import` with the same archive to restore the bot devices and
+retry pending device messages
+and invites. Keep the bridge stopped until the filtering step below is active.
+
+Bridge delivery is held during import so imported history and old commands
+cannot be sent to Discord or other bridged services. After importing, keep the
+bridge stopped and drain its delivery queue through a temporary filter:
+
+```sh
+exowodus repair-bridge --archive ./exowodus-archive \
+  --to http://localhost:8008 --to-admin-token "$CADMIN" \
+  --registration /path/to/bridge-registration.yaml \
+  --public-url http://host.docker.internal:8011
+```
+
+This example runs Exowodus on a Docker Desktop host. `--public-url` must reach
+Exowodus from Continuwuity. If the registration's bridge URL only resolves inside
+Docker, add `--upstream http://localhost:<published-bridge-port>`. Keep the
+registration file's original bridge URL; the command changes only the server's
+copy. Older archives must pass the same source queue and original-event checks.
+
+Start the bridge when the command prints **bridge filtering active**. The filter
+removes exact imported event IDs and forwards new messages, device messages and
+other transaction data. It leaves Matrix history intact. Continuwuity retries
+failed deliveries when new bridge-room traffic arrives after its backoff;
+if the command waits without receiving transactions, send a new message in a
+bridge room. Leave the filter running until it reports **direct delivery
+restored** and exits. If interrupted, rerun the same command; delivery remains
+routed through the filter address. Repeat for each bridge.
+
+The import report's `complete` field covers the data import. Its
+`bridge_deliveries_held` list names services still waiting for this step;
+`repair-bridge` removes each entry after restoring direct delivery.
+
+For encrypted mautrix bridges on Continuwuity, use `/sync` for encryption data
+(`bridge.encryption.appservice: false` in mautrix-discord) and route the bridge's
+homeserver URL through `exowodus proxy`. Continuwuity's appservice sender does
+not currently push to-device events. Device masquerading alone does not provide
+that delivery path. Keep the bridge database and device ID when changing this
+setting.
 
 To leave an unavailable room in the archive, add `--skip-room '!room:server'`
 to the import command. The exclusion also applies to later imports.

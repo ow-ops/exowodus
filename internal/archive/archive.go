@@ -37,12 +37,13 @@ func (a *Archive) RequireLossless() error {
 }
 
 type User struct {
-	UserID      string `json:"user_id"`
-	DisplayName string `json:"displayname,omitempty"`
-	AvatarURL   string `json:"avatar_url,omitempty"`
-	Admin       bool   `json:"admin,omitempty"`
-	Locked      bool   `json:"locked,omitempty"`
-	Suspended   bool   `json:"suspended,omitempty"`
+	AppserviceID string `json:"appservice_id,omitempty"`
+	UserID       string `json:"user_id"`
+	DisplayName  string `json:"displayname,omitempty"`
+	AvatarURL    string `json:"avatar_url,omitempty"`
+	Admin        bool   `json:"admin,omitempty"`
+	Locked       bool   `json:"locked,omitempty"`
+	Suspended    bool   `json:"suspended,omitempty"`
 	// Deactivated accounts are recreated deactivated to keep their ID reserved.
 	Deactivated bool     `json:"deactivated,omitempty"`
 	Emails      []string `json:"emails,omitempty"`
@@ -159,11 +160,12 @@ type ArchivedRoom struct {
 }
 
 type RoomImportState struct {
-	NewRoomID string            `json:"new_room_id"`
-	Replayed  int               `json:"replayed"`
-	Events    map[string]string `json:"events"`
-	Media     map[string]string `json:"media"`
-	Done      bool              `json:"done"`
+	OriginalEvents bool              `json:"original_events,omitempty"`
+	NewRoomID      string            `json:"new_room_id"`
+	Replayed       int               `json:"replayed"`
+	Events         map[string]string `json:"events"`
+	Media          map[string]string `json:"media"`
+	Done           bool              `json:"done"`
 }
 
 type ExternalID struct {
@@ -608,6 +610,7 @@ func readOptionalJSON(path string, v any) error {
 }
 
 type Server struct {
+	BridgeQueuesDrained     bool     `json:"bridge_queues_drained,omitempty"`
 	HistoryAtCheckpoint     bool     `json:"history_at_checkpoint,omitempty"`
 	AppserviceRegistrations []string `json:"appservice_registrations,omitempty"`
 	Media                   []Media  `json:"media,omitempty"`

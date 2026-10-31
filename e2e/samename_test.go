@@ -223,7 +223,7 @@ func TestSameServerName(t *testing.T) {
 	dir := t.TempDir()
 	signingKey := filepath.Join(workDir(t), "samename", "samename.signing.key")
 	exowodus(t, "export", "--from", samenameURL, "--from-admin-token", sadmin.AccessToken, "--all-users",
-		"--synapse-db", synapseDB, "--synapse-signing-key", signingKey, "--archive", dir)
+		"--synapse-db", synapseDB, "--synapse-signing-key", signingKey, "--from-appservice-registration", "bridge.yaml", "--archive", dir)
 	if _, err := os.Stat(filepath.Join(dir, "rooms", url.PathEscape(local), "events.jsonl")); err != nil {
 		t.Fatalf("local room history not exported: %v", err)
 	}

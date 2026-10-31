@@ -64,7 +64,7 @@ func (im *Importer) RelayRooms(ctx context.Context, rooms []*archive.ArchivedRoo
 		}
 		err := rl.AddRoomFile(room.RoomID, room.Version, im.Archive.RoomPDUsPath(room.RoomID))
 		if errors.Is(err, fs.ErrNotExist) {
-			if im.RequireLossless {
+			if im.RequireLossless || im.bridgePreservation || len(im.Bridges) > 0 {
 				rep := &RoomReport{RoomID: room.RoomID}
 				rep.fail("lossless", room.RoomID, errors.New("original PDUs unavailable; replay refused"))
 				reports = append(reports, rep)
@@ -75,7 +75,7 @@ func (im *Importer) RelayRooms(ctx context.Context, rooms []*archive.ArchivedRoo
 			continue
 		}
 		if err != nil {
-			if im.RequireLossless {
+			if im.RequireLossless || im.bridgePreservation || len(im.Bridges) > 0 {
 				rep := &RoomReport{RoomID: room.RoomID}
 				rep.fail("lossless", room.RoomID, err)
 				reports = append(reports, rep)
@@ -135,8 +135,12 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 		return err
 	}
 	if r.st.Done {
-		if im.RequireLossless {
-			return verifyOriginalRoomEvents(ctx, r.relayReaders(owner, members), room.RoomID, room.Version, im.Archive.RoomEventsIter(room.RoomID))
+		if im.RequireLossless || im.bridgePreservation || len(im.Bridges) > 0 || !r.st.OriginalEvents {
+			if err := verifyOriginalRoomEvents(ctx, r.relayReaders(owner, members), room.RoomID, room.Version, im.Archive.RoomEventsIter(room.RoomID)); err != nil {
+				return err
+			}
+			r.st.OriginalEvents = true
+			return r.save()
 		}
 		return nil
 	}
@@ -194,7 +198,7 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 		return fmt.Errorf("backfill: %w", err)
 	}
 	rep.Replayed = backfilled
-	if im.RequireLossless {
+	if im.RequireLossless || im.bridgePreservation || len(im.Bridges) > 0 {
 		if err := verifyOriginalRoomEvents(ctx, readers, room.RoomID, room.Version, im.Archive.RoomEventsIter(room.RoomID)); err != nil {
 			return err
 		}
@@ -250,7 +254,7 @@ func (im *Importer) relayRoom(ctx context.Context, room *archive.ArchivedRoom, r
 			return errors.New("relay departure did not update destination membership")
 		}
 	}
-	r.st.Done = true
+	r.st.Done, r.st.OriginalEvents = true, true
 	return r.save()
 }
 

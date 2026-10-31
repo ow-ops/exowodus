@@ -75,12 +75,13 @@ Replacing Synapse on the same server name:
 	}
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable debug logging")
 	root.PersistentFlags().StringVar(&progressMode, "progress", "auto", "progress display: auto, plain or tty")
-	root.AddCommand(newExportCmd(), newImportCmd(), newMigrateCmd(), newProxyCmd(), newLinkSSOCmd(), newRestoreSigningKeyCmd(), newRestoreMediaCmd(), newRestoreSessionsCmd(), newRefreshMASSessionsCmd(), newFinishCmd(), newResetImportCmd(), newRepairTuwunelAccountsCmd(), newRecoverLoginCmd())
+	root.AddCommand(newExportCmd(), newImportCmd(), newMigrateCmd(), newProxyCmd(), newLinkSSOCmd(), newRestoreSigningKeyCmd(), newRestoreMediaCmd(), newRestoreSessionsCmd(), newRefreshMASSessionsCmd(), newFinishCmd(), newResetImportCmd(), newRepairTuwunelAccountsCmd(), newRecoverLoginCmd(), newRepairBridgeCmd(), newRecoverBridgeAccountsCmd())
 	styleCommands(root, &progressMode, &verbose)
 	return root
 }
 
 type sourceFlags struct {
+	bridges                                    []string
 	requireLossless                            bool
 	kind, tuwunelDump, serverUser              string
 	url, token, user, password, adminToken, db string
@@ -94,6 +95,7 @@ type sourceFlags struct {
 
 func (f *sourceFlags) register(cmd *cobra.Command) {
 	fs := cmd.Flags()
+	fs.StringSliceVar(&f.bridges, "from-appservice-registration", nil, "source bridge registration YAML, to preserve bot accounts and devices (repeatable)")
 	fs.StringVar(&f.url, "from", "", "source homeserver client API URL")
 	fs.StringVar(&f.kind, "from-type", "synapse", "source server type: synapse or tuwunel")
 	fs.StringVar(&f.tuwunelDump, "tuwunel-dump", "", "directory of offline Tuwunel RocksDB hex scans, to keep passwords and sessions")
@@ -121,6 +123,7 @@ func (f *sourceFlags) register(cmd *cobra.Command) {
 }
 
 type source struct {
+	bridges                    []*migrate.Bridge
 	dump                       *migrate.TuwunelDump
 	allUsers, skipMissingMedia bool
 	historyAtCheckpoint        bool
@@ -145,6 +148,12 @@ func (f *sourceFlags) preservationDefault() {
 
 func (f *sourceFlags) open(ctx context.Context) (*source, error) {
 	f.preservationDefault()
+	if len(f.bridges) > 0 && (f.kind != "synapse" || f.adminToken == "") {
+		return nil, errors.New("--from-appservice-registration requires a Synapse source and --from-admin-token")
+	}
+	if len(f.bridges) > 0 && !f.allUsers {
+		return nil, errors.New("moving appservices requires --all-users so their rooms and accounts are included")
+	}
 	if (f.masClientID == "") != (f.masClientSecret == "") {
 		return nil, errors.New("--from-mas-client-id and --from-mas-client-secret must be supplied together")
 	}
@@ -269,7 +278,18 @@ func (f *sourceFlags) openAPI(ctx context.Context) (*source, error) {
 		if err != nil {
 			return nil, fmt.Errorf("source: %w", err)
 		}
-		users, err := migrate.SelectSynapseUsers(ctx, admin, f.users, f.masURL == "")
+		var bridges []*migrate.Bridge
+		for _, path := range f.bridges {
+			b, err := migrate.LoadBridge(path, base)
+			if err != nil {
+				return nil, err
+			}
+			if slices.ContainsFunc(bridges, func(old *migrate.Bridge) bool { return old.ID == b.ID }) {
+				return nil, fmt.Errorf("duplicate source appservice %s", b.ID)
+			}
+			bridges = append(bridges, b)
+		}
+		users, err := migrate.SelectSynapseUsers(ctx, admin, f.users, f.masURL == "", bridges...)
 		if err != nil {
 			return nil, err
 		}
@@ -277,8 +297,17 @@ func (f *sourceFlags) openAPI(ctx context.Context) (*source, error) {
 			bot := "@" + f.serverUser + ":" + admin.UserID.Homeserver()
 			users = slices.DeleteFunc(users, func(u migrate.SynapseUser) bool { return u.UserID == bot })
 		}
-		s := &source{allUsers: f.allUsers, serverName: admin.UserID.Homeserver(), admin: admin, adminID: string(admin.UserID)}
+		s := &source{allUsers: f.allUsers, serverName: admin.UserID.Homeserver(), admin: admin, adminID: string(admin.UserID), bridges: bridges}
 		for _, u := range users {
+			if f.kind == "tuwunel" {
+				u.AppserviceID, u.Passwordless = "", false
+			}
+			if u.AppserviceID != "" && f.db == "" {
+				return nil, fmt.Errorf("%s: bridge account preservation requires --synapse-db", u.UserID)
+			}
+			if u.AppserviceID != "" && !slices.ContainsFunc(bridges, func(b *migrate.Bridge) bool { return b.ID == u.AppserviceID }) {
+				return nil, fmt.Errorf("%s has bridge account data; supply --from-appservice-registration for appservice %s", u.UserID, u.AppserviceID)
+			}
 			if u.Deactivated {
 				s.deactivated = append(s.deactivated, u)
 			} else {
@@ -370,7 +399,25 @@ func (s *source) each(ctx context.Context, fn func(*migrate.Session) error) erro
 func (s *source) open(ctx context.Context, u migrate.SynapseUser) (*migrate.Session, func(), error) {
 	var sess *migrate.Session
 	var err error
+	var relock func()
+	// Appservice Whoami is subject to account locks too.
+	if u.Locked && u.AppserviceID != "" {
+		relock, err = migrate.UnlockTemporarily(ctx, s.admin, u.UserID)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
 	switch {
+	case u.AppserviceID != "":
+		for _, b := range s.bridges {
+			if b.ID == u.AppserviceID {
+				sess, err = b.SourceSession(ctx, u)
+				break
+			}
+		}
+		if sess == nil && err == nil {
+			err = errors.New("source appservice registration is missing")
+		}
 	case s.mas != nil:
 		sess, err = s.mas.Impersonate(ctx, s.admin, u, impersonationTTL)
 	case u.UserID == s.adminID:
@@ -380,13 +427,18 @@ func (s *source) open(ctx context.Context, u migrate.SynapseUser) (*migrate.Sess
 		sess, err = migrate.Impersonate(ctx, s.admin, u, impersonationTTL)
 	}
 	if err != nil {
+		if relock != nil {
+			relock()
+		}
 		return nil, nil, err
+	}
+	if relock != nil {
+		return sess, relock, nil
 	}
 	if !u.Locked {
 		return sess, func() {}, nil
 	}
-	var relock func()
-	if s.mas != nil {
+	if s.mas != nil && u.AppserviceID == "" {
 		relock, err = s.mas.UnlockTemporarily(ctx, u.UserID)
 	} else {
 		relock, err = migrate.UnlockTemporarily(ctx, s.admin, u.UserID)
@@ -399,7 +451,7 @@ func (s *source) open(ctx context.Context, u migrate.SynapseUser) (*migrate.Sess
 }
 
 func (s *source) exporter(a *archive.Archive) *migrate.Exporter {
-	return &migrate.Exporter{AllUsers: s.allUsers, SkipMissingMedia: s.skipMissingMedia, HistoryAtCheckpoint: s.historyAtCheckpoint, Archive: a, Admin: s.admin, DB: s.db, MAS: s.mas, MASDB: s.masDB, TuwunelDump: s.dump}
+	return &migrate.Exporter{AllUsers: s.allUsers, SkipMissingMedia: s.skipMissingMedia, HistoryAtCheckpoint: s.historyAtCheckpoint, Archive: a, Admin: s.admin, DB: s.db, MAS: s.mas, MASDB: s.masDB, TuwunelDump: s.dump, Bridges: s.bridges}
 }
 
 func (s *source) Close() {
@@ -456,13 +508,13 @@ func (f *destFlags) importer(ctx context.Context, a *archive.Archive, migrated m
 	if len(f.bridges) > 0 && im.Admin == nil {
 		return nil, errors.New("--appservice-registration requires --to-admin-token")
 	}
+	if len(f.bridges) > 0 && im.Admin.ServerName() != a.Manifest.ServerName {
+		return nil, errors.New("--appservice-registration requires the same server name")
+	}
 	for _, path := range f.bridges {
 		b, err := migrate.LoadBridge(path, im.Dest)
 		if err != nil {
 			return nil, err
-		}
-		if err := b.Register(ctx, im.Admin); err != nil {
-			return nil, fmt.Errorf("register appservice %s: %w", b.ID, err)
 		}
 		im.Bridges = append(im.Bridges, b)
 	}
@@ -615,6 +667,11 @@ after replacing Synapse with Continuwuity on the same server name.`,
 			if err := a.CheckExport(); err != nil {
 				return err
 			}
+			lock, err := a.LockImport()
+			if err != nil {
+				return err
+			}
+			defer lock.Close()
 			if len(skipRooms) > 0 {
 				excluded := append(slices.Collect(maps.Keys(a.Manifest.SkippedRooms)), skipRooms...)
 				if err := a.SetSkippedRooms(excluded); err != nil {
@@ -653,6 +710,14 @@ after replacing Synapse with Continuwuity on the same server name.`,
 			}
 			if err := im.SetAdoptExistingUsers(users, adoptExisting); err != nil {
 				return err
+			}
+			if err := im.CheckBridgePreservation(ctx, rooms, srv, relayOpts.name != ""); err != nil {
+				return importPreflightFailure(a, err)
+			}
+			for _, b := range im.Bridges {
+				if err := b.Hold(ctx, im.Admin); err != nil {
+					return fmt.Errorf("hold appservice %s: %w", b.ID, err)
+				}
 			}
 			if err := im.CheckDestination(ctx, users); err != nil {
 				return importPreflightFailure(a, fmt.Errorf("destination preflight: %w", err))
@@ -698,7 +763,24 @@ after replacing Synapse with Continuwuity on the same server name.`,
 			var reports []*migrate.Report
 			var jobs []*migrate.UserJob
 			var failed int
+			// Ordinary accounts must exist before bridges reserve their namespaces.
+			slices.SortStableFunc(users, func(a, b *archive.User) int {
+				if (a.AppserviceID == "") == (b.AppserviceID == "") {
+					return 0
+				}
+				if a.AppserviceID == "" {
+					return -1
+				}
+				return 1
+			})
+			bridgesReady := false
 			for i, u := range users {
+				if u.AppserviceID != "" && !bridgesReady {
+					if err := im.RestoreBridges(ctx, srv); err != nil {
+						return err
+					}
+					bridgesReady = true
+				}
 				progress.Count(ctx, "Prepare accounts", i, len(users))
 				job, err := im.PrepareUser(ctx, u)
 				if ctx.Err() != nil {
@@ -823,6 +905,9 @@ over its power level, so invite-only and local-only rooms are kept.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			src.preservationDefault()
+			if len(src.bridges) > 0 || len(dst.bridges) > 0 {
+				return errors.New("appservices require separate export and import with original event IDs")
+			}
 			if src.requireLossless {
 				return errors.New("--require-lossless requires separate export and import with a relay, not streaming migrate")
 			}
@@ -832,10 +917,18 @@ over its power level, so invite-only and local-only rooms are kept.`,
 				return err
 			}
 			defer s.Close()
+			if slices.ContainsFunc(s.users, func(u migrate.SynapseUser) bool { return u.AppserviceID != "" }) {
+				return errors.New("bridge accounts require separate export and import on the original server name")
+			}
 			a, err := archive.Create(dir, s.serverName)
 			if err != nil {
 				return err
 			}
+			lock, err := a.LockImport()
+			if err != nil {
+				return err
+			}
+			defer lock.Close()
 			im, err := dst.importer(ctx, a, s.userIDs())
 			if err != nil {
 				return err
@@ -1022,6 +1115,7 @@ func finishImport(ctx context.Context, out io.Writer, im *migrate.Importer, a *a
 		slog.Info("restoring server data")
 		notes, failures = im.ImportServer(ctx)
 	}
+	notes = append(notes, im.HeldBridgeNotes()...)
 	if ctx.Err() == nil {
 		slog.Info("restoring pending invites")
 		failures = append(failures, im.RestoreInvites(ctx, users)...)
@@ -1046,12 +1140,13 @@ func finishImport(ctx context.Context, out io.Writer, im *migrate.Importer, a *a
 	complete := ctx.Err() == nil && migrationFailures(reports, rooms, failures) == nil && len(reports) == len(users)
 	slog.Info("writing import report")
 	reportErr := a.WriteImportReport(struct {
-		Complete bool                  `json:"complete"`
-		Users    []*migrate.Report     `json:"users"`
-		Rooms    []*migrate.RoomReport `json:"rooms,omitempty"`
-		Failures []migrate.Failure     `json:"failures,omitempty"`
-		Notes    []string              `json:"notes,omitempty"`
-	}{Complete: complete, Users: reports, Rooms: rooms, Failures: failures, Notes: notes})
+		Complete    bool                  `json:"complete"`
+		BridgesHeld []string              `json:"bridge_deliveries_held,omitempty"`
+		Users       []*migrate.Report     `json:"users"`
+		Rooms       []*migrate.RoomReport `json:"rooms,omitempty"`
+		Failures    []migrate.Failure     `json:"failures,omitempty"`
+		Notes       []string              `json:"notes,omitempty"`
+	}{Complete: complete, BridgesHeld: im.HeldBridges(), Users: reports, Rooms: rooms, Failures: failures, Notes: notes})
 	if reportErr == nil {
 		slog.Info("import report written", "complete", complete)
 	}
@@ -1129,6 +1224,17 @@ func startRelay(ctx context.Context, a *archive.Archive, destURL string, f relay
 
 func exportRooms(ctx context.Context, exp *migrate.Exporter, users []*archive.User, member *mautrix.Client, jobs int) error {
 	ids := migrate.LocalOnlyRooms(users)
+	if len(exp.Bridges) > 0 {
+		// Appservices may receive events in federated rooms too. Preserve that
+		// history and include its IDs in the delivery filter.
+		seen := map[string]bool{}
+		for _, u := range users {
+			for _, r := range u.Rooms {
+				seen[r.RoomID] = true
+			}
+		}
+		ids = slices.Sorted(maps.Keys(seen))
+	}
 	if exp.TuwunelDump != nil && exp.TuwunelDump.HasRelayData() && exp.AllUsers {
 		var err error
 		ids, err = exp.TuwunelDump.RoomIDs(ctx)

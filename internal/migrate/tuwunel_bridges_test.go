@@ -72,7 +72,7 @@ func TestTuwunelBridgeUsers(t *testing.T) {
 
 func TestTuwunelDumpBridgeRegistrationRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	for _, name := range []string{"userid_password", "token_userdeviceid"} {
+	for _, name := range []string{"userid_password", "token_userdeviceid", "servercurrentevent_data", "servernameevent_data"} {
 		if err := os.WriteFile(filepath.Join(dir, name+".txt"), nil, 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -109,6 +109,15 @@ func TestTuwunelDumpBridgeRegistrationRoundTrip(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0600 {
 		t.Fatal("registration tokens must stay private")
 	}
+	delete(d.maps, "servercurrentevent_data")
+	if err := exp.ExportServer(t.Context()); err == nil {
+		t.Fatal("unknown source delivery queue accepted")
+	}
+	d.maps["servercurrentevent_data"] = map[string][]byte{"+example-bridge\xffpending": nil}
+	if err := exp.ExportServer(t.Context()); err == nil {
+		t.Fatal("undelivered source bridge event accepted")
+	}
+	d.maps["servercurrentevent_data"] = map[string][]byte{}
 	exp.AllUsers = false
 	if err := exp.ExportServer(t.Context()); err != nil {
 		t.Fatal(err)

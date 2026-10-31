@@ -20,6 +20,11 @@ archive; export data stays. Then import into a new, empty Continuwuity database.
 			if err != nil {
 				return err
 			}
+			lock, err := a.LockImport()
+			if err != nil {
+				return err
+			}
+			defer lock.Close()
 			backup, moved, err := a.ResetImport()
 			if err != nil {
 				return fmt.Errorf("%w; files moved so far are in %s", err, backup)

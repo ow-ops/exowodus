@@ -43,9 +43,10 @@ type Importer struct {
 	Migrated map[string]bool
 
 	// Admin and Appservice are optional.
-	Admin      *ContinuwuityAdmin
-	Appservice *Appservice
-	Bridges    []*Bridge
+	Admin              *ContinuwuityAdmin
+	Appservice         *Appservice
+	Bridges            []*Bridge
+	bridgePreservation bool
 
 	sessions                     map[string]destAccount
 	media                        map[string]string
@@ -287,7 +288,20 @@ func (im *Importer) importDevices(ctx context.Context, job *UserJob, secrets *ar
 		}
 		if token == "" {
 			var err error
-			token, err = im.Appservice.Login(ctx, job.acct.id, d.ID, d.DisplayName)
+			service := im.Appservice
+			if job.User.AppserviceID != "" {
+				service = nil
+				for _, b := range im.Bridges {
+					if b.ID == job.User.AppserviceID {
+						service = &Appservice{client: b.client}
+						break
+					}
+				}
+			}
+			if service == nil || service.client == nil {
+				return errors.New("device restoration requires its account's appservice registration")
+			}
+			token, err = service.Login(ctx, job.acct.id, d.ID, d.DisplayName)
 			if err != nil {
 				job.Report.fail("device", d.ID, err)
 				continue
@@ -861,6 +875,17 @@ func (im *Importer) addMedia(m map[string]string) {
 
 func (im *Importer) destSession(ctx context.Context, u *archive.User) (destAccount, error) {
 	if a, ok := im.sessions[u.UserID]; ok {
+		return a, nil
+	}
+	if u.AppserviceID != "" {
+		a, err := im.bridgeAccount(ctx, u)
+		if err != nil {
+			return destAccount{}, err
+		}
+		if im.sessions == nil {
+			im.sessions = map[string]destAccount{}
+		}
+		im.sessions[u.UserID] = a
 		return a, nil
 	}
 	c, password, err := im.login(ctx, u)

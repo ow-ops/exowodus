@@ -787,6 +787,11 @@ func (im *Importer) ReplayRooms(ctx context.Context, rooms []*archive.ArchivedRo
 		}
 		rep := &RoomReport{RoomID: room.RoomID}
 		reports = append(reports, rep)
+		if im.bridgePreservation || len(im.Bridges) > 0 {
+			rep.fail("bridge_preservation", room.RoomID, errors.New("appservice history must retain its original event IDs; replay is disabled"))
+			im.roomFailures[room.RoomID] = true
+			continue
+		}
 		r, err := im.newReplay(ctx, room, rep)
 		if err == nil {
 			slog.Info("replaying room", "room", room.RoomID)
