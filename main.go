@@ -971,6 +971,8 @@ Without --upstream it only serves archived media, for a retired server name.`,
 			if err := p.StartOutbox(cmd.Context()); err != nil {
 				return err
 			}
+			stopRetirement := p.WatchRetirement(cmd.Context())
+			defer stopRetirement()
 			srv := &http.Server{Addr: listen, Handler: p, ReadHeaderTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute}
 			stopped := make(chan struct{})
 			go func() {

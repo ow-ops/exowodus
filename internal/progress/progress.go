@@ -52,6 +52,8 @@ type activity struct {
 	requestStarted       time.Time
 	attempt              int
 	warnings, failures   int
+	panelTitle           string
+	panel                []string
 }
 
 type Display struct {
@@ -115,6 +117,15 @@ func Count(ctx context.Context, label string, done, total int) {
 			}
 		}
 		d.state.counters = append(d.state.counters, counter{label, done, total})
+	}
+}
+
+// Panel pins notes below the current activity.
+func Panel(ctx context.Context, title string, lines []string) {
+	if d, ok := ctx.Value(contextKey{}).(*Display); ok {
+		d.state.Lock()
+		d.state.panelTitle, d.state.panel = title, append([]string(nil), lines...)
+		d.state.Unlock()
 	}
 }
 
@@ -237,6 +248,9 @@ func (m model) View() tea.View {
 	status := m.spinner.View() + " " + clip(s.stage)
 	if m.finished {
 		status = "✓ Completed"
+		if s.title == "proxy" {
+			status = "■ Stopped"
+		}
 		if errors.Is(m.err, context.Canceled) {
 			status = "■ Canceled"
 		} else if m.err != nil {
@@ -271,6 +285,12 @@ func (m model) View() tea.View {
 	}
 	if req := s.request; req != nil && !m.finished {
 		lines = append(lines, "", muted.Render(clip(req.Method+" "+req.URL.Host+req.URL.EscapedPath())), muted.Render(clip(fmt.Sprintf("Waiting for response · %s · attempt %d", elapsed(s.requestStarted), s.attempt))))
+	}
+	if len(s.panel) > 0 {
+		lines = append(lines, "", accent.Render(clip(s.panelTitle)))
+		for _, line := range s.panel {
+			lines = append(lines, ansi.Wrap(clean(line), width, ""))
+		}
 	}
 	footer := "Elapsed " + elapsed(s.started)
 	if !m.finished {

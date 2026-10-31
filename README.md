@@ -262,6 +262,12 @@ query strings are omitted. `--progress plain` writes plain logs to stderr.
 Restart the proxy after importing sessions: it loads the archive at startup.
 The `proxy ready` log shows the archive path and imported OAuth refresh count.
 
+The **Before removing the proxy** checklist updates every 30 seconds. Queues
+show pending deliveries; password records clear when migrated by the proxy.
+Verify manual password resets, active logins and old media links directly with
+Continuwuity. Device and media totals stay fixed, and old MAS logins can still
+need the proxy on a later refresh.
+
 ## Rooms only your server was in
 
 These rooms are recreated under their **original room ID**, so links, key

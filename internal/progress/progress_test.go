@@ -104,6 +104,30 @@ func TestUnknownTransferSizeAndNarrowTerminal(t *testing.T) {
 	}
 }
 
+func TestPanelSurvivesActivityAndShutdown(t *testing.T) {
+	ctx, d := testContext(t)
+	d.state.title = "proxy"
+	panel := []string{"Passwords pending: 6", "Login totals are not a countdown; verify active devices work directly.", "Keep the archive."}
+	Panel(ctx, "Before removing the proxy", panel)
+	panel[0] = "changed after update"
+	slog.New(d.Handler(slog.LevelInfo, slog.LevelWarn)).Info("proxy request", "status", 200)
+	for _, width := range []int{24, 40, 80} {
+		m := model{state: d.state, spinner: spinner.New(), bar: bar.New(), width: width, finished: true}
+		view := ansi.Strip(m.View().Content)
+		if !strings.Contains(view, "Stopped") || strings.Contains(view, "Completed") || strings.Contains(view, "changed after update") {
+			t.Fatalf("misleading shutdown view: %s", view)
+		}
+		if width == 80 && (!strings.Contains(view, "Before removing the proxy") || !strings.Contains(view, "Passwords pending: 6") || !strings.Contains(view, "Keep the archive.")) {
+			t.Fatalf("guidance lost after activity: %s", view)
+		}
+		for _, line := range strings.Split(view, "\n") {
+			if ansi.StringWidth(line) > width {
+				t.Fatalf("guidance exceeds terminal width %d: %q", width, line)
+			}
+		}
+	}
+}
+
 func TestDisplayFinishesAndRetainsWarnings(t *testing.T) {
 	for _, tc := range []struct {
 		name, status string
