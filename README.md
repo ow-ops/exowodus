@@ -141,6 +141,13 @@ exowodus import --to http://continuwuity:8008 --registration-token "$REG" --to-a
 exowodus proxy --upstream http://continuwuity:8008
 ```
 
+Keep each bridge's database and crypto store. Its registration file does not
+restore device keys; queued messages wait until their original devices exist
+on the destination.
+
+To leave an unavailable room in the archive, add `--skip-room '!room:server'`
+to the import command. The exclusion also applies to later imports.
+
 Then route all client and federation traffic through `exowodus proxy`, for
 example by pointing your reverse proxy at it instead of Continuwuity. See
 [The proxy](#the-proxy).

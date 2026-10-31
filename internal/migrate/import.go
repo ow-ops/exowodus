@@ -689,8 +689,7 @@ func LinkSSO(ctx context.Context, a *archive.Archive, admin *ContinuwuityAdmin) 
 	return linked, failures
 }
 
-// RestoreInvites only resends invites from migrated inviters in the room;
-// others are reported.
+// RestoreInvites resends invites through migrated accounts or their bridges.
 func (im *Importer) RestoreInvites(ctx context.Context, users []*archive.User) []Failure {
 	var failures []Failure
 	for _, u := range users {
@@ -712,12 +711,16 @@ func (im *Importer) RestoreInvites(ctx context.Context, users []*archive.User) [
 				continue
 			}
 			inviter, ok := im.sessions[inv.Inviter]
-			if !ok {
-				failures = append(failures, Failure{Step: "invite", Target: inv.RoomID,
-					Error: fmt.Sprintf("pending invite from %s to %s not restored: the inviter was not migrated", inv.Inviter, acct.id)})
-				continue
+			client := inviter.client
+			var err error
+			if !ok && im.bridgeOwner(inv.Inviter) != nil {
+				client, err = im.localSender(ctx, inv.Inviter)
+			} else if !ok {
+				err = errors.New("inviter was not migrated; bridge accounts need --appservice-registration")
 			}
-			_, err := inviter.client.InviteUser(ctx, id.RoomID(inv.RoomID), &mautrix.ReqInviteUser{UserID: id.UserID(acct.id)})
+			if err == nil {
+				_, err = client.InviteUser(ctx, id.RoomID(inv.RoomID), &mautrix.ReqInviteUser{UserID: id.UserID(acct.id)})
+			}
 			if ctx.Err() != nil {
 				return failures
 			}

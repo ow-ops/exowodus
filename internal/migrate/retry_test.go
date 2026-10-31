@@ -107,6 +107,48 @@ func TestReplayFailureDoesNotAdvance(t *testing.T) {
 	}
 }
 
+func TestResumedReplayKeepsSkippedCounts(t *testing.T) {
+	a, err := archive.Create(t.TempDir(), "example.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const roomID = "!room:example.org"
+	state, err := a.ReadRoomState(roomID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.NewRoomID = roomID
+	state.Events["$encrypted-kept"], state.Events["$message"] = "$new-encrypted", "$new-message"
+	events := []json.RawMessage{
+		json.RawMessage(`{"event_id":"$create","sender":"@alice:example.org","type":"m.room.create","state_key":"","content":{}}`),
+		json.RawMessage(`{"event_id":"$alias","sender":"@alice:example.org","type":"m.room.canonical_alias","state_key":"","content":{}}`),
+		json.RawMessage(`{"event_id":"$remote-alias","sender":"@remote:elsewhere.org","type":"m.room.canonical_alias","state_key":"","content":{}}`),
+		json.RawMessage(`{"event_id":"$topic","sender":"@remote:elsewhere.org","type":"m.room.topic","state_key":"","content":{}}`),
+		json.RawMessage(`{"event_id":"$reaction","sender":"@remote:elsewhere.org","type":"m.reaction","content":{}}`),
+		json.RawMessage(`{"event_id":"$member","sender":"@remote:elsewhere.org","type":"m.room.member","state_key":"@remote:elsewhere.org","content":{"membership":"join"}}`),
+		json.RawMessage(`{"event_id":"$encrypted-missing","sender":"@remote:elsewhere.org","type":"m.room.encrypted","content":{}}`),
+		json.RawMessage(`{"event_id":"$encrypted-kept","sender":"@alice:example.org","type":"m.room.encrypted","content":{}}`),
+		json.RawMessage(`{"event_id":"$message","sender":"@alice:example.org","type":"m.room.message","content":{}}`),
+		json.RawMessage(`{"event_id":"$encrypted-next","sender":"@remote:elsewhere.org","type":"m.room.encrypted","content":{}}`),
+	}
+	state.Replayed = len(events) - 1
+	im := &Importer{Archive: a, Appservice: &Appservice{Bot: "@exodus:example.org"}, Migrated: map[string]bool{"@alice:example.org": true}, rooms: map[string]string{}}
+	for range 2 {
+		rep := &RoomReport{}
+		r := &replay{im: im, room: &archive.ArchivedRoom{RoomID: roomID, RemoteParticipants: true}, st: state, rep: rep, events: events, skip: map[int]bool{0: true}}
+		if err := r.Create(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if rep.Replayed != 2 || rep.Skipped != 4 || rep.Encrypted != 2 || len(rep.Warnings) != 1 {
+			t.Fatalf("resumed replay lost skipped events or warnings: %+v", rep)
+		}
+		state, err = a.ReadRoomState(roomID)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestFinalizeFailureRemainsPending(t *testing.T) {
 	writes := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {

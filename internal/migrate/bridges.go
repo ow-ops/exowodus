@@ -127,7 +127,7 @@ func (b *Bridge) owns(userID string) bool {
 	return false
 }
 
-func (im *Importer) bridgeFor(userID string) *Bridge {
+func (im *Importer) bridgeOwner(userID string) *Bridge {
 	server := im.Archive.Manifest.ServerName
 	if mx.ServerName(userID) != server {
 		return nil
@@ -144,6 +144,16 @@ func (im *Importer) bridgeFor(userID string) *Bridge {
 				return b
 			}
 		}
+	}
+	return nil
+}
+
+func (im *Importer) bridgeFor(userID string) *Bridge {
+	if b := im.bridgeOwner(userID); b != nil {
+		return b
+	}
+	if mx.ServerName(userID) != im.Archive.Manifest.ServerName {
+		return nil
 	}
 	for _, b := range im.Bridges {
 		if b.owns(userID) {

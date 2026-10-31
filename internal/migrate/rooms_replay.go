@@ -341,7 +341,35 @@ func (r *replay) Create(ctx context.Context) error {
 		}
 	}
 	r.rep.NewRoomID, r.rep.KeptRoomID = r.st.NewRoomID, r.keptRoomID()
+	const remoteWarning = "servers that previously joined this room may reject the recreated room"
+	if r.keptRoomID() && r.room.RemoteParticipants && !slices.Contains(r.rep.Warnings, remoteWarning) {
+		r.rep.Warnings = append(r.rep.Warnings, remoteWarning)
+	}
 	r.im.rooms[r.room.RoomID] = r.st.NewRoomID
+	if r.st.Replayed < 0 || r.st.Replayed > len(r.events) {
+		return errors.New("invalid room replay checkpoint")
+	}
+	r.rep.Skipped, r.rep.Encrypted = 0, 0
+	for i, raw := range r.events[:r.st.Replayed] {
+		if r.skip[i] {
+			continue
+		}
+		ev, err := decodeEvent(raw)
+		if err != nil {
+			return err
+		}
+		if _, restored := r.st.Events[ev.EventID]; restored {
+			continue
+		}
+		switch {
+		case ev.Type == "m.room.encrypted":
+			r.rep.Encrypted++
+		case ev.Type == "m.room.create", ev.Type == "m.room.canonical_alias" && r.local(ev.Sender):
+			// These state events are restored without an event ID mapping.
+		default:
+			r.rep.Skipped++
+		}
+	}
 
 	for i := r.st.Replayed; i < len(r.events); i++ {
 		if !r.skip[i] {
@@ -424,9 +452,6 @@ func (r *replay) createRoom(ctx context.Context) error {
 		return fmt.Errorf("create room: %w", err)
 	}
 	r.st.NewRoomID = resp.RoomID
-	if r.keptRoomID() && r.room.RemoteParticipants {
-		r.rep.Warnings = append(r.rep.Warnings, "users of other servers were once in this room; if one of those servers joins again, it may reject the recreated room")
-	}
 	return r.loadJoined(ctx)
 }
 

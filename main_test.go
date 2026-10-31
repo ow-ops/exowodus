@@ -507,6 +507,64 @@ func TestImportRejectsIncompleteArchive(t *testing.T) {
 	}
 }
 
+func TestImportSkipsRoomWithoutReexport(t *testing.T) {
+	const skipped = "!unavailable:elsewhere.org"
+	const previous = "!previous:elsewhere.org"
+	a, err := archive.Create(t.TempDir(), "example.org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SetSkippedRooms([]string{previous}); err != nil {
+		t.Fatal(err)
+	}
+	u := &archive.User{UserID: "@alice:example.org", Rooms: []archive.Room{{RoomID: skipped, Via: []string{"elsewhere.org"}}, {RoomID: previous, Via: []string{"elsewhere.org"}}}}
+	if err := a.WriteUser(u); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.FinishExport(nil); err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/join/") {
+			t.Error("skipped room was joined")
+		}
+		if strings.HasSuffix(r.URL.Path, "/whoami") {
+			_, _ = io.WriteString(w, `{"user_id":"@alice:example.org","device_id":"DEVICE"}`)
+		} else {
+			_, _ = io.WriteString(w, `{}`)
+		}
+	}))
+	defer api.Close()
+	for _, extra := range [][]string{{"--skip-room", skipped}, nil} {
+		cmd := newRootCmd()
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs(append([]string{"import", "--archive", a.Dir, "--to", api.URL, "--to-token", "token"}, extra...))
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		stored, err := archive.Open(a.Dir)
+		if err != nil || !stored.IsRoomSkipped(skipped) || !stored.IsRoomSkipped(previous) {
+			t.Fatalf("room exclusions did not survive import: %v", err)
+		}
+		var report struct {
+			Complete bool              `json:"complete"`
+			Users    []*migrate.Report `json:"users"`
+		}
+		raw, err := os.ReadFile(filepath.Join(a.Dir, "import-report.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(raw, &report); err != nil || !report.Complete || len(report.Users) != 1 || len(report.Users[0].SkippedRooms) != 2 {
+			t.Fatalf("skipped rooms missing from import report: report=%+v error=%v", report, err)
+		}
+		archived, err := stored.ReadUser(u.UserID)
+		if err != nil || len(archived.Rooms) != 2 {
+			t.Fatalf("skipping removed archived room data: %v", err)
+		}
+	}
+}
+
 func TestImportCommandFailsOnReportedStepFailure(t *testing.T) {
 	joins := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

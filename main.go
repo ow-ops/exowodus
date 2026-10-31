@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -592,6 +593,7 @@ func newImportCmd() *cobra.Command {
 	var relayOpts relayFlags
 	var dir string
 	var adoptExisting []string
+	var skipRooms []string
 	var requireLossless bool
 	var skipPrivateReceipts, skipThreadedReceipts, archiveDepartedRooms, deactivatedIDOnly bool
 	cmd := &cobra.Command{
@@ -612,6 +614,12 @@ after replacing Synapse with Continuwuity on the same server name.`,
 			}
 			if err := a.CheckExport(); err != nil {
 				return err
+			}
+			if len(skipRooms) > 0 {
+				excluded := append(slices.Collect(maps.Keys(a.Manifest.SkippedRooms)), skipRooms...)
+				if err := a.SetSkippedRooms(excluded); err != nil {
+					return err
+				}
 			}
 			users, err := a.Users()
 			if err != nil {
@@ -759,6 +767,7 @@ after replacing Synapse with Continuwuity on the same server name.`,
 	}
 	dst.register(cmd)
 	fs := cmd.Flags()
+	fs.StringArrayVar(&skipRooms, "skip-room", nil, "leave this room in the archive without restoring it (repeatable; saved for later imports)")
 	fs.StringSliceVar(&adoptExisting, "adopt-existing-user", nil, "restore this existing passwordless account after an earlier import failed before saving ownership (repeatable; overwrites its account data)")
 	fs.StringVar(&relayOpts.name, "relay-name", "", "temporary federation relay server name for original-event transfer (requires exported signing key and PDUs)")
 	fs.BoolVar(&requireLossless, "require-lossless", false, "require preservation checks (inherited from the export)")

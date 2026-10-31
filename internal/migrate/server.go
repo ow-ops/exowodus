@@ -294,7 +294,11 @@ func (im *Importer) deliverToDevice(ctx context.Context, msgs []archive.ToDevice
 	}
 	local := func(userID string) bool { return mx.ServerName(userID) == server }
 	var remote int
-	devices := map[string]map[string]bool{}
+	type recipient struct {
+		devices map[string]bool
+		err     error
+	}
+	recipients := map[string]recipient{}
 	for _, m := range msgs {
 		if err := ctx.Err(); err != nil {
 			*failures = append(*failures, Failure{Step: "to_device", Error: "delivery canceled; remaining messages retained for retry: " + err.Error()})
@@ -311,27 +315,22 @@ func (im *Importer) deliverToDevice(ctx context.Context, msgs []archive.ToDevice
 			remote++
 			continue
 		}
-		if local(m.Recipient) && !im.Migrated[m.Recipient] {
-			*failures = append(*failures, Failure{Step: "to_device", Target: m.Key, Error: "recipient account was not restored"})
-			continue
-		}
 		if local(m.Recipient) {
-			ready, ok := devices[m.Recipient]
+			ready, ok := recipients[m.Recipient]
 			if !ok {
-				var err error
-				ready, err = im.restoredRecipientDevices(m.Recipient)
-				if err != nil {
-					*failures = append(*failures, Failure{Step: "to_device", Target: m.Key, Error: err.Error()})
-					continue
-				}
-				devices[m.Recipient] = ready
+				ready.devices, ready.err = im.restoredRecipientDevices(ctx, m.Recipient)
+				recipients[m.Recipient] = ready
 			}
-			if !ready[m.DeviceID] {
+			if ready.err != nil {
+				*failures = append(*failures, Failure{Step: "to_device", Target: m.Key, Error: ready.err.Error()})
+				continue
+			}
+			if !ready.devices[m.DeviceID] {
 				*failures = append(*failures, Failure{Step: "to_device", Target: m.Key, Error: "recipient device has not been restored; message retained for retry"})
 				continue
 			}
 		}
-		c, err := im.toDeviceSender(ctx, m.Sender)
+		c, err := im.localSender(ctx, m.Sender)
 		if err != nil {
 			*failures = append(*failures, Failure{Step: "to_device", Target: m.Key, Error: err.Error()})
 			continue
@@ -356,7 +355,25 @@ func (im *Importer) deliverToDevice(ctx context.Context, msgs []archive.ToDevice
 	return nil
 }
 
-func (im *Importer) restoredRecipientDevices(userID string) (map[string]bool, error) {
+func (im *Importer) restoredRecipientDevices(ctx context.Context, userID string) (map[string]bool, error) {
+	if !im.Migrated[userID] {
+		b := im.bridgeOwner(userID)
+		if b == nil {
+			return nil, errors.New("recipient account was not restored; bridge accounts need --appservice-registration")
+		}
+		if b.client == nil {
+			return nil, fmt.Errorf("appservice %s is not connected to the destination", b.ID)
+		}
+		list, err := mx.As(b.client, userID).GetDevicesInfo(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("read recipient %s devices through appservice %s: %w", userID, b.ID, err)
+		}
+		devices := map[string]bool{}
+		for _, d := range list.Devices {
+			devices[string(d.DeviceID)] = true
+		}
+		return devices, nil
+	}
 	state, err := im.Archive.ReadImportState(userID)
 	if err != nil {
 		return nil, err
@@ -380,7 +397,7 @@ func (im *Importer) restoredRecipientDevices(userID string) (map[string]bool, er
 	return devices, nil
 }
 
-func (im *Importer) toDeviceSender(ctx context.Context, userID string) (*mautrix.Client, error) {
+func (im *Importer) localSender(ctx context.Context, userID string) (*mautrix.Client, error) {
 	if b := im.bridgeFor(userID); b != nil {
 		if b.client == nil {
 			return nil, fmt.Errorf("appservice %s is not connected to the destination", b.ID)
