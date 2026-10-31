@@ -204,7 +204,7 @@ func TestVerificationBatchProgress(t *testing.T) {
 	var output bytes.Buffer
 	ctx, display := progress.Start(t.Context(), "export", &output)
 	logger := slog.Default()
-	slog.SetDefault(slog.New(display.Handler(slog.LevelDebug)))
+	slog.SetDefault(slog.New(display.Handler(slog.LevelDebug, slog.LevelDebug)))
 	defer slog.SetDefault(logger)
 	verified, warnings, err := exportVerifications(ctx, mx.MustNew(server.URL, "token"), actor, &archive.CrossSigning{UserSigning: json.RawMessage(`{"keys":{"ed25519:signer":"signer"}}`)}, users)
 	display.Stop(err)

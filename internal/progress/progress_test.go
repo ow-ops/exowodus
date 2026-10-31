@@ -116,7 +116,7 @@ func TestDisplayFinishesAndRetainsWarnings(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var output bytes.Buffer
 			ctx, d := Start(t.Context(), "export", &output)
-			logger := slog.New(d.Handler(slog.LevelInfo)).With("user", "@mia:example.org")
+			logger := slog.New(d.Handler(slog.LevelInfo, slog.LevelWarn)).With("user", "@mia:example.org")
 			logger.Info("Exporting keys")
 			logger.Warn("Retry needed", "reason", "server unavailable")
 			Count(ctx, "Accounts", 1, 2)

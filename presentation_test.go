@@ -67,6 +67,30 @@ func TestPresentationLeavesPasswordInputAlone(t *testing.T) {
 	clear(password)
 }
 
+func TestProxyPresentationRetainsRequestLogs(t *testing.T) {
+	previous := slog.Default()
+	defer slog.SetDefault(previous)
+	var output bytes.Buffer
+	mode, verbose := "tty", false
+	root := &cobra.Command{Use: "exowodus"}
+	root.SetOut(&output)
+	root.SetErr(&output)
+	root.AddCommand(&cobra.Command{Use: "proxy", RunE: func(_ *cobra.Command, _ []string) error {
+		slog.Info("first request", "status", 200)
+		slog.Info("second request", "status", 200)
+		return nil
+	}})
+	styleCommands(root, &mode, &verbose)
+	root.SetArgs([]string{"proxy"})
+	if err := root.ExecuteContext(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	view := ansi.Strip(output.String())
+	if !strings.Contains(view, "INFO first request") || !strings.Contains(view, "INFO second request") {
+		t.Fatalf("request logs missing from scrollback: %q", view)
+	}
+}
+
 func TestProgressModeValidation(t *testing.T) {
 	root := newRootCmd()
 	root.SetOut(&bytes.Buffer{})

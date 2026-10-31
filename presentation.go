@@ -32,10 +32,14 @@ func styleCommands(root *cobra.Command, mode *string, verbose *bool) {
 			ctx, logger := cmd.Context(), slog.Default()
 			liveCtx, display := progress.Start(ctx, cmd.Name(), errOut)
 			level := slog.LevelInfo
+			scrollback := slog.LevelWarn
 			if *verbose {
 				level = slog.LevelDebug
+				scrollback = slog.LevelDebug
+			} else if cmd.Name() == "proxy" {
+				scrollback = slog.LevelInfo
 			}
-			slog.SetDefault(slog.New(display.Handler(level)))
+			slog.SetDefault(slog.New(display.Handler(level, scrollback)))
 			cmd.SetContext(liveCtx)
 			slog.Info(cmd.Short)
 			var summary bytes.Buffer

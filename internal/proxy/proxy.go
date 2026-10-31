@@ -43,7 +43,7 @@ var (
 	refreshPath     = regexp.MustCompile(`^/_matrix/client/(?:v1|v3)/refresh$`)
 	registerPath    = regexp.MustCompile(`^/_matrix/client/(?:r0|v3)/register$`)
 	tokenValidity   = regexp.MustCompile(`^/_matrix/client/v1/register/m\.login\.registration_token/validity$`)
-	oauthTokenPath  = regexp.MustCompile(`(?:/oauth2/token|^/_tuwunel/oidc/token)$`)
+	oauthTokenPath  = regexp.MustCompile(`(?:/oauth2/token|^/_tuwunel/oidc/token|^/_continuwuity/oauth2/grant/token)$`)
 	// Shadow-banned users' events and invites are silently dropped.
 	shadowSend   = regexp.MustCompile(`^/_matrix/client/(?:r0|v3)/rooms/[^/]+/(?:send|state)/`)
 	shadowIgnore = regexp.MustCompile(`^/_matrix/client/(?:r0|v3)/rooms/[^/]+/(?:invite|typing/[^/]+)$`)
@@ -152,7 +152,7 @@ func New(a *archive.Archive, upstream *url.URL, pepper string, macaroonKey []byt
 			p.Close()
 			return nil, err
 		}
-		p.rp = &httputil.ReverseProxy{ModifyResponse: p.inboxResponse, Rewrite: func(pr *httputil.ProxyRequest) {
+		p.rp = &httputil.ReverseProxy{ModifyResponse: p.inboxResponse, ErrorHandler: upstreamError, Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(upstream)
 			pr.SetXForwarded()
 			pr.Out.Host = pr.In.Host
@@ -172,7 +172,7 @@ func (p *Proxy) addMedia(dir string, media []archive.Media) {
 	}
 }
 
-func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	// Preflights carry no token; endpoint logic must not run for them.
 	if r.Method == http.MethodOptions {
 		setCORS(w.Header())
@@ -392,7 +392,7 @@ func (p *Proxy) translateRegistrationToken(r *http.Request) {
 	}
 }
 
-// oauthRefresh handles MAS and native Tuwunel refreshes, keeping the refresh token.
+// oauthRefresh keeps migrated OAuth sessions on their original refresh tokens.
 func (p *Proxy) oauthRefresh(w http.ResponseWriter, r *http.Request) bool {
 	body, err := readBody(r)
 	if err != nil {

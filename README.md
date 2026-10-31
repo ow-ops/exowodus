@@ -212,7 +212,9 @@ passwords and sessions:
 - **Legacy sessions:** mapped like Synapse sessions.
 - **OAuth 2.0 sessions:** clients refresh their tokens at MAS's token
   endpoint, so route `/oauth2/token` on the MAS domain to the proxy. It answers
-  these refreshes with the migrated device's session.
+  these refreshes with the migrated device's session. It also handles mapped
+  OAuth refresh tokens at `/_continuwuity/oauth2/grant/token`, forwarding
+  unknown tokens to Continuwuity.
 
 ### SSO users
 
@@ -239,6 +241,11 @@ links working:
 
 Archived to-device messages from remote senders are delivered to their original
 devices and retained until the client acknowledges receipt.
+
+Proxy request logs include method, host, path, status and duration, with 4xx
+responses as warnings and 5xx as errors. `--verbose` also logs request starts.
+Query strings, headers and bodies are omitted. `--progress plain` writes plain
+logs to stderr.
 
 ## Rooms only your server was in
 

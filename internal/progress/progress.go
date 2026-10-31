@@ -309,17 +309,18 @@ func formatBytes(n int64) string {
 	return fmt.Sprintf("%.1f %s", value, unit)
 }
 
-// Handler presents existing structured logs as activity and keeps warnings in scrollback.
-func (d *Display) Handler(level slog.Level) slog.Handler {
-	return &handler{display: d, level: level, fallback: slog.NewTextHandler(d.output, &slog.HandlerOptions{Level: level})}
+// Handler displays log activity and retains messages at or above scrollback.
+func (d *Display) Handler(level, scrollback slog.Level) slog.Handler {
+	return &handler{display: d, level: level, scrollback: scrollback, fallback: slog.NewTextHandler(d.output, &slog.HandlerOptions{Level: level})}
 }
 
 type handler struct {
-	display  *Display
-	level    slog.Level
-	attrs    []slog.Attr
-	group    string
-	fallback slog.Handler
+	display    *Display
+	level      slog.Level
+	scrollback slog.Level
+	attrs      []slog.Attr
+	group      string
+	fallback   slog.Handler
 }
 
 func (h *handler) Enabled(_ context.Context, level slog.Level) bool { return level >= h.level }
@@ -349,7 +350,7 @@ func (h *handler) Handle(ctx context.Context, r slog.Record) error {
 		s.warnings++
 	}
 	s.Unlock()
-	if r.Level >= slog.LevelWarn || h.level <= slog.LevelDebug {
+	if r.Level >= h.scrollback {
 		line := r.Level.String() + " " + clean(r.Message)
 		if detail != "" {
 			line += " · " + detail

@@ -246,19 +246,34 @@ func TestRegistrationTokenTranslation(t *testing.T) {
 }
 
 func TestOAuthRefresh(t *testing.T) {
-	p, up := newTestProxy(t)
-	rec := do(p, http.MethodPost, "/oauth2/token", "", "grant_type=refresh_token&refresh_token=old-refresh")
-	var resp struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-	}
-	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
-	if resp.AccessToken != "new-token" || resp.RefreshToken != "old-refresh" || len(up.paths) != 0 {
-		t.Fatalf("refresh: %s, upstream %v", rec.Body, up.paths)
-	}
-	do(p, http.MethodPost, "/oauth2/token", "", "grant_type=refresh_token&refresh_token=unknown")
-	if len(up.paths) != 1 {
-		t.Fatal("unknown refresh tokens must be forwarded")
+	for _, path := range []string{"/oauth2/token", "/_continuwuity/oauth2/grant/token"} {
+		t.Run(path, func(t *testing.T) {
+			p, up := newTestProxy(t)
+			rec := do(p, http.MethodPost, path, "", "grant_type=refresh_token&refresh_token=old-refresh&client_id=old-mas-client")
+			var resp struct {
+				AccessToken  string `json:"access_token"`
+				RefreshToken string `json:"refresh_token"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil || rec.Code != http.StatusOK || resp.AccessToken != "new-token" || resp.RefreshToken != "old-refresh" || len(up.paths) != 0 {
+				t.Fatalf("refresh: %s, upstream %v, error=%v", rec.Body, up.paths, err)
+			}
+			p.sessions["access"] = archive.Session{Token: "access", OAuth: true}
+			p.sessions["legacy-refresh"] = archive.Session{Token: "legacy", Refresh: true}
+			for _, request := range []string{
+				"grant_type=refresh_token&refresh_token=unknown&client_id=current-client",
+				"grant_type=authorization_code&code=code&client_id=current-client",
+				"grant_type=refresh_token&refresh_token=access&client_id=current-client",
+				"grant_type=refresh_token&refresh_token=legacy-refresh&client_id=current-client",
+			} {
+				do(p, http.MethodPost, path, "", request)
+				if len(up.bodies) == 0 || up.bodies[len(up.bodies)-1] != request {
+					t.Fatal("forwarded OAuth request body changed")
+				}
+			}
+			if len(up.paths) != 4 {
+				t.Fatal("unmapped credentials and other grant types must be forwarded")
+			}
+		})
 	}
 }
 
