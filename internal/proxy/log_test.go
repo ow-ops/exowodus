@@ -144,3 +144,44 @@ func TestUpstreamErrorDoesNotLogURL(t *testing.T) {
 		t.Fatalf("transport log contains credentials: %s", output)
 	}
 }
+
+func TestOAuthLogs(t *testing.T) {
+	for _, tc := range []struct {
+		grant, token string
+		mapped       bool
+	}{
+		{"refresh_token", "old-refresh", true},
+		{"refresh_token", "unknown-secret", false},
+		{"authorization_code", "old-refresh", false},
+	} {
+		t.Run(tc.grant+"/"+tc.token, func(t *testing.T) {
+			output := captureLogs(t, slog.LevelDebug)
+			p, _ := newTestProxy(t)
+			form := url.Values{
+				"grant_type": {tc.grant}, "client_id": {"public-client"},
+				"refresh_token": {tc.token}, "code": {"code-secret"},
+				"client_secret": {"client-secret"}, "password": {"password-secret"},
+			}
+			do(p, http.MethodPost, "/_continuwuity/oauth2/grant/token", "header-secret", form.Encode())
+			if strings.Contains(output.String(), "secret") || strings.Contains(output.String(), "old-refresh") {
+				t.Fatalf("OAuth log contains credentials: %s", output)
+			}
+			found := false
+			for _, line := range bytes.Split(bytes.TrimSpace(output.Bytes()), []byte("\n")) {
+				var entry map[string]any
+				if err := json.Unmarshal(line, &entry); err != nil {
+					t.Fatal(err)
+				}
+				if entry["msg"] == "OAuth token request" {
+					found = true
+					if entry["grant_type"] != tc.grant || entry["client_id"] != "public-client" || entry["migrated_session"] != tc.mapped {
+						t.Fatalf("OAuth log = %v", entry)
+					}
+				}
+			}
+			if !found {
+				t.Fatal("OAuth diagnostic log missing")
+			}
+		})
+	}
+}

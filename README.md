@@ -244,8 +244,12 @@ devices and retained until the client acknowledges receipt.
 
 Proxy request logs include method, host, path, status and duration, with 4xx
 responses as warnings and 5xx as errors. `--verbose` also logs request starts.
-Query strings, headers and bodies are omitted. `--progress plain` writes plain
-logs to stderr.
+Verbose OAuth logs also include the public client ID, grant type and whether
+the refresh token matched an imported session. Tokens, passwords, headers and
+query strings are omitted. `--progress plain` writes plain logs to stderr.
+
+Restart the proxy after importing sessions: it loads the archive at startup.
+The `proxy ready` log shows the archive path and imported OAuth refresh count.
 
 ## Rooms only your server was in
 

@@ -158,7 +158,13 @@ func New(a *archive.Archive, upstream *url.URL, pepper string, macaroonKey []byt
 			pr.Out.Host = pr.In.Host
 		}}
 	}
-	slog.Info("proxy ready", "sessions", len(p.sessions), "pending_passwords", len(p.pending), "media", len(p.media))
+	oauthRefreshes := 0
+	for _, session := range p.sessions {
+		if session.Refresh && session.OAuth {
+			oauthRefreshes++
+		}
+	}
+	slog.Info("proxy ready", "archive", a.Dir, "sessions", len(p.sessions), "oauth_refreshes", oauthRefreshes, "pending_passwords", len(p.pending), "media", len(p.media))
 	return p, nil
 }
 
@@ -399,11 +405,13 @@ func (p *Proxy) oauthRefresh(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	form, err := url.ParseQuery(string(body))
-	if err != nil || form.Get("grant_type") != "refresh_token" {
+	if err != nil {
 		return false
 	}
 	s, ok := p.sessions[form.Get("refresh_token")]
-	if !ok || !s.Refresh || !s.OAuth && r.URL.Path != "/_tuwunel/oidc/token" {
+	mapped := form.Get("grant_type") == "refresh_token" && ok && s.Refresh && (s.OAuth || r.URL.Path == "/_tuwunel/oidc/token")
+	slog.DebugContext(r.Context(), "OAuth token request", "path", r.URL.Path, "grant_type", form.Get("grant_type"), "client_id", form.Get("client_id"), "migrated_session", mapped)
+	if !mapped {
 		return false
 	}
 	writeJSON(w, map[string]any{
