@@ -75,7 +75,7 @@ Replacing Synapse on the same server name:
 	}
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable debug logging")
 	root.PersistentFlags().StringVar(&progressMode, "progress", "auto", "progress display: auto, plain or tty")
-	root.AddCommand(newExportCmd(), newImportCmd(), newMigrateCmd(), newProxyCmd(), newLinkSSOCmd(), newRestoreSigningKeyCmd(), newRestoreMediaCmd(), newRestoreSessionsCmd(), newFinishCmd(), newResetImportCmd(), newRepairTuwunelAccountsCmd(), newRecoverLoginCmd())
+	root.AddCommand(newExportCmd(), newImportCmd(), newMigrateCmd(), newProxyCmd(), newLinkSSOCmd(), newRestoreSigningKeyCmd(), newRestoreMediaCmd(), newRestoreSessionsCmd(), newRefreshMASSessionsCmd(), newFinishCmd(), newResetImportCmd(), newRepairTuwunelAccountsCmd(), newRecoverLoginCmd())
 	styleCommands(root, &progressMode, &verbose)
 	return root
 }

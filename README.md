@@ -216,6 +216,17 @@ passwords and sessions:
   OAuth refresh tokens at `/_continuwuity/oauth2/grant/token`, forwarding
   unknown tokens to Continuwuity.
 
+If MAS issued new tokens after export, stop MAS and any running import. Keep
+PostgreSQL and Continuwuity running, then reuse the `EXOWODUS_MAS_DB` or
+`--mas-db` setting from export:
+
+```sh
+exowodus refresh-mas-sessions --archive ./exowodus-archive --to http://localhost:8008
+```
+
+Restart the proxy with the same archive. The command checks each destination
+session before saving its mapping and reports devices missing from the import.
+
 ### SSO users
 
 Enabling OIDC on Continuwuity disables the password logins the import relies

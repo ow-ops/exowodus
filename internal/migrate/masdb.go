@@ -41,7 +41,16 @@ func (d *MASDB) addSecrets(ctx context.Context, userID string, s *archive.Secret
 	if hash.Valid {
 		s.PasswordHash, s.PasswordScheme, s.PasswordVersion = hash.String, archive.SchemeMAS, int(version.Int64)
 	}
+	tokens, err := d.sessionTokens(ctx, userID)
+	if err != nil {
+		return err
+	}
+	s.Tokens = append(s.Tokens, tokens...)
+	return nil
+}
 
+func (d *MASDB) sessionTokens(ctx context.Context, userID string) ([]archive.Token, error) {
+	var secrets archive.Secrets
 	queries := []struct {
 		refresh, oauth bool
 		query          string
@@ -66,15 +75,15 @@ func (d *MASDB) addSecrets(ctx context.Context, userID string, s *archive.Secret
 			WHERE u.username = $1 AND s.finished_at IS NULL AND r.consumed_at IS NULL AND r.revoked_at IS NULL`},
 	}
 	for _, q := range queries {
-		rows, err := d.db.QueryContext(ctx, q.query, username)
+		rows, err := d.db.QueryContext(ctx, q.query, mx.Localpart(userID))
 		if err != nil {
-			return fmt.Errorf("sessions: %w", err)
+			return nil, fmt.Errorf("sessions: %w", err)
 		}
-		if err := scanTokens(rows, q.refresh, q.oauth, s); err != nil {
-			return fmt.Errorf("sessions: %w", err)
+		if err := scanTokens(rows, q.refresh, q.oauth, &secrets); err != nil {
+			return nil, fmt.Errorf("sessions: %w", err)
 		}
 	}
-	return nil
+	return secrets.Tokens, nil
 }
 
 func oauthDevice(scopes string) string {
