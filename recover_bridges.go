@@ -16,8 +16,9 @@ func newRecoverBridgeAccountsCmd() *cobra.Command {
 		Use:   "recover-bridge-accounts",
 		Short: "Add missing Synapse bridge bot accounts and devices to an existing archive",
 		Long: `Read missing bridge accounts from the original Synapse API and database.
-Keep Synapse isolated from client, bridge and federation writes. Its database
-and API must describe the same source state. MAS impersonation is not used.
+Have Synapse's public proxy return HTTP 503 and stop the bridge services.
+Keep Synapse running and pass its internal address with --from. Its database
+must match the data available through its API. MAS impersonation is not used.
 Existing archived users and room history are kept. Then rerun import with this
 archive. Private encryption keys from a deleted bridge database are not recovered.`,
 		Args: cobra.NoArgs,

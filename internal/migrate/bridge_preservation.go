@@ -76,7 +76,7 @@ func (d *SynapseDB) CheckAppserviceQueues(ctx context.Context, bridges []*Bridge
 		return fmt.Errorf("source event stream: %w", err)
 	}
 	if position < latest {
-		return fmt.Errorf("source appservice dispatcher has not caught up (%d/%d); pause client and federation writes, let dispatch finish, then take a matching database snapshot", position, latest)
+		return fmt.Errorf("Synapse has not caught up with pending bridge messages (%d/%d); close public access, let Synapse send the messages to the bridges, then stop the bridges and take a fresh database backup", position, latest)
 	}
 	for _, b := range bridges {
 		var count int
@@ -84,7 +84,7 @@ func (d *SynapseDB) CheckAppserviceQueues(ctx context.Context, bridges []*Bridge
 			return fmt.Errorf("source appservice queue: %w", err)
 		}
 		if count != 0 {
-			return fmt.Errorf("appservice %s still has %d undelivered transactions; keep the original bridge running until they drain, then stop it and take the final database snapshot", b.ID, count)
+			return fmt.Errorf("bridge %s has %d undelivered transactions (message batches); keep it running until it receives them, then stop it and take a fresh database backup", b.ID, count)
 		}
 	}
 	return nil

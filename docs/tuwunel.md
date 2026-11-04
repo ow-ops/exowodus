@@ -4,9 +4,11 @@ Use separate `export` and `import` commands with the same `server_name` and a
 [relay](../README.md#relay---relay-name). Omit `--to-password` and `--to-token`;
 the proxy needs generated credentials to restore source passwords.
 
-Pause client, bridge and federation writes before taking a database backup or
-checkpoint. Leave Tuwunel's APIs available for export and keep writes paused
-until cutover. Run a compatible RocksDB
+Follow the [migration preparation steps](../README.md#taking-the-source-offline-for-migration)
+before taking a database backup or checkpoint.
+Set `SOURCE_URL` to Tuwunel's internal address for the export commands below.
+
+Run a compatible RocksDB
 [ldb tool](https://github.com/facebook/rocksdb/wiki/Administration-and-Data-Access-Tool)
 against the backup, never the live database.
 
@@ -104,7 +106,7 @@ used by export. If you renamed the `conduit` server bot, pass its localpart with
 ## Original events and strict cutover checks
 
 ```sh
-exowodus export --from https://example.org --from-type tuwunel \
+exowodus export --from "$SOURCE_URL" --from-type tuwunel \
   --from-admin-token "$ADMIN" --all-users --tuwunel-dump ./tuwunel-dump
 
 # Stop Tuwunel and prepare Continuwuity on the same server_name.
@@ -179,10 +181,10 @@ Unused outliers remain in the retained database scans. Missing auth dependencies
 and invalid IDs of required events still block export.
 
 To resume a whole-server Tuwunel export, rerun the same command with the same
-archive and unchanged dump. Keep source writes paused between attempts. Exowodus
-verifies completed accounts, rooms and media against `export-progress/` before
-reuse. A changed source, dump or account selection requires a new `--archive`
-directory.
+archive and unchanged dump. Leave public access closed and bridges stopped
+between attempts. Exowodus verifies completed accounts, rooms and media against
+`export-progress/` before reuse. A changed source, dump or account selection
+requires a new `--archive` directory.
 
 Failed rooms reuse completed API history and retry the remaining steps,
 including preservation checks. Interrupted history downloads restart that
@@ -192,15 +194,15 @@ dump and events are verified; other steps run once to create checkpoints.
 Errors before export starts leave `export-report.json` unchanged. Use the
 terminal error for that attempt; the report may describe an earlier run.
 
-If the source changes, pause writes, back up the database and extract all tables
-into a new dump directory. Export to a new `--archive` directory. Keep the old
-archive and its retained dump unchanged.
+If the source changes, repeat the preparation steps above, take a fresh backup
+and extract all tables into a new dump directory. Export to a new `--archive`
+directory. Keep the old archive and its retained dump unchanged.
 
 To export room history and state from the backup, use `--history-at-checkpoint`
 with a new archive:
 
 ```sh
-exowodus export --from https://example.org --from-type tuwunel \
+exowodus export --from "$SOURCE_URL" --from-type tuwunel \
   --from-admin-token "$ADMIN" --all-users --tuwunel-dump ./tuwunel-dump \
   --history-at-checkpoint --archive ./exowodus-checkpoint
 ```
@@ -220,9 +222,9 @@ Exowodus computes their IDs as Tuwunel and Continuwuity do, so these events are
 kept. Archives exported by earlier versions omit them; export again to a new
 `--archive` directory to keep them.
 
-Pause writes for cutover and keep the original backup. `server.json` records
-`history_at_checkpoint`, and import reports it as a note. Resume with the same
-flag, archive and unchanged dump.
+Leave public access closed and bridges stopped until migration is complete,
+and keep the original backup. `server.json` records `history_at_checkpoint`, and
+import reports it as a note. Resume with the same flag, archive and unchanged dump.
 
 When an auth event is missing from the dump, export tries other servers in the
 room using the source signing key. It verifies the event's ID, room, signatures
@@ -235,7 +237,7 @@ If no server supplies the event, export fails. To omit an affected room entirely
 repeat the export command with `--skip-room`:
 
 ```sh
-exowodus export --from https://example.org --from-type tuwunel \
+exowodus export --from "$SOURCE_URL" --from-type tuwunel \
   --from-admin-token "$ADMIN" --all-users --tuwunel-dump ./tuwunel-dump \
   --history-at-checkpoint --archive ./exowodus-checkpoint \
   --skip-room '!broken:example.org'

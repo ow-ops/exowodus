@@ -80,11 +80,29 @@ Good to know:
 
 ## Usage
 
+### Taking the source offline for migration
+
+Keep the homeserver running for Exowodus, but prevent new messages and account
+changes during the migration:
+
+1. Make your public proxy return `503 Service Unavailable` for both client and
+   federation requests. Without a proxy, block public access at the firewall.
+2. Set `SOURCE_URL` to the homeserver's internal address. For example,
+   `SOURCE_URL=http://127.0.0.1:8008` if it listens there and Exowodus runs on the
+   same host. Keep bridges connected until the next step is done.
+3. Let bridges finish processing queued messages, then stop their services or
+   containers, for example with `docker compose stop <bridge-service>`.
+   They can still bring in messages from Telegram or Discord while Matrix apps
+   are disconnected.
+4. Back up the database and media, then export. Keep public access closed and
+   bridges stopped until migration is complete. Point the proxy and bridges at
+   the destination before reopening access and restarting them.
+
 ### Migrating from Tuwunel
 
 Keep the same `server_name` to preserve message IDs, encrypted history and logins.
 
-1. Pause client, bridge and federation writes, keeping Tuwunel's APIs available.
+1. [Take the source offline for migration](#taking-the-source-offline-for-migration).
 2. Back up the database and media, then [prepare the database export](docs/tuwunel.md).
 3. Export, stop Tuwunel, and start Continuwuity with the same `server_name`.
 4. [Configure the relay](#relay---relay-name) and import.
@@ -93,7 +111,7 @@ Keep the same `server_name` to preserve message IDs, encrypted history and login
    `finish` reports it could not restore and for pending deliveries.
 
 ```sh
-exowodus export --from https://example.org --from-type tuwunel \
+exowodus export --from "$SOURCE_URL" --from-type tuwunel \
   --from-admin-token "$ADMIN" --all-users --tuwunel-dump ./tuwunel-dump
 
 # Stop Tuwunel and start Continuwuity with the same server_name.
@@ -111,7 +129,8 @@ Continuwuity and blocks import. Check the
 cutover. Retry failed steps with the same archive; see `import-report.json`.
 
 To resume an interrupted whole-server Tuwunel export, rerun the same export
-command with the same archive and unchanged dump. Keep source writes paused.
+command with the same archive and unchanged dump. Leave public access closed
+and bridges stopped between attempts.
 Completed accounts, rooms and media are verified and reused.
 
 Import verifies original messages and checks each exported token against the
@@ -123,15 +142,14 @@ For one account, use `--from-type tuwunel` with the [single-account flow](#movin
 ### Replacing Synapse on the same server name
 
 This restores sessions, devices and encryption on the same server name.
-Keep a source database and media backup. Pause client and federation writes,
-let bridges finish processing source transactions, then stop bridge writes too.
-Leave Synapse's APIs available to Exowodus. Export reads APIs and database tables
-separately; it is not a consistent snapshot while the source is changing.
-Route clients to the destination only
-after import completes without failures.
+[Take the source offline for migration](#taking-the-source-offline-for-migration)
+and back up its database and media before exporting. Export reads APIs and
+database tables separately, so changes during export can make the archive
+inconsistent. Reopen access on the destination after import completes without
+failures.
 
 ```sh
-exowodus export --from https://example.org --from-admin-token "$ADMIN" --all-users \
+exowodus export --from "$SOURCE_URL" --from-admin-token "$ADMIN" --all-users \
   --synapse-db postgres://synapse@db/synapse \
   --synapse-signing-key /etc/synapse/example.org.signing.key \
   --from-appservice-registration /etc/synapse/bridges/telegram.yaml
@@ -150,7 +168,9 @@ external message mappings. Do not reset the bridge or let two copies use the
 same encryption device.
 
 Bridge imports require [original-event transfer](#relay---relay-name), the original
-server name and drained source appservice queues. Replay is refused because new
+server name and all pending messages delivered to bridges. If Synapse export
+reports undelivered messages, run the bridge until it receives them, then stop
+it and take a fresh backup before retrying. Replay is refused because new
 event IDs break replies, edits, reactions and threads stored in bridge databases.
 An archive already replayed with changed IDs requires a fresh destination for
 this workflow. Exowodus checks preserved history before releasing bridge delivery;
@@ -172,12 +192,14 @@ exowodus recover-bridge-accounts --archive ./exowodus-archive \
   --registration /path/to/bridge-registration.yaml
 ```
 
-This requires drained source queues, the original Synapse API and a matching
-database with writes paused. A MAS database alone does not contain bridge
-accounts. It adds missing accounts without replacing archived users or room
-history. Rerun `import` with the same archive to restore the bot devices and
-retry pending device messages
-and invites. Keep the bridge stopped until the filtering step below is active.
+First let Synapse deliver its pending messages to bridges, then stop the bridges
+and take a database backup. Keep Synapse running for Exowodus with public access
+closed. A MAS database alone does not contain bridge accounts.
+
+The command adds missing accounts and keeps existing users and room history.
+Rerun `import` with the same archive to restore the bot devices and retry pending
+device messages and invites. Keep the bridge stopped until the filtering step
+below is active.
 
 Bridge delivery is held during import so imported history and old commands
 cannot be sent to Discord or other bridged services. After importing, keep the
